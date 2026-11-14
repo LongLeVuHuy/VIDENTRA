@@ -1,5 +1,19 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Cài đặt Phương án B CPU GGUF (`llama-cpp-python==0.3.36` + `qwen2.5-1.5b-instruct-q4_k_m.gguf`)
+
+- **Cài đặt Runtime & Tải Weights GGUF (Gitignored):**
+  - Cài prebuilt CPU wheel `llama-cpp-python==0.3.36` (`diskcache==5.6.3`) vào `.venv` và cập nhật [requirements.txt](../requirements.txt).
+  - Tải `qwen2.5-1.5b-instruct-q4_k_m.gguf` từ `Qwen/Qwen2.5-1.5B-Instruct-GGUF` (commit SHA `91cad51170dc346986eccefdc2dd33a9da36ead9`) vào `models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf`.
+- **Tối ưu [llm.py](../src/videntra/query/llm.py) cho `llama_cpp` trên CPU:**
+  - `_discover_model_path()` ưu tiên `*.gguf` trước thư mục HF khi `backend in ("auto", "llama_cpp")`.
+  - Tự động đặt `n_threads = max(2, min(4, (os.cpu_count() or 4) // 2))` (tránh hyperthread contention trên CPU 2 nhân vật lý), đặt `n_ctx = 512`, bỏ `response_format={"type": "json_object"}` (GBNF overhead).
+- **Đo đạc thực tế trên CPU laptop hiện tại (không GPU):**
+  - Thời gian nạp GGUF: `5,398.8 ms`. Tốc độ sinh với prompt ngắn (`32 prompt + 38 completion = 70 tokens`, `n_threads=2`): `10,556.4 ms`. Với `COMPACT_WIRE_SYSTEM_PROMPT` đầy đủ, sinh 1 câu vẫn vượt `30,000 ms` trên CPU 2 nhân nên SLA mặc định (`5000 ms`) tự động bảo vệ độ trễ tìm kiếm bằng `RuleBasedQueryParser` fallback (có thể tăng `VIDENTRA_LLM_DEADLINE_MS=45000` khi muốn chạy offline/prewarm trên CPU).
+  - Kiểm thử: `.venv\Scripts\python.exe -B -m pytest tests/query/test_llm_decomposer.py -q -p no:cacheprovider` $\to$ **`20 passed in 19.70s`**.
+
+---
+
 ## 15/11/2026 — Tinh chỉnh Pipeline (`CM-GD`, `SE-Viterbi`, E5 Sparse Fallback) & LTR Regularization (`l2_reg=1.5M`)
 
 - **Tách `s_late_interaction` và `s_vis_ctx_coherence` ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):**

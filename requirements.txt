@@ -18,6 +18,9 @@ torchvision>=0.21.0
 transformers==5.22.1
 safetensors==0.8.0
 faiss-cpu==1.15.1
+# Optional CPU GGUF backend for LocalSmallLLMBackend (install prebuilt wheel via:
+# pip install llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --only-binary=llama-cpp-python)
+llama-cpp-python==0.3.36
 
 # --- Multimodal Evidence Extraction (OCR, ASR, Object Detection) ---
 rapidocr-onnxruntime==1.4.4

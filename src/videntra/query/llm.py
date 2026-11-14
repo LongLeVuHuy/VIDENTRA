@@ -370,8 +370,8 @@ class LocalSmallLLMBackend:
         deadline_ms: int | None = None,
         enabled: bool = True,
         generate_fn: Callable[[str], str] | None = None,
-        n_ctx: int = 1024,
-        n_threads: int = 4,
+        n_ctx: int = 512,
+        n_threads: int | None = None,
         max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     ):
         env_path = os.environ.get("VIDENTRA_LLM_MODEL_PATH")
@@ -402,7 +402,11 @@ class LocalSmallLLMBackend:
         self.enabled = enabled
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
-        self.n_threads = n_threads
+        self.n_threads = (
+            max(1, int(n_threads))
+            if n_threads is not None
+            else max(2, min(4, (os.cpu_count() or 4) // 2))
+        )
         self.max_new_tokens = max(1, int(max_new_tokens))
 
         self._loaded_backend: str | None = None
@@ -419,7 +423,12 @@ class LocalSmallLLMBackend:
             return self.model_path if self.model_path.exists() else None
         if not self.DEFAULT_MODELS_DIR.exists():
             return None
-        for pattern in ("*qwen2.5*1.5b*", "*.gguf", "*qwen2.5*0.5b*", "*"):
+        patterns = (
+            ("*qwen2.5*1.5b*.gguf", "*.gguf", "*qwen2.5*1.5b*", "*qwen2.5*0.5b*", "*")
+            if self.backend in ("auto", "llama_cpp")
+            else ("*qwen2.5*1.5b*", "*qwen2.5*0.5b*", "*.gguf", "*")
+        )
+        for pattern in patterns:
             matches = [
                 m
                 for m in sorted(self.DEFAULT_MODELS_DIR.glob(pattern))
@@ -523,7 +532,6 @@ class LocalSmallLLMBackend:
                 ],
                 temperature=0.0,
                 max_tokens=self.max_new_tokens,
-                response_format={"type": "json_object"},
             )
             return res["choices"][0]["message"]["content"]
 
