@@ -1,5 +1,21 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Sinh Chỉ mục Ngữ nghĩa E5 (`faiss_text_e5_384.bin`), Huấn luyện LTR 5-Fold CV (`videntra_ltr_v1.json`) & Kiểm chứng Benchmark
+
+- **Xây dựng Dense Text Index (`multilingual-e5-small` 384d):**
+  - Tạo [build_e5_text_index.py](../scripts/build_e5_text_index.py) tái sử dụng `encode_e5_passages` và `build_e5_text_faiss_index` từ [kaggle_multimodal_offline_worker.py](../scripts/kaggle_multimodal_offline_worker.py) (pin revision `c007d7ef6fd86656326059b28395a7a03a7c5846`).
+  - Mã hóa toàn bộ `3,860 ASRSegments + 6,912 OCRObservations = 10,772` bản ghi từ `data/processed/metadata.db` trong `685.51s` CPU, xuất ra `data/processed/faiss_text_e5_384.bin` (`16.5 MB`, `ntotal=10772, d=384`) và `data/processed/e5_text_manifest.json` (`2.5 MB`).
+- **Sửa Circular Import & Huấn luyện `LearnedRankerLTR` (`videntra_ltr_v1.json`):**
+  - Sửa lỗi circular import khi chạy standalone [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py) bằng cách chuyển import `RankedMoment` vào `if TYPE_CHECKING:` trong [features.py](../src/videntra/ranking/features.py).
+  - Trích xuất `40,772` candidate rows từ toàn bộ `859/859` truy vấn `dev_full_859` (không chạm `heldout_test_201` / `test_queries/`), huấn luyện 5-fold `GroupKFold` CV theo `source_video_id` (`pairwise_logistic`, chuẩn hóa Z-score `feature_mean`/`feature_std`, `l2_reg=500.0` giữ trọng số ổn định trong `[-0.2430, +0.5260]`), xuất `models/ranking/videntra_ltr_v1.json` (`2,418 bytes`, 5-fold CV `Hit@1=0.3315, MRR=0.4880, nDCG@10=0.5499`).
+  - Cập nhật [learned_ranker.py](../src/videntra/ranking/learned_ranker.py) kiểm tra tính hợp lệ của `feature_mean`/`feature_std` và cập nhật Stage 6 trong [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py) dùng LTR làm **bounded residual tie-breaker** (`base_score + 0.04 * np.tanh(ltr_score)`) chỉ cho các ứng viên vượt qua cổng `Pure-ASR`/`Pure-OCR`, tránh phá vỡ chốt chặn đa phương thức.
+- **Kiểm thử & Benchmark sau tích hợp (`videntra_ltr_v1.json` + `faiss_text_e5_384.bin` active, chưa có `spatial_patches_fp16.npy` & local Small-LLM weights):**
+  - Full Test Suite: `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`445 passed in 69.02s`** (0 failed, 0 skipped).
+  - `dev_150` Benchmark (`.venv\Scripts\python.exe scripts/run_validation_benchmark.py --single-split-only --max-msrvtt 100 --out-dir work/tmp_bench_phase7_ltr`): `Video Hit@1 = 60.67%`, `MRR = 0.6482`, `Video nDCG@10 = 0.6703`, `Moment Hit@1 (0.5) = 72.73%`, `Moment nDCG@5 = 0.5127`, **`Pure-ASR FP Top-1 = 0`**, `Non-Neural Latency (p50/p95) = 29.40 ms / 75.47 ms`. (Lưu ý: script báo exit code `1` tại bước kiểm tra `provenance.json` do `inputs_unchanged=False` sau khi sinh `faiss_text_e5_384.bin`.)
+  - Sẵn sàng Kaggle GPU: đã xác minh [kaggle_multimodal_offline_worker.py](../scripts/kaggle_multimodal_offline_worker.py) hỗ trợ trích xuất `spatial_patches_fp16.npy` (`(N, 9, 768)` `float16`) trên Kaggle T4 khi gắn verified video bundle + pinned A5 models.
+
+---
+
 ## 14/11/2026 — Hoàn tất Triển khai Phase 7 (Sửa 6 Bugs, Small-LLM Query Decomposer, Z-Score/LTR & QAT-LateInteraction Foundation)
 
 Đã thực thi nâng cấp toàn diện theo [VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md](../VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md) qua Swarm đa tác tử (4 author workers + 1 verifier độc lập):

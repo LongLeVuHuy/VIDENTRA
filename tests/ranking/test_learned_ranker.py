@@ -245,3 +245,21 @@ def test_backwards_compatible_moment_features():
     mf = extract_moment_features(moment)
     assert mf.duration_seconds == 4.0
     assert len(mf.to_feature_vector()) == 6
+
+
+def test_ranking_features_standalone_import_no_circular_import():
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "from videntra.ranking.features import LTR_FEATURE_NAMES, extract_ltr_features_18d; assert len(LTR_FEATURE_NAMES) == 18",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Standalone import failed: {proc.stderr}"

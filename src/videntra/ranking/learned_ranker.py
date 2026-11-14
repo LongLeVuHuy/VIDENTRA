@@ -86,12 +86,21 @@ class LearnedRankerLTR:
         mean_arr = payload.get("feature_mean")
         std_arr = payload.get("feature_std")
         if mean_arr is not None:
-            self.feature_mean = np.asarray(mean_arr, dtype=np.float64)
+            raw_mean = np.asarray(mean_arr, dtype=np.float64)
+            if raw_mean.shape != (self.n_features,):
+                raise ValueError(
+                    f"Expected {self.n_features} feature_mean entries, got {raw_mean.shape}"
+                )
+            self.feature_mean = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
         else:
             self.feature_mean = np.zeros(self.n_features, dtype=np.float64)
         if std_arr is not None:
             raw_std = np.asarray(std_arr, dtype=np.float64)
-            self.feature_std = np.where(raw_std > 1e-8, raw_std, 1.0)
+            if raw_std.shape != (self.n_features,):
+                raise ValueError(
+                    f"Expected {self.n_features} feature_std entries, got {raw_std.shape}"
+                )
+            self.feature_std = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
         else:
             self.feature_std = np.ones(self.n_features, dtype=np.float64)
 

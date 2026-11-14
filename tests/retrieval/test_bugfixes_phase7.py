@@ -20,8 +20,9 @@ def _make_mock_pipeline(
     kf_map: dict[int, dict],
     vid_kfs: dict[str, list[dict]],
     durations: dict[str, float] | None = None,
+    **pipeline_kwargs,
 ) -> UnifiedMultimodalSearchPipeline:
-    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False, **pipeline_kwargs)
     pipeline.all_embeddings = np.ascontiguousarray(raw_768, dtype=np.float32)
     pipeline.augmented_embeddings = np.ascontiguousarray(aug_864, dtype=np.float32)
     pipeline.keyframe_map = kf_map
@@ -367,7 +368,13 @@ def test_phase73_ltr_fallback_and_active_scoring(tmp_path):
         "vid_1": [{"faiss_id": 0, "pts_time": 5.0, "source_frame_index": 10}],
         "vid_2": [{"faiss_id": 1, "pts_time": 5.0, "source_frame_index": 20}],
     }
-    pipeline = _make_mock_pipeline(raw_768, aug_864, kf_map, vid_kfs)
+    pipeline = _make_mock_pipeline(
+        raw_768,
+        aug_864,
+        kf_map,
+        vid_kfs,
+        ltr_model_path=tmp_path / "missing_ltr.json",
+    )
     pipeline.encode_texts = _constant_encoder  # type: ignore[method-assign]
 
     # Fallback mode (no LTR model loaded)

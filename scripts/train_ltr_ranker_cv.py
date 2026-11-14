@@ -19,9 +19,14 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from videntra.ranking.features import LTR_FEATURE_NAMES, extract_ltr_features_18d
+from videntra.ranking.features import (
+    LTR_FEATURE_NAMES,
+    compute_query_z_scores,
+    extract_ltr_features_18d,
+)
 
 DEFAULT_DATASET_PATH = Path("work/ltr_dev859_features.jsonl")
+DEFAULT_VAL_DIR = Path("validation")
 DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr_v1.json")
 
 _FORBIDDEN_PATH_TOKENS = ("heldout_test_201", "heldout", "test_queries")
@@ -399,6 +404,171 @@ def load_ltr_jsonl_dataset(
     )
 
 
+def extract_dev859_ltr_dataset(
+    val_dir: Path = DEFAULT_VAL_DIR,
+    save_jsonl_path: Path | None = None,
+    max_candidates_per_query: int = 60,
+) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+    """Extract 18D LTR features from dev_full_859 (validation/ only, never held-out test)."""
+    assert_no_heldout_leakage(val_dir)
+    if save_jsonl_path is not None:
+        assert_no_heldout_leakage(save_jsonl_path)
+
+    import sys
+
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    from scripts.run_validation_benchmark import load_validation_queries
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    pipeline = UnifiedMultimodalSearchPipeline(
+        db_path=Path("data/processed/metadata.db"),
+        faiss_path=Path("data/processed/faiss_index.bin"),
+        model_dir=Path("models/siglip2"),
+        device="cpu",
+        use_disk_cache=False,
+        memory_cache_size=0,
+    )
+    try:
+        indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
+        if not indexed_videos and pipeline.keyframe_map:
+            indexed_videos = {k["video_id"] for k in pipeline.keyframe_map.values()}
+
+        queries = load_validation_queries(val_dir, indexed_videos, max_msrvtt=None)
+        if not queries:
+            raise ValueError(f"No validation queries loaded from {val_dir}")
+
+        rows: list[np.ndarray] = []
+        labels: list[float] = []
+        query_ids: list[str] = []
+        source_video_ids: list[str] = []
+        jsonl_records: list[dict[str, Any]] = []
+
+        for idx, q in enumerate(queries, start=1):
+            qid = str(q["query_id"])
+            target_videos = list(q["target_videos"])
+            target_set = set(target_videos)
+            src_vid = str(target_videos[0])
+
+            resp = pipeline.search_with_metadata(
+                snapshot_id="ltr_extract_dev859",
+                query=str(q["query_text"]),
+                top_k=30,
+                mode="accurate",
+                ranking_mode="diverse_video",
+                ablation_config="A5",
+            )
+            diag = resp.get("diagnostics", {})
+            all_cands = diag.get("all_candidate_moments", [])[:max_candidates_per_query]
+            if not all_cands:
+                continue
+
+            vis_cands = diag.get("visual_candidates", [])
+            ocr_cands = diag.get("ocr_candidates", [])
+            asr_cands = diag.get("asr_candidates", [])
+
+            z_stats = compute_query_z_scores(
+                [float(c["score"]) for c in vis_cands],
+                top_k=120,
+            )
+
+            vis_scores_by_vid: dict[str, list[float]] = defaultdict(list)
+            rrf_vis_by_vid: dict[str, float] = {}
+            for rank, c in enumerate(vis_cands, start=1):
+                vid = str(c["video_id"])
+                vis_scores_by_vid[vid].append(float(c["score"]))
+                if vid not in rrf_vis_by_vid:
+                    rrf_vis_by_vid[vid] = 1.0 / (60.0 + rank)
+
+            rrf_ocr_by_vid: dict[str, float] = {}
+            fts_ocr_by_vid: dict[str, float] = {}
+            for rank, c in enumerate(ocr_cands, start=1):
+                vid = str(c["video_id"])
+                if vid not in rrf_ocr_by_vid:
+                    rrf_ocr_by_vid[vid] = 1.0 / (60.0 + rank)
+                fts_ocr_by_vid[vid] = max(fts_ocr_by_vid.get(vid, 0.0), float(c.get("score", 0.0)))
+
+            rrf_asr_by_vid: dict[str, float] = {}
+            fts_asr_by_vid: dict[str, float] = {}
+            for rank, c in enumerate(asr_cands, start=1):
+                vid = str(c["video_id"])
+                if vid not in rrf_asr_by_vid:
+                    rrf_asr_by_vid[vid] = 1.0 / (60.0 + rank)
+                fts_asr_by_vid[vid] = max(fts_asr_by_vid.get(vid, 0.0), float(c.get("score", 0.0)))
+
+            has_pos = any(m.video_id in target_set for m in all_cands)
+            has_neg = any(m.video_id not in target_set for m in all_cands)
+            if not (has_pos and has_neg):
+                continue
+
+            for m in all_cands:
+                vid = m.video_id
+                v_scores = sorted(vis_scores_by_vid.get(vid, ()), reverse=True)
+                s_max = v_scores[0] if v_scores else float(m.ranking_score)
+                top3 = sum(v_scores[:3]) / len(v_scores[:3]) if v_scores else s_max
+                top5 = sum(v_scores[:5]) / len(v_scores[:5]) if v_scores else s_max
+                spike_drop = (v_scores[0] - v_scores[1]) if len(v_scores) >= 2 else 0.0
+                has_lex = ("ocr" in m.match_status) or ("asr" in m.match_status)
+
+                cand_dict = {
+                    "s_vis_blend_max": s_max,
+                    "s_vis_top3_mean": top3,
+                    "s_vis_top5_mean": top5,
+                    "s_vis_ctx_coherence": s_max,
+                    "s_late_interaction": 0.0,
+                    "spike_drop_ratio": spike_drop,
+                    "rrf_vis": rrf_vis_by_vid.get(vid, 0.0),
+                    "rrf_ocr": rrf_ocr_by_vid.get(vid, 0.0),
+                    "rrf_asr": rrf_asr_by_vid.get(vid, 0.0),
+                    "fts_score": max(fts_ocr_by_vid.get(vid, 0.0), fts_asr_by_vid.get(vid, 0.0)),
+                    "m_high": 1.0 if has_lex else 0.0,
+                    "k_high": 1.0,
+                    "anchor_lexical_match": 1.0 if has_lex else 0.0,
+                    "number_consistency": 1.0,
+                    "yolo_object_verification_boost": 0.0,
+                    "graph_relation_score": 0.0,
+                    "llm_modality_alignment": 1.0 if has_lex else 0.0,
+                }
+                vec = extract_ltr_features_18d(cand_dict, z_stats=z_stats, return_dict=False)
+                lbl = 1.0 if vid in target_set else 0.0
+
+                rows.append(vec)
+                labels.append(lbl)
+                query_ids.append(qid)
+                source_video_ids.append(src_vid)
+                if save_jsonl_path is not None:
+                    jsonl_records.append({
+                        "query_id": qid,
+                        "source_video_id": src_vid,
+                        "video_id": vid,
+                        "label": lbl,
+                        "features": [float(v) for v in vec],
+                    })
+
+            if idx % 200 == 0 or idx == len(queries):
+                print(f"[LTR Extract] Processed {idx}/{len(queries)} dev_full_859 queries ({len(rows)} candidate rows)")
+    finally:
+        pipeline.close()
+
+    if not rows:
+        raise ValueError("Extracted 0 candidate rows from dev_full_859")
+
+    if save_jsonl_path is not None:
+        save_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        with save_jsonl_path.open("w", encoding="utf-8") as f:
+            for rec in jsonl_records:
+                f.write(json.dumps(rec) + "\n")
+
+    return (
+        np.vstack(rows).astype(np.float64),
+        np.asarray(labels, dtype=np.float64),
+        query_ids,
+        source_video_ids,
+    )
+
+
 def save_ltr_model_json(artifact: dict[str, Any], output_path: Path) -> Path:
     """Persist trained LTR artifact to JSON."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,13 +579,23 @@ def save_ltr_model_json(artifact: dict[str, Any], output_path: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train VIDENTRA LTR ranker with 5-Fold GroupKFold CV")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH, help="Path to dev_full_859 LTR JSONL")
+    parser.add_argument("--val-dir", type=Path, default=DEFAULT_VAL_DIR, help="Validation directory for dev_full_859 extraction")
+    parser.add_argument("--extract-from-val", action="store_true", help="Extract 18D features directly from validation/ (dev_full_859)")
+    parser.add_argument("--save-dataset", action="store_true", help="Persist extracted JSONL to --dataset when extracting from validation/")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output JSON weights path")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
     parser.add_argument("--l2-reg", type=float, default=1.0, help="L2 regularization strength")
     parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="auto")
     args = parser.parse_args()
 
-    X, y, query_ids, source_video_ids = load_ltr_jsonl_dataset(args.dataset)
+    if args.extract_from_val or (args.dataset == DEFAULT_DATASET_PATH and not args.dataset.is_file()):
+        save_path = args.dataset if args.save_dataset else None
+        X, y, query_ids, source_video_ids = extract_dev859_ltr_dataset(
+            val_dir=args.val_dir,
+            save_jsonl_path=save_path,
+        )
+    else:
+        X, y, query_ids, source_video_ids = load_ltr_jsonl_dataset(args.dataset)
     artifact = run_group_kfold_cv(
         X=X,
         y=y,

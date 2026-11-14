@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
 
-from videntra.retrieval.visual import RankedMoment
-from videntra.relations.matcher import GraphMatchResult
+if TYPE_CHECKING:
+    from videntra.relations.matcher import GraphMatchResult
+    from videntra.retrieval.visual import RankedMoment
 
 
 LTR_FEATURE_NAMES: tuple[str, ...] = (

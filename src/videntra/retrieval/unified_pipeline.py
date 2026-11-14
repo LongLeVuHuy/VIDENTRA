@@ -50,7 +50,7 @@ from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
 from videntra.ranking.calibration import calibrate_asr_confidence
 from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_18d
-from videntra.ranking.learned_ranker import LearnedRankerLTR
+from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
 
 
 def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
@@ -496,6 +496,8 @@ class UnifiedMultimodalSearchPipeline:
         beta_hub: float = 0.08,
         search_depth: int = 120,
         lazy_load: bool = False,
+        ltr_model_path: Path | str | None = DEFAULT_LTR_MODEL_PATH,
+        ltr_blend_weight: float = 0.04,
         # Optional pre-injected objects for lightweight testing or server sharing:
         tokenizer: Any | None = None,
         text_model: Any | None = None,
@@ -550,7 +552,8 @@ class UnifiedMultimodalSearchPipeline:
 
         # Phase 7.2 / 7.3 / 7.4 components (fail-safe when local models/artifacts are absent)
         self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
-        self.ltr_ranker = LearnedRankerLTR()
+        self.ltr_blend_weight = float(ltr_blend_weight)
+        self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
         self.e5_text_index: faiss.Index | None = None
         self.e5_text_manifest: list[dict[str, Any]] = []
@@ -1906,6 +1909,7 @@ class UnifiedMultimodalSearchPipeline:
         s_vis_max = max((cl["visual_sim"] for cl in clusters), default=0.0)
         s_vis_floor = s_vis_max - 0.065
         by_video_raw: dict[str, list[tuple[float, float, float, float, str]]] = defaultdict(list)
+        vid_ltr_eligible: set[str] = set()
         k_high_len = len(high_spec_tokens)
         precleaned_qps = [
             split_compound_tokens(qp).strip().lower()
@@ -2065,6 +2069,10 @@ class UnifiedMultimodalSearchPipeline:
             score = v_sim + 2.5 * rrf_primary + lex_boost + synergy_bonus
             branch_str = "+".join(sorted(cl["branches"])) if cl["branches"] else "visual"
 
+            pure_asr_suppressed = bool(base_lex > 0.0 and not is_visually_anchored and not can_enter_case_a)
+            if not pure_asr_suppressed:
+                vid_ltr_eligible.add(cl["video_id"])
+
             rep_t_cl = float(cl["rep_timestamp"])
             by_video_raw[cl["video_id"]].append((
                 float(score),
@@ -2123,6 +2131,7 @@ class UnifiedMultimodalSearchPipeline:
 
             # Targeted Single-Frame Outlier Spike Guard (only when m_count == 1 and pure visual)
             tail_adjustment = 0.0
+            spike_drop_val = 0.0
             if ablation_config != "A0" and m_count == 1 and n_kf >= 3 and best_branch == "visual":
                 sorted_kf_vis = self._video_sorted_visual_scores(
                     vid,
@@ -2133,6 +2142,7 @@ class UnifiedMultimodalSearchPipeline:
                 if len(sorted_kf_vis) >= 2:
                     kf1, kf2 = float(sorted_kf_vis[0]), float(sorted_kf_vis[1])
                     spike_drop = kf1 - kf2
+                    spike_drop_val = max(0.0, spike_drop)
                     if spike_drop > 0.20:
                         tail_adjustment = -0.05 * (spike_drop - 0.20)
                     elif kf2 >= 0.88 * kf1 and kf2 >= 0.42:
@@ -2186,7 +2196,7 @@ class UnifiedMultimodalSearchPipeline:
                 "s_vis_top5_mean": float(top5_mean),
                 "s_vis_ctx_coherence": float(local_window_mean),
                 "s_late_interaction": 0.0,
-                "spike_drop_ratio": 0.0,
+                "spike_drop_ratio": float(spike_drop_val),
                 "rrf_vis": float(best_cl.get("rrf_vis", 0.0)),
                 "rrf_ocr": float(best_cl.get("rrf_ocr", 0.0)),
                 "rrf_asr": float(best_cl.get("rrf_asr", 0.0)),
@@ -2218,7 +2228,7 @@ class UnifiedMultimodalSearchPipeline:
                 match_status=branch_attribution,
             ))
 
-        if self.ltr_ranker.is_loaded and cand_moments:
+        if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
             ltr_matrix = np.vstack([
                 extract_ltr_features_18d(cand_ltr_features[m.video_id], z_stats=z_stats)
                 for m in cand_moments
@@ -2234,7 +2244,11 @@ class UnifiedMultimodalSearchPipeline:
                     end_original_frame_index=m.end_original_frame_index,
                     representative_original_frame_index=m.representative_original_frame_index,
                     representative_timestamp_seconds=m.representative_timestamp_seconds,
-                    ranking_score=float(0.70 * float(m.ranking_score) + 0.30 * float(ltr_sc)),
+                    ranking_score=(
+                        float(m.ranking_score) + self.ltr_blend_weight * float(np.tanh(ltr_sc))
+                        if m.video_id in vid_ltr_eligible
+                        else float(m.ranking_score)
+                    ),
                     match_status=m.match_status,
                 )
                 for m, ltr_sc in zip(cand_moments, ltr_scores.tolist())
