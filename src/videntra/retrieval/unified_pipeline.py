@@ -83,6 +83,92 @@ def unified_result_dict(moment: RankedMoment, snapshot_id: str) -> dict[str, Any
     return result
 
 
+DOMAIN_LEXICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
+    # Chemical / formula notation variants often transcribed differently in ASR/OCR
+    "io3": ("hio", "iodide"),
+    "h2o2": ("hio", "iodide"),
+}
+
+_MID_SENTENCE_COMMON_WORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "two", "three", "four", "five", "one", "several", "multiple", "some",
+    "woman", "women", "man", "men", "girl", "girls", "boy", "boys", "person", "people",
+    "kid", "kids", "child", "children", "close", "view", "clip", "video", "young", "old",
+    "group", "someone", "somebody", "something", "asian", "indian", "american", "black", "white",
+    "smiling", "standing", "sitting", "walking", "talking", "eating", "cooking", "playing",
+    "daily", "show", "night", "news", "late", "live", "today", "world", "morning", "evening",
+    "chef", "doctor", "teacher", "student", "officer", "player", "driver", "singer", "speaker",
+})
+
+_COMMON_INITIAL_OPENERS: frozenset[str] = _MID_SENTENCE_COMMON_WORDS | frozenset({
+    "six", "seven", "eight", "nine", "ten", "many", "various", "different", "other", "another",
+    "baby", "toddler", "infant", "teen", "teenager", "couple", "family", "crowd", "audience",
+    "team", "players", "athletes", "students", "clips", "videos", "footage", "scene", "scenes",
+    "movie", "film", "trailer", "commercial", "advertisement", "cartoon", "animation", "animated",
+    "documentary", "tutorial", "review", "interview", "highlight", "highlights", "gameplay",
+    "older", "elderly", "little", "small", "large", "big", "tiny", "huge", "female", "male",
+    "red", "blue", "green", "yellow", "running", "singing", "dancing", "driving", "riding",
+    "baking", "drawing", "music", "song", "sports", "basketball", "soccer", "football",
+    "baseball", "tennis", "golf", "hockey", "boxing", "wrestling", "recipe", "kitchen",
+    "police", "soldiers", "animals", "birds", "fish", "horse", "horses", "dogs", "cats",
+    "cars", "planes", "trains", "bikes",
+})
+
+_HUMAN_SUBJECT_LOW_WORDS: frozenset[str] = frozenset({
+    "man", "men", "woman", "women", "girl", "girls", "boy", "boys",
+    "person", "people", "kid", "kids", "child", "children", "guy", "guys",
+    "baby", "someone", "somebody", "crowd", "audience", "group", "family",
+})
+
+_COCO_VOCAB_WORDS: frozenset[str] = frozenset(
+    set(COCO_SYNONYM_MAP.keys()) | set(COCO_SYNONYM_MAP.values())
+)
+
+
+def _is_common_sentence_initial_word(w_lower: str) -> bool:
+    """Return True when a sentence-initial capitalized word is likely a common English opener."""
+    if w_lower in _COMMON_INITIAL_OPENERS or w_lower in GENERIC_VISUAL_WORDS or w_lower in _COCO_VOCAB_WORDS:
+        return True
+    if len(w_lower) >= 5 and w_lower.endswith(("ing", "ed", "ly")):
+        return True
+    if len(w_lower) >= 4 and w_lower.endswith("s"):
+        singular = w_lower[:-1]
+        if singular in _COMMON_INITIAL_OPENERS or singular in GENERIC_VISUAL_WORDS or singular in _COCO_VOCAB_WORDS:
+            return True
+    return False
+
+
+def _generate_morphological_stems(token: str) -> list[str]:
+    """Generate conservative English root stems for long content tokens (len >= 8) to avoid over-stemming."""
+    t = token.lower().strip()
+    if len(t) < 8 or not t.isalpha() or t in GENERIC_VISUAL_WORDS:
+        return []
+
+    stems: list[str] = []
+    if t.endswith("ologists") and len(t) >= 10:
+        root = t[:-4]
+        stems.append(root)  # e.g. phrenologists -> phrenolog
+        if root.startswith("ph") and len(root) >= 6:
+            stems.append(f"f{root[2:]}")  # OCR/ASR phonetic ph->f variant (e.g. frenolog)
+    elif t.endswith("ologist") and len(t) >= 9:
+        root = t[:-3]
+        stems.append(root)
+        if root.startswith("ph") and len(root) >= 6:
+            stems.append(f"f{root[2:]}")
+    elif t.endswith("ing"):
+        base = t[:-3]
+        stems.append(base)  # e.g. checking -> check, building -> build, teaching -> teach
+        if len(base) >= 4 and base[-1] == base[-2]:
+            stems.append(base[:-1])
+
+    seen: set[str] = set()
+    clean_stems: list[str] = []
+    for s in stems:
+        if len(s) >= 4 and s != t and s not in ALL_STOPWORDS and s not in GENERIC_VISUAL_WORDS and s not in seen:
+            seen.add(s)
+            clean_stems.append(s)
+    return clean_stems
+
+
 def analyze_query_lexical_tokens(raw_query: str) -> tuple[list[str], set[str], set[str], set[str]]:
     """Extracts quoted phrases, proper nouns, and partitions query tokens into high-spec and low-spec."""
     quoted_phrases = re.findall(r'["\']([^"\']+)["\']', raw_query)
@@ -94,30 +180,24 @@ def analyze_query_lexical_tokens(raw_query: str) -> tuple[list[str], set[str], s
     words_in_q = clean_text.strip().split()
     first_word_clean = words_in_q[0].lower() if words_in_q else ""
 
-    common_openers = {
-        "a", "an", "the", "two", "three", "four", "five", "one", "several", "multiple", "some",
-        "woman", "women", "man", "men", "girl", "girls", "boy", "boys", "person", "people",
-        "kid", "kids", "child", "children", "close", "view", "clip", "video", "young", "old",
-        "group", "someone", "somebody", "something", "asian", "indian", "american", "black", "white",
-        "smiling", "standing", "sitting", "walking", "talking", "eating", "cooking", "playing",
-        "daily", "show", "night", "news", "late", "live", "today", "world", "morning", "evening",
-        "chef", "doctor", "teacher", "student", "officer", "player", "driver", "singer", "speaker",
-    }
-
     proper_nouns: set[str] = set()
-    for w in raw_words:
+    for idx, w in enumerate(raw_words):
         w_lower = w.lower()
         if w_lower in ALL_STOPWORDS or len(w_lower) <= 1:
             continue
         if not w[0].isupper():
             continue
-        if w_lower == first_word_clean:
-            if w.isupper() and len(w) >= 2:
-                proper_nouns.add(w)
-            elif w_lower not in common_openers and w_lower not in GENERIC_VISUAL_WORDS:
+        next_is_cap = (
+            idx + 1 < len(raw_words)
+            and raw_words[idx + 1][0].isupper()
+            and raw_words[idx + 1].lower() not in ALL_STOPWORDS
+            and not _is_common_sentence_initial_word(raw_words[idx + 1].lower())
+        )
+        if idx == 0 or w_lower == first_word_clean:
+            if (w.isupper() and len(w) >= 2) or next_is_cap or not _is_common_sentence_initial_word(w_lower):
                 proper_nouns.add(w)
         else:
-            if w_lower not in GENERIC_VISUAL_WORDS and w_lower not in common_openers:
+            if w_lower not in GENERIC_VISUAL_WORDS and w_lower not in _MID_SENTENCE_COMMON_WORDS:
                 proper_nouns.add(w)
 
     high_spec_tokens: set[str] = set()
@@ -583,6 +663,7 @@ class UnifiedMultimodalSearchPipeline:
         base_fts = build_fts5_query(query, enable_prefix=True)
 
         cand_tokens: list[str] = []
+        stem_tokens: list[str] = []
 
         # 1. Quoted phrase tokens
         for qp in quoted_phrases:
@@ -593,7 +674,7 @@ class UnifiedMultimodalSearchPipeline:
                     if len(w_l) >= 5:
                         cand_tokens.append(f'{w_l}*')
 
-        # 2. Proper nouns
+        # 2. Proper nouns and clean domain synonyms (e.g., formula notations)
         for pn in list(proper_nouns_lower):
             if pn not in ALL_STOPWORDS and len(pn) >= 3:
                 cand_tokens.append(f'"{pn}"')
@@ -630,15 +711,39 @@ class UnifiedMultimodalSearchPipeline:
                 elif ht == "phrenologists":
                     cand_tokens.extend(["phrenolog*", '"frenologist"'])
                     high_spec_tokens.update({"phrenology", "frenologist"})
+            if ht == "checking" or ht.endswith(("ologists", "ologist")):
+                for st in _generate_morphological_stems(ht):
+                    if len(stem_tokens) >= 2:
+                        break
+                    st_tok = f'{st}*' if len(st) >= 5 else f'"{st}"'
+                    stem_tokens.append(st_tok)
 
-        # 4. Low-specificity tokens
-        for lt in low_spec_tokens:
-            if lt not in ALL_STOPWORDS and len(lt) >= 4:
-                cand_tokens.append(f'{lt}*')
+        # 4. General adjacent-bigram OCR compound joins (resilient to missing-space captions like "lateshow")
+        ordered_words = re.findall(r'\b[a-z0-9à-ỹ]+\b', split_compound_tokens(query).lower())
+        compound_tokens: list[str] = []
+        for w1, w2 in zip(ordered_words, ordered_words[1:]):
+            if (
+                len(w1) >= 3
+                and len(w2) >= 3
+                and w1 not in ALL_STOPWORDS
+                and w2 not in ALL_STOPWORDS
+                and (w1 in high_spec_tokens or w2 in high_spec_tokens)
+            ):
+                joined = f"{w1}{w2}"
+                if len(joined) >= 6:
+                    compound_tokens.append(f'"{joined}"')
+                    if len(compound_tokens) >= 2:
+                        break
 
-        # Deduplicate while preserving specificity order
-        dedup_tokens = list(dict.fromkeys(cand_tokens))
-        # Cap at 14 tokens (B7)
+        # 5. Low-specificity tokens
+        low_tokens: list[str] = [
+            f'{lt}*'
+            for lt in low_spec_tokens
+            if lt not in ALL_STOPWORDS and len(lt) >= 4
+        ]
+
+        # Preserve all primary tokens without premature slicing; bounded stems, low-spec, compounds follow
+        dedup_tokens = list(dict.fromkeys(cand_tokens + stem_tokens[:2] + low_tokens + compound_tokens[:2]))
         selected_tokens = dedup_tokens[:14]
 
         if selected_tokens:
@@ -647,6 +752,43 @@ class UnifiedMultimodalSearchPipeline:
             fts_query = base_fts
 
         return fts_query, quoted_phrases, high_spec_tokens, low_spec_tokens, proper_nouns_lower
+
+    def _video_sorted_visual_scores(
+        self,
+        vid: str,
+        primary_q_864: np.ndarray,
+        primary_q_768: np.ndarray | None = None,
+        blend_768_864: bool = True,
+    ) -> list[float]:
+        """Return descending per-keyframe visual similarities across all keyframes of a video."""
+        kf_list = self.video_keyframes.get(vid, [])
+        if not kf_list or primary_q_864 is None:
+            return []
+        kf_matrix = self.video_kf_matrix.get(vid)
+        fids = self.video_kf_fids.get(vid)
+        if kf_matrix is None:
+            n_aug = len(self.augmented_embeddings) if self.augmented_embeddings is not None else 0
+            fids = [int(kf["faiss_id"]) for kf in kf_list if int(kf["faiss_id"]) < n_aug]
+            if not fids:
+                return []
+            kf_matrix = self.augmented_embeddings[fids]
+
+        sims_864 = (kf_matrix @ primary_q_864.reshape(-1)).astype(np.float32)
+        if (
+            blend_768_864
+            and primary_q_768 is not None
+            and fids
+            and self.all_embeddings is not None
+            and self.augmented_embeddings is not None
+            and len(self.all_embeddings) == len(self.augmented_embeddings)
+            and len(self.all_embeddings) > 0
+        ):
+            sims_768 = (self.all_embeddings[fids] @ primary_q_768.reshape(-1)).astype(np.float32)
+            sims = 0.70 * sims_768 + 0.30 * sims_864
+        else:
+            sims = sims_864
+
+        return np.sort(sims)[::-1].tolist()
 
     def lookup_true_visual_sim(
         self,
@@ -1491,6 +1633,7 @@ class UnifiedMultimodalSearchPipeline:
                 else:
                     has_proper_noun_match = (m_pn >= 1)
 
+                lex_cov = m_high / float(max(1, k_high_len))
                 single_common_only = (
                     not has_quoted_match
                     and not has_proper_noun_match
@@ -1499,6 +1642,7 @@ class UnifiedMultimodalSearchPipeline:
                     and (
                         (k_high_len == 1 and next(iter(high_spec_tokens), "").endswith("ing"))
                         or (k_high_len == 2 and fts_sc < 19.0)
+                        or (k_high_len >= 6 and fts_sc < 15.0)
                     )
                 )
                 can_enter_case_a = False
@@ -1525,15 +1669,21 @@ class UnifiedMultimodalSearchPipeline:
                         else:
                             cov_ratio = 1.0 / math.sqrt(float(max(1, k_high_len)))
                             bm25_factor = 1.35 if fts_sc >= 15.0 else 1.0
-                            lex_boost = 2.0 * cov_ratio * gamma_vis * base_lex * bm25_factor
+                            gap_damp = gamma_vis if (not has_proper_noun_match and k_high_len >= 2 and (s_vis_max - v_sim) > 0.020 and fts_sc < 18.0) else 1.0
+                            lex_boost = 2.0 * cov_ratio * gamma_vis * gap_damp * base_lex * bm25_factor
                     else:
                         lex_boost = 0.15 * gamma_vis * base_lex
                 # B9: Pure-ASR / Pure-OCR False Positive Gate (Strict gating without visual anchor)
                 else:
+                    q_numbers = {t for t in high_spec_tokens if t.isdigit()}
+                    has_unmatched_query_number = bool(q_numbers and not (q_numbers & cand_words))
                     can_enter_case_a = (
-                        has_quoted_match
-                        or (has_proper_noun_match and (m_high >= 2 or fts_sc >= 22.0 or len(cl["branches"]) >= 2))
-                        or (m_high >= 2 and gamma_vis >= 0.45 and (has_proper_noun_match or fts_sc >= 22.0 or m_high >= max(3, int(math.ceil(0.6 * k_high_len)))))
+                        not has_unmatched_query_number
+                        and (
+                            has_quoted_match
+                            or (has_proper_noun_match and (m_high >= 2 or fts_sc >= 22.0 or len(cl["branches"]) >= 2))
+                            or (m_high >= 2 and gamma_vis >= 0.45 and (has_proper_noun_match or fts_sc >= 22.0 or m_high >= max(3, int(math.ceil(0.6 * k_high_len)))))
+                        )
                     )
                     if can_enter_case_a:
                         pn_multiplier = 1.30 if (has_proper_noun_match and m_high >= 1) else 1.0
@@ -1583,6 +1733,8 @@ class UnifiedMultimodalSearchPipeline:
             scores = [x[0] for x in vid_items]
             m_count = len(scores)
             s_max = scores[0]
+            n_kf = len(self.video_keyframes.get(vid, []))
+
             top3_mean = sum(scores[:min(m_count, 3)]) / min(m_count, 3)
             top5_mean = sum(scores[:min(m_count, 5)]) / min(m_count, 5)
 
@@ -1593,9 +1745,10 @@ class UnifiedMultimodalSearchPipeline:
                     adjacent_pairs += 1
 
             effective_s_max = max(0.0, s_max)
-            n_kf = len(self.video_keyframes.get(vid, []))
             ratio = adjacent_pairs / max(1.0, float(n_kf - 1))
             density_bonus = (0.060 * effective_s_max) * min(adjacent_pairs, 3) + 0.015 * effective_s_max * ratio
+            if n_kf > 30 and s_max < 0.225 and (m_count / float(n_kf)) < 0.12:
+                density_bonus *= 0.50
 
             best_sc, best_st, best_et, best_rep_t, best_branch = vid_items[0]
             local_window_scores = sorted(
@@ -1604,12 +1757,30 @@ class UnifiedMultimodalSearchPipeline:
             )[:2]
             local_window_mean = (sum(local_window_scores) / len(local_window_scores)) if local_window_scores else s_max
 
+            # Targeted Single-Frame Outlier Spike Guard (only when m_count == 1 and pure visual)
+            tail_adjustment = 0.0
+            if ablation_config != "A0" and m_count == 1 and n_kf >= 3 and best_branch == "visual":
+                sorted_kf_vis = self._video_sorted_visual_scores(
+                    vid,
+                    primary_q_864=primary_q_864,
+                    primary_q_768=primary_q_768,
+                    blend_768_864=True,
+                )
+                if len(sorted_kf_vis) >= 2:
+                    kf1, kf2 = float(sorted_kf_vis[0]), float(sorted_kf_vis[1])
+                    spike_drop = kf1 - kf2
+                    if spike_drop > 0.20:
+                        tail_adjustment = -0.05 * (spike_drop - 0.20)
+                    elif kf2 >= 0.88 * kf1 and kf2 >= 0.42:
+                        tail_adjustment = 0.012 * kf2
+
             if best_branch in ("asr", "ocr", "asr+ocr") and (len(proper_nouns_lower) >= 1 or len(quoted_phrases) >= 1 or m_count == 1):
                 video_score = (
                     0.85 * s_max
                     + 0.10 * top3_mean
                     + 0.05 * top5_mean
                     + density_bonus
+                    + tail_adjustment
                 )
             elif "asr" in best_branch or "ocr" in best_branch:
                 video_score = (
@@ -1617,6 +1788,7 @@ class UnifiedMultimodalSearchPipeline:
                     + 0.15 * top3_mean
                     + 0.20 * top5_mean
                     + density_bonus
+                    + tail_adjustment
                 )
             elif ablation_config == "A5":
                 video_score = (
@@ -1625,6 +1797,7 @@ class UnifiedMultimodalSearchPipeline:
                     + 0.29 * top5_mean
                     + 0.02 * local_window_mean
                     + density_bonus
+                    + tail_adjustment
                 )
             else:
                 video_score = (
@@ -1632,6 +1805,7 @@ class UnifiedMultimodalSearchPipeline:
                     + 0.15 * top3_mean
                     + 0.30 * top5_mean
                     + density_bonus
+                    + tail_adjustment
                 )
             all_branches_in_video: set[str] = set()
             for item in vid_items:

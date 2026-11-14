@@ -308,7 +308,7 @@ videntra evaluate `
 ```powershell
 python -B -m pytest -q -p no:cacheprovider
 ```
-Kết quả kiểm thử toàn diện gần nhất sau khi hoàn thiện codebase (Windows CPU): **399 passed (0 failed)** trong ~62.1s.
+Kết quả kiểm thử toàn diện gần nhất sau khi hoàn thiện Phase 6 (Windows CPU): **402 passed (0 failed)** trong ~88.8s.
 
 Hoặc kiểm tra riêng từng lớp thành phần:
 ```powershell
@@ -332,14 +332,16 @@ pytest -q tests/registry/test_asset_roots.py
 
 ## 7. Hiệu năng & Giới hạn Kỹ thuật đã Ghi nhận
 
-Số liệu tham khảo từ báo cáo kiểm toán nội bộ [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md) (đo trên kho 1,324 video / 11,179 keyframes 864d, phần cứng **Intel Core i5-7300U CPU, 32GB RAM, Local SSD**):
+Số liệu tham khảo từ báo cáo kiểm toán [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md) (đo trên kho 1,324 video / 11,179 keyframes 864d, phần cứng **Intel Core i5-7300U CPU, 32GB RAM, Local SSD**):
 
 - **Tập `dev_150` (150 queries):**
-  - Mốc kiểm toán gốc tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md): Video Hit@1 **61.33%** (92/150), MRR **0.6540**, Video nDCG@10 **0.6763**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%** (16/22), **0 ca** Pure-ASR False Positive Top-1.
-  - Sau nâng cấp Phase 5 (đo read-only trực tiếp trên cùng tập `dev_150` với `A5`): Video Hit@1 đạt **62.00%** (93/150), Hit@5 **71.33%**, Hit@10 **74.67%**, MRR **0.6584**, Video nDCG@10 **0.6796**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%**, Moment nDCG@5 **0.5303**.
-- **Độ trễ truy vấn (CPU-only, tham chiếu [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md)):** Non-neural retrieval trung vị `p50 = 26.46 ms` (`p95 = 46.92 ms`); Cold query (bao gồm SigLIP 2 Text Encoding trên CPU) `p50 = 250.93 ms` (`p95 = 317.82 ms`).
-- **Bộ nhớ tiêu thụ:** RSS **420.0 MB**, Peak Working Set **580.0 MB**.
-- **Tập mở rộng (mốc kiểm toán trước Phase 5):** `dev_full_859` đạt Video Hit@1 **41.68%**, MRR **0.5012**; `heldout_test_201` đạt Video Hit@1 **38.81%**, MRR **0.4733** (chi tiết phân tích sai số `F1..F5` xem tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md)).
+  - Mốc kiểm toán P4 tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md): Video Hit@1 **61.33%** (92/150), MRR **0.6540**, Video nDCG@10 **0.6763**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%** (16/22), **0 ca** Pure-ASR False Positive Top-1.
+  - Sau nâng cấp **Phase 6** (cập nhật [`benchmark/benchmark_summary.json`](benchmark/benchmark_summary.json), sử dụng SigLIP 2 text embedding disk cache): Video Hit@1 **62.00%** (93/150), Hit@5 **70.67%**, Hit@10 **74.67%**, MRR **0.6582**, Video nDCG@10 **0.6794**, MSRVTT Hit@1 **48.00%**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%**, `F4` giảm từ `28 -> 27`, **0 ca** Pure-ASR FP.
+- **Tập mở rộng & Held-out Test (Phase 6 Multi-Split):**
+  - **`dev_full_859` (859 queries):** Video Hit@1 **41.68%** (358/859), MRR **0.5018** (tăng từ 0.5012), Video nDCG@10 **0.5465** (tăng từ 0.5455), `Pure-ASR FP = 0` (giảm từ 1).
+  - **`heldout_test_201` (201 queries chưa từng tune):** Video Hit@1 **39.30%** (79/201, tăng từ 38.81%), MRR **0.4774** (tăng từ 0.4733), Video nDCG@10 **0.5258** (tăng từ 0.5226), MSRVTT Hit@1 **37.70%**, `Pure-ASR FP = 0`.
+  - Chi tiết chẩn đoán **Overfitting / Mix Shift** và phân loại lỗi `F1..F5` xem tại Mục 8 trong [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md).
+- **Độ trễ & Bộ nhớ (CPU-only):** Non-neural retrieval khi đánh giá Phase 6 đạt trung vị `p50 = 24.27 ms` (`p95 = 106.01 ms`). Phép đo tham chiếu P4 cho cold query (bao gồm SigLIP 2 Text Encoding CPU) đạt `p50 = 250.93 ms` (`p95 = 317.82 ms`), RSS **420.0 MB**, Peak Working Set **580.0 MB** (các chỉ tiêu cold latency/RAM đánh dấu `NOT_MEASURED` trong lần chạy cache Phase 6).
 
 **Giới hạn trung thực:**
 1. Chưa công bố số liệu benchmark chính thức trên phần cứng đích NVIDIA RTX 3060 6GB VRAM vì quá trình đo vừa qua thực hiện trên máy CPU thử nghiệm và GPU Kaggle Tesla T4 cho tác vụ offline extraction.

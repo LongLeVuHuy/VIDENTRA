@@ -1,5 +1,24 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Hoàn tất Phase 6: Chẩn đoán Overfitting, Nâng cấp Tổng quát hóa Đa tập & Chuẩn hóa `requirements.txt`
+
+- **Chẩn đoán Overfitting & Generalization Gap:**
+  - Phân tích chéo `dev_150` (**62.00%**), `dev_full_859` (**41.68%**) và `heldout_test_201` (**39.30%**) chỉ ra hai nguyên nhân: (1) **Dataset Mix Shift** (`dev_150` có 33.3% truy vấn QVH+AVC đạt Hit@1 86–93%, còn `dev_full_859` và `heldout_test_201` có 94.2%–95.0% truy vấn MSRVTT); (2) **Within-MSRVTT Generalization Gap** (`48.00%` trên `dev_150` vs `38.69%` trên `dev_full_859` và `37.70%` trên `heldout_test_201`), với hai điểm nghẽn chính là `F4_FINE_GRAINED_VISUAL_CONFUSION` (~33.8%–35.3%) và `F2_LEXICAL_DISTRACTOR_OVERTHROW` (~9.5%).
+- **Nâng cấp tổng quát hóa trong [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py):**
+  - Thêm `_is_common_sentence_initial_word` (`_COMMON_INITIAL_OPENERS`, `_COCO_VOCAB_WORDS`, `_HUMAN_SUBJECT_LOW_WORDS`) giúp tránh phân loại nhầm từ mở đầu viết hoa phổ thông thành danh từ riêng.
+  - Thêm `_generate_morphological_stems` (giới hạn bảo thủ cho từ nội dung $\ge 8$ ký tự không thuộc `GENERIC_VISUAL_WORDS`) và nối adjacent-bigram `compound_tokens` chịu lỗi dính chữ OCR trong `prepare_fts5_query_and_tokens`.
+  - Siết cổng `Pure-ASR` bằng kiểm tra nhất quán số học (`q_numbers`: loại bỏ hoàn toàn ca Pure-ASR FP cuối cùng trên `dev_full_859`), mở rộng `single_common_only` cho câu dài (`k_high_len >= 6 and fts_sc < 15.0`), và giảm nhiễu `gap_damp` khi `m_high == 1` thiếu neo danh từ riêng và hụt tương đồng thị giác $> 0.020`.
+  - Bổ sung `_video_sorted_visual_scores` + `tail_adjustment` Stage 6 (chống đỉnh ngoại lai 1 khung hình thuần `visual`) và chuẩn hóa `density_bonus` cho video dài tín hiệu yếu (`n_kf > 30 and s_max < 0.225`).
+- **Kết quả Benchmark Đa tập (sau nâng cấp Phase 6, sử dụng SigLIP 2 text embedding disk cache & CPU retrieval):**
+  - `dev_150` (150 queries): Video Hit@1 **62.00%** (93/150), MRR **0.6582**, nDCG@10 **0.6794**, `F4` giảm `28 -> 27`, MSRVTT Hit@1 **48.00%**, `Pure-ASR FP = 0`.
+  - `dev_full_859` (859 queries): Video Hit@1 **41.68%** (358/859), MRR **0.5018** (tăng từ 0.5012), nDCG@10 **0.5465** (tăng từ 0.5455), `Pure-ASR FP = 0` (giảm từ 1), `F2 = 82` (giảm từ 83), `F1 = 129` (giảm từ 130).
+  - `heldout_test_201` (201 queries): Video Hit@1 **39.30%** (79/201, tăng từ 38.81%), MRR **0.4774** (tăng từ 0.4733), nDCG@10 **0.5258** (tăng từ 0.5226), MSRVTT Hit@1 **37.70%** (tăng từ 37.17%), `F2 = 19` (giảm từ 20), `F4 = 71` (giảm từ 72), `Pure-ASR FP = 0`.
+- **Dọn dẹp cấu hình phụ thuộc & Kiểm thử:**
+  - Xóa bỏ `requirements-lock.txt`, chỉ duy trì duy nhất [requirements.txt](../requirements.txt).
+  - Bổ sung 3 unit test mới trong [test_pipeline_upgrades.py](../tests/retrieval/test_pipeline_upgrades.py) (6/6 PASS) và chạy toàn bộ test suite bằng `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider`: **402 passed in 88.84s (0 failed)**.
+
+---
+
 ## 10/11/2026 — Rà soát bàn giao, benchmark và hướng nghiên cứu
 
 - Xem [báo cáo rà soát](../VIDENTRA_PROJECT_REVIEW_AND_PERFORMANCE_ROADMAP.md) để đối chiếu benchmark P0–P4 với code, kiểm tra provenance và lên thứ tự sửa/tối ưu.

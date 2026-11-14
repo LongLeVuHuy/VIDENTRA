@@ -1,33 +1,33 @@
 {
-  "status": "completed",
-  "benchmark_timestamp": "2026-11-08 16:18:04",
-  "git_sha": "nogit",
+  "status": "completed_phase6",
+  "benchmark_timestamp": "2026-11-14 15:07:09",
+  "git_sha": "4742a7e",
   "total_queries_evaluated": 150,
   "metrics_overall": {
-    "video_hit_at_1": 0.6133,
+    "video_hit_at_1": 0.62,
     "video_hit_at_1_ci95": [
-      0.5333,
+      0.54,
       0.6933
     ],
-    "video_hit_at_5": 0.72,
+    "video_hit_at_5": 0.7067,
     "video_hit_at_10": 0.7467,
-    "mean_reciprocal_rank_mrr": 0.654,
+    "mean_reciprocal_rank_mrr": 0.6582,
     "mrr_ci95": [
-      0.5823,
-      0.7227
+      0.5865,
+      0.7262
     ],
-    "video_ndcg_at_1": 0.6133,
-    "video_ndcg_at_5": 0.6674,
-    "video_ndcg_at_10": 0.6763,
+    "video_ndcg_at_1": 0.62,
+    "video_ndcg_at_5": 0.6657,
+    "video_ndcg_at_10": 0.6794,
     "video_ndcg_at_10_ci95": [
-      0.6079,
-      0.7389
+      0.6114,
+      0.7451
     ],
-    "within_dataset_hit_at_1": 0.64,
-    "within_dataset_hit_at_5": 0.7467,
+    "within_dataset_hit_at_1": 0.6467,
+    "within_dataset_hit_at_5": 0.74,
     "within_dataset_hit_at_10": 0.78,
-    "within_dataset_mrr": 0.6826,
-    "within_dataset_ndcg_at_10": 0.706,
+    "within_dataset_mrr": 0.6874,
+    "within_dataset_ndcg_at_10": 0.7096,
     "moment_hit_at_1_iou03": 0.7727,
     "moment_hit_at_1_iou05": 0.7273,
     "moment_hit_at_1_iou05_ci95": [
@@ -35,41 +35,43 @@
       0.9091
     ],
     "moment_hit_at_1_iou07": 0.4545,
-    "moment_ndcg_at_5": 0.5323,
+    "moment_ndcg_at_5": 0.5127,
     "moment_ndcg_at_5_ci95": [
-      0.3654,
-      0.6893
+      0.3342,
+      0.6749
     ],
-    "moment_ndcg_at_10": 0.5314,
-    "moment_map_at_05": 0.5975,
-    "moment_map_at_075": 0.3561,
-    "moment_map_range_05_095": 0.3493,
-    "mean_boundary_mae_sec": 13.82,
+    "moment_ndcg_at_10": 0.528,
+    "moment_map_at_05": 0.5937,
+    "moment_map_at_075": 0.3523,
+    "moment_map_range_05_095": 0.3463,
+    "mean_boundary_mae_sec": 6.91,
+    "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
+    "boundary_mae_n": 16,
     "pure_asr_fp_top1_count": 0,
     "branch_recall": {
-      "visual_recall_at_30": 0.7667,
+      "visual_recall_at_30": 0.7733,
       "visual_recall_at_120": 0.82,
       "lexical_recall_at_30": 0.3133,
       "fused_recall_at_10": 0.7467
     },
     "failure_taxonomy": {
-      "PASS": 89,
-      "F4_FINE_GRAINED_VISUAL_CONFUSION": 28,
+      "PASS": 90,
+      "F4_FINE_GRAINED_VISUAL_CONFUSION": 27,
       "F5_BOUNDARY_LOCALIZATION_DRIFT": 3,
       "F2_LEXICAL_DISTRACTOR_OVERTHROW": 8,
       "F1_VISUAL_CANDIDATE_MISS": 22
     },
-    "latency_mean_ms": 30.94,
-    "latency_p50_ms": 27.75,
-    "latency_p95_ms": 48.89,
-    "non_neural_latency_mean_ms": 29.48,
-    "non_neural_latency_p50_ms": 26.46,
-    "non_neural_latency_p95_ms": 46.92,
+    "latency_mean_ms": 36.84,
+    "latency_p50_ms": 26.54,
+    "latency_p95_ms": 117.74,
+    "non_neural_latency_mean_ms": 34.76,
+    "non_neural_latency_p50_ms": 24.27,
+    "non_neural_latency_p95_ms": 106.01,
     "stage_latencies_p50_ms": {
-      "faiss_ms": 12.69,
-      "fts5_ms": 3.21,
-      "fusion_ms": 7.16,
-      "boundary_ms": 2.0
+      "faiss_ms": 5.31,
+      "fts5_ms": 4.36,
+      "fusion_ms": 11.64,
+      "boundary_ms": 2.37
     },
     "pvalue_vs_a0_hit1": 0.0005,
     "pvalue_vs_a0_mrr": 0.0005,
@@ -87,16 +89,16 @@
         0.7273,
         1.0
       ],
-      "hit_at_5": 0.9545,
+      "hit_at_5": 0.9091,
       "hit_at_10": 0.9545,
-      "mrr": 0.8902,
+      "mrr": 0.8864,
       "mrr_ci95": [
-        0.7651,
+        0.7576,
         1.0
       ],
       "video_ndcg_at_1": 0.8636,
-      "video_ndcg_at_5": 0.9059,
-      "video_ndcg_at_10": 0.9059,
+      "video_ndcg_at_5": 0.8864,
+      "video_ndcg_at_10": 0.9026,
       "within_dataset_hit_at_1": 0.9545,
       "within_dataset_hit_at_5": 1.0,
       "within_dataset_hit_at_10": 1.0,
@@ -105,17 +107,17 @@
       "moment_hit_at_1_iou03": 0.7727,
       "moment_hit_at_1_iou05": 0.7273,
       "moment_hit_at_1_iou07": 0.4545,
-      "moment_ndcg_at_5": 0.5323,
-      "moment_ndcg_at_10": 0.5314,
-      "moment_map_at_05": 0.5975,
-      "moment_map_at_075": 0.3561,
-      "moment_map_range_05_095": 0.3493,
+      "moment_ndcg_at_5": 0.5127,
+      "moment_ndcg_at_10": 0.528,
+      "moment_map_at_05": 0.5937,
+      "moment_map_at_075": 0.3523,
+      "moment_map_range_05_095": 0.3463,
       "visual_recall_at_30": 0.9091,
       "visual_recall_at_120": 0.9545,
       "lexical_recall_at_30": 0.2727,
       "fused_recall_at_10": 0.9545,
-      "latency_p50_ms": 35.09,
-      "non_neural_latency_p50_ms": 33.05
+      "latency_p50_ms": 34.13,
+      "non_neural_latency_p50_ms": 30.81
     },
     "avc": {
       "queries": 28,
@@ -151,31 +153,31 @@
       "visual_recall_at_120": 0.8214,
       "lexical_recall_at_30": 0.75,
       "fused_recall_at_10": 0.9286,
-      "latency_p50_ms": 38.17,
-      "non_neural_latency_p50_ms": 35.4
+      "latency_p50_ms": 25.98,
+      "non_neural_latency_p50_ms": 24.8
     },
     "msrvtt": {
       "queries": 100,
-      "hit_at_1": 0.47,
+      "hit_at_1": 0.48,
       "hit_at_1_ci95": [
-        0.37,
-        0.57
+        0.38,
+        0.5802
       ],
-      "hit_at_5": 0.61,
+      "hit_at_5": 0.6,
       "hit_at_10": 0.65,
-      "mrr": 0.5251,
+      "mrr": 0.5323,
       "mrr_ci95": [
-        0.4357,
-        0.6204
+        0.4399,
+        0.6249
       ],
-      "video_ndcg_at_1": 0.47,
-      "video_ndcg_at_5": 0.5418,
-      "video_ndcg_at_10": 0.5551,
-      "within_dataset_hit_at_1": 0.49,
-      "within_dataset_hit_at_5": 0.63,
+      "video_ndcg_at_1": 0.48,
+      "video_ndcg_at_5": 0.5436,
+      "video_ndcg_at_10": 0.5605,
+      "within_dataset_hit_at_1": 0.5,
+      "within_dataset_hit_at_5": 0.62,
       "within_dataset_hit_at_10": 0.68,
-      "within_dataset_mrr": 0.5464,
-      "within_dataset_ndcg_at_10": 0.5785,
+      "within_dataset_mrr": 0.5536,
+      "within_dataset_ndcg_at_10": 0.5838,
       "moment_hit_at_1_iou03": 0.0,
       "moment_hit_at_1_iou05": 0.0,
       "moment_hit_at_1_iou07": 0.0,
@@ -184,12 +186,12 @@
       "moment_map_at_05": 0.0,
       "moment_map_at_075": 0.0,
       "moment_map_range_05_095": 0.0,
-      "visual_recall_at_30": 0.72,
+      "visual_recall_at_30": 0.73,
       "visual_recall_at_120": 0.79,
       "lexical_recall_at_30": 0.2,
       "fused_recall_at_10": 0.65,
-      "latency_p50_ms": 25.23,
-      "non_neural_latency_p50_ms": 24.02
+      "latency_p50_ms": 25.07,
+      "non_neural_latency_p50_ms": 22.89
     }
   },
   "multi_split_evaluation": {
@@ -198,30 +200,30 @@
       "ablation_config": "A5",
       "total_queries_evaluated": 150,
       "metrics_overall": {
-        "video_hit_at_1": 0.6133,
+        "video_hit_at_1": 0.62,
         "video_hit_at_1_ci95": [
-          0.5333,
+          0.54,
           0.6933
         ],
-        "video_hit_at_5": 0.72,
+        "video_hit_at_5": 0.7067,
         "video_hit_at_10": 0.7467,
-        "mean_reciprocal_rank_mrr": 0.654,
+        "mean_reciprocal_rank_mrr": 0.6582,
         "mrr_ci95": [
-          0.5823,
-          0.7227
+          0.5865,
+          0.7262
         ],
-        "video_ndcg_at_1": 0.6133,
-        "video_ndcg_at_5": 0.6674,
-        "video_ndcg_at_10": 0.6763,
+        "video_ndcg_at_1": 0.62,
+        "video_ndcg_at_5": 0.6657,
+        "video_ndcg_at_10": 0.6794,
         "video_ndcg_at_10_ci95": [
-          0.6079,
-          0.7389
+          0.6114,
+          0.7451
         ],
-        "within_dataset_hit_at_1": 0.64,
-        "within_dataset_hit_at_5": 0.7467,
+        "within_dataset_hit_at_1": 0.6467,
+        "within_dataset_hit_at_5": 0.74,
         "within_dataset_hit_at_10": 0.78,
-        "within_dataset_mrr": 0.6826,
-        "within_dataset_ndcg_at_10": 0.706,
+        "within_dataset_mrr": 0.6874,
+        "within_dataset_ndcg_at_10": 0.7096,
         "moment_hit_at_1_iou03": 0.7727,
         "moment_hit_at_1_iou05": 0.7273,
         "moment_hit_at_1_iou05_ci95": [
@@ -229,41 +231,43 @@
           0.9091
         ],
         "moment_hit_at_1_iou07": 0.4545,
-        "moment_ndcg_at_5": 0.5323,
+        "moment_ndcg_at_5": 0.5127,
         "moment_ndcg_at_5_ci95": [
-          0.3654,
-          0.6893
+          0.3342,
+          0.6749
         ],
-        "moment_ndcg_at_10": 0.5314,
-        "moment_map_at_05": 0.5975,
-        "moment_map_at_075": 0.3561,
-        "moment_map_range_05_095": 0.3493,
-        "mean_boundary_mae_sec": 13.82,
+        "moment_ndcg_at_10": 0.528,
+        "moment_map_at_05": 0.5937,
+        "moment_map_at_075": 0.3523,
+        "moment_map_range_05_095": 0.3463,
+        "mean_boundary_mae_sec": 6.91,
+        "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
+        "boundary_mae_n": 16,
         "pure_asr_fp_top1_count": 0,
         "branch_recall": {
-          "visual_recall_at_30": 0.7667,
+          "visual_recall_at_30": 0.7733,
           "visual_recall_at_120": 0.82,
           "lexical_recall_at_30": 0.3133,
           "fused_recall_at_10": 0.7467
         },
         "failure_taxonomy": {
-          "PASS": 89,
-          "F4_FINE_GRAINED_VISUAL_CONFUSION": 28,
+          "PASS": 90,
+          "F4_FINE_GRAINED_VISUAL_CONFUSION": 27,
           "F5_BOUNDARY_LOCALIZATION_DRIFT": 3,
           "F2_LEXICAL_DISTRACTOR_OVERTHROW": 8,
           "F1_VISUAL_CANDIDATE_MISS": 22
         },
-        "latency_mean_ms": 30.94,
-        "latency_p50_ms": 27.75,
-        "latency_p95_ms": 48.89,
-        "non_neural_latency_mean_ms": 29.48,
-        "non_neural_latency_p50_ms": 26.46,
-        "non_neural_latency_p95_ms": 46.92,
+        "latency_mean_ms": 36.84,
+        "latency_p50_ms": 26.54,
+        "latency_p95_ms": 117.74,
+        "non_neural_latency_mean_ms": 34.76,
+        "non_neural_latency_p50_ms": 24.27,
+        "non_neural_latency_p95_ms": 106.01,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 12.69,
-          "fts5_ms": 3.21,
-          "fusion_ms": 7.16,
-          "boundary_ms": 2.0
+          "faiss_ms": 5.31,
+          "fts5_ms": 4.36,
+          "fusion_ms": 11.64,
+          "boundary_ms": 2.37
         },
         "pvalue_vs_a0_hit1": 0.0005,
         "pvalue_vs_a0_mrr": 0.0005,
@@ -281,16 +285,16 @@
             0.7273,
             1.0
           ],
-          "hit_at_5": 0.9545,
+          "hit_at_5": 0.9091,
           "hit_at_10": 0.9545,
-          "mrr": 0.8902,
+          "mrr": 0.8864,
           "mrr_ci95": [
-            0.7651,
+            0.7576,
             1.0
           ],
           "video_ndcg_at_1": 0.8636,
-          "video_ndcg_at_5": 0.9059,
-          "video_ndcg_at_10": 0.9059,
+          "video_ndcg_at_5": 0.8864,
+          "video_ndcg_at_10": 0.9026,
           "within_dataset_hit_at_1": 0.9545,
           "within_dataset_hit_at_5": 1.0,
           "within_dataset_hit_at_10": 1.0,
@@ -299,17 +303,17 @@
           "moment_hit_at_1_iou03": 0.7727,
           "moment_hit_at_1_iou05": 0.7273,
           "moment_hit_at_1_iou07": 0.4545,
-          "moment_ndcg_at_5": 0.5323,
-          "moment_ndcg_at_10": 0.5314,
-          "moment_map_at_05": 0.5975,
-          "moment_map_at_075": 0.3561,
-          "moment_map_range_05_095": 0.3493,
+          "moment_ndcg_at_5": 0.5127,
+          "moment_ndcg_at_10": 0.528,
+          "moment_map_at_05": 0.5937,
+          "moment_map_at_075": 0.3523,
+          "moment_map_range_05_095": 0.3463,
           "visual_recall_at_30": 0.9091,
           "visual_recall_at_120": 0.9545,
           "lexical_recall_at_30": 0.2727,
           "fused_recall_at_10": 0.9545,
-          "latency_p50_ms": 35.09,
-          "non_neural_latency_p50_ms": 33.05
+          "latency_p50_ms": 34.13,
+          "non_neural_latency_p50_ms": 30.81
         },
         "avc": {
           "queries": 28,
@@ -345,31 +349,31 @@
           "visual_recall_at_120": 0.8214,
           "lexical_recall_at_30": 0.75,
           "fused_recall_at_10": 0.9286,
-          "latency_p50_ms": 38.17,
-          "non_neural_latency_p50_ms": 35.4
+          "latency_p50_ms": 25.98,
+          "non_neural_latency_p50_ms": 24.8
         },
         "msrvtt": {
           "queries": 100,
-          "hit_at_1": 0.47,
+          "hit_at_1": 0.48,
           "hit_at_1_ci95": [
-            0.37,
-            0.57
+            0.38,
+            0.5802
           ],
-          "hit_at_5": 0.61,
+          "hit_at_5": 0.6,
           "hit_at_10": 0.65,
-          "mrr": 0.5251,
+          "mrr": 0.5323,
           "mrr_ci95": [
-            0.4357,
-            0.6204
+            0.4399,
+            0.6249
           ],
-          "video_ndcg_at_1": 0.47,
-          "video_ndcg_at_5": 0.5418,
-          "video_ndcg_at_10": 0.5551,
-          "within_dataset_hit_at_1": 0.49,
-          "within_dataset_hit_at_5": 0.63,
+          "video_ndcg_at_1": 0.48,
+          "video_ndcg_at_5": 0.5436,
+          "video_ndcg_at_10": 0.5605,
+          "within_dataset_hit_at_1": 0.5,
+          "within_dataset_hit_at_5": 0.62,
           "within_dataset_hit_at_10": 0.68,
-          "within_dataset_mrr": 0.5464,
-          "within_dataset_ndcg_at_10": 0.5785,
+          "within_dataset_mrr": 0.5536,
+          "within_dataset_ndcg_at_10": 0.5838,
           "moment_hit_at_1_iou03": 0.0,
           "moment_hit_at_1_iou05": 0.0,
           "moment_hit_at_1_iou07": 0.0,
@@ -378,12 +382,12 @@
           "moment_map_at_05": 0.0,
           "moment_map_at_075": 0.0,
           "moment_map_range_05_095": 0.0,
-          "visual_recall_at_30": 0.72,
+          "visual_recall_at_30": 0.73,
           "visual_recall_at_120": 0.79,
           "lexical_recall_at_30": 0.2,
           "fused_recall_at_10": 0.65,
-          "latency_p50_ms": 25.23,
-          "non_neural_latency_p50_ms": 24.02
+          "latency_p50_ms": 25.07,
+          "non_neural_latency_p50_ms": 22.89
         }
       }
     },
@@ -395,27 +399,27 @@
         "video_hit_at_1": 0.4168,
         "video_hit_at_1_ci95": [
           0.3842,
-          0.4505
+          0.4494
         ],
-        "video_hit_at_5": 0.6217,
-        "video_hit_at_10": 0.6857,
-        "mean_reciprocal_rank_mrr": 0.5012,
+        "video_hit_at_5": 0.6205,
+        "video_hit_at_10": 0.688,
+        "mean_reciprocal_rank_mrr": 0.5018,
         "mrr_ci95": [
-          0.4721,
-          0.5312
+          0.473,
+          0.5317
         ],
         "video_ndcg_at_1": 0.4168,
-        "video_ndcg_at_5": 0.5248,
-        "video_ndcg_at_10": 0.5455,
+        "video_ndcg_at_5": 0.5245,
+        "video_ndcg_at_10": 0.5465,
         "video_ndcg_at_10_ci95": [
-          0.5173,
-          0.5742
+          0.5183,
+          0.5752
         ],
-        "within_dataset_hit_at_1": 0.4517,
-        "within_dataset_hit_at_5": 0.6508,
-        "within_dataset_hit_at_10": 0.7218,
-        "within_dataset_mrr": 0.5362,
-        "within_dataset_ndcg_at_10": 0.5808,
+        "within_dataset_hit_at_1": 0.4482,
+        "within_dataset_hit_at_5": 0.6519,
+        "within_dataset_hit_at_10": 0.7229,
+        "within_dataset_mrr": 0.5346,
+        "within_dataset_ndcg_at_10": 0.5798,
         "moment_hit_at_1_iou03": 0.7727,
         "moment_hit_at_1_iou05": 0.7273,
         "moment_hit_at_1_iou05_ci95": [
@@ -423,41 +427,43 @@
           0.9091
         ],
         "moment_hit_at_1_iou07": 0.4545,
-        "moment_ndcg_at_5": 0.5323,
+        "moment_ndcg_at_5": 0.5127,
         "moment_ndcg_at_5_ci95": [
-          0.3654,
-          0.6893
+          0.3342,
+          0.6749
         ],
-        "moment_ndcg_at_10": 0.5314,
-        "moment_map_at_05": 0.5975,
-        "moment_map_at_075": 0.3561,
-        "moment_map_range_05_095": 0.3493,
-        "mean_boundary_mae_sec": 13.82,
-        "pure_asr_fp_top1_count": 1,
+        "moment_ndcg_at_10": 0.528,
+        "moment_map_at_05": 0.5937,
+        "moment_map_at_075": 0.3523,
+        "moment_map_range_05_095": 0.3463,
+        "mean_boundary_mae_sec": 6.91,
+        "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
+        "boundary_mae_n": 16,
+        "pure_asr_fp_top1_count": 0,
         "branch_recall": {
-          "visual_recall_at_30": 0.7858,
-          "visual_recall_at_120": 0.8428,
+          "visual_recall_at_30": 0.787,
+          "visual_recall_at_120": 0.844,
           "lexical_recall_at_30": 0.1979,
-          "fused_recall_at_10": 0.6868
+          "fused_recall_at_10": 0.6892
         },
         "failure_taxonomy": {
           "PASS": 355,
-          "F4_FINE_GRAINED_VISUAL_CONFUSION": 288,
+          "F4_FINE_GRAINED_VISUAL_CONFUSION": 290,
           "F5_BOUNDARY_LOCALIZATION_DRIFT": 3,
-          "F2_LEXICAL_DISTRACTOR_OVERTHROW": 83,
-          "F1_VISUAL_CANDIDATE_MISS": 130
+          "F2_LEXICAL_DISTRACTOR_OVERTHROW": 82,
+          "F1_VISUAL_CANDIDATE_MISS": 129
         },
-        "latency_mean_ms": 44.27,
-        "latency_p50_ms": 40.85,
-        "latency_p95_ms": 64.27,
-        "non_neural_latency_mean_ms": 42.34,
-        "non_neural_latency_p50_ms": 39.0,
-        "non_neural_latency_p95_ms": 62.11,
+        "latency_mean_ms": 32.05,
+        "latency_p50_ms": 23.97,
+        "latency_p95_ms": 72.66,
+        "non_neural_latency_mean_ms": 30.55,
+        "non_neural_latency_p50_ms": 22.4,
+        "non_neural_latency_p95_ms": 65.8,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 18.96,
-          "fts5_ms": 3.47,
-          "fusion_ms": 12.63,
-          "boundary_ms": 2.35
+          "faiss_ms": 5.29,
+          "fts5_ms": 3.56,
+          "fusion_ms": 10.0,
+          "boundary_ms": 2.23
         }
       },
       "per_dataset_metrics": {
@@ -468,16 +474,16 @@
             0.7273,
             1.0
           ],
-          "hit_at_5": 0.9545,
+          "hit_at_5": 0.9091,
           "hit_at_10": 0.9545,
-          "mrr": 0.8902,
+          "mrr": 0.8864,
           "mrr_ci95": [
-            0.7651,
+            0.7576,
             1.0
           ],
           "video_ndcg_at_1": 0.8636,
-          "video_ndcg_at_5": 0.9059,
-          "video_ndcg_at_10": 0.9059,
+          "video_ndcg_at_5": 0.8864,
+          "video_ndcg_at_10": 0.9026,
           "within_dataset_hit_at_1": 0.9545,
           "within_dataset_hit_at_5": 1.0,
           "within_dataset_hit_at_10": 1.0,
@@ -486,17 +492,17 @@
           "moment_hit_at_1_iou03": 0.7727,
           "moment_hit_at_1_iou05": 0.7273,
           "moment_hit_at_1_iou07": 0.4545,
-          "moment_ndcg_at_5": 0.5323,
-          "moment_ndcg_at_10": 0.5314,
-          "moment_map_at_05": 0.5975,
-          "moment_map_at_075": 0.3561,
-          "moment_map_range_05_095": 0.3493,
+          "moment_ndcg_at_5": 0.5127,
+          "moment_ndcg_at_10": 0.528,
+          "moment_map_at_05": 0.5937,
+          "moment_map_at_075": 0.3523,
+          "moment_map_range_05_095": 0.3463,
           "visual_recall_at_30": 0.9091,
           "visual_recall_at_120": 0.9545,
           "lexical_recall_at_30": 0.2727,
           "fused_recall_at_10": 0.9545,
-          "latency_p50_ms": 47.41,
-          "non_neural_latency_p50_ms": 46.04
+          "latency_p50_ms": 23.89,
+          "non_neural_latency_p50_ms": 22.61
         },
         "avc": {
           "queries": 28,
@@ -532,31 +538,31 @@
           "visual_recall_at_120": 0.8214,
           "lexical_recall_at_30": 0.75,
           "fused_recall_at_10": 0.9286,
-          "latency_p50_ms": 51.98,
-          "non_neural_latency_p50_ms": 50.21
+          "latency_p50_ms": 28.05,
+          "non_neural_latency_p50_ms": 26.7
         },
         "msrvtt": {
           "queries": 809,
           "hit_at_1": 0.3869,
           "hit_at_1_ci95": [
-            0.351,
+            0.3523,
             0.4215
           ],
           "hit_at_5": 0.602,
-          "hit_at_10": 0.67,
-          "mrr": 0.4759,
+          "hit_at_10": 0.6724,
+          "mrr": 0.4766,
           "mrr_ci95": [
-            0.4432,
-            0.5054
+            0.444,
+            0.5067
           ],
           "video_ndcg_at_1": 0.3869,
-          "video_ndcg_at_5": 0.5004,
-          "video_ndcg_at_10": 0.5224,
-          "within_dataset_hit_at_1": 0.4215,
-          "within_dataset_hit_at_5": 0.6304,
-          "within_dataset_hit_at_10": 0.7058,
-          "within_dataset_mrr": 0.5104,
-          "within_dataset_ndcg_at_10": 0.5572,
+          "video_ndcg_at_5": 0.5007,
+          "video_ndcg_at_10": 0.5236,
+          "within_dataset_hit_at_1": 0.4178,
+          "within_dataset_hit_at_5": 0.6316,
+          "within_dataset_hit_at_10": 0.707,
+          "within_dataset_mrr": 0.5086,
+          "within_dataset_ndcg_at_10": 0.5563,
           "moment_hit_at_1_iou03": 0.0,
           "moment_hit_at_1_iou05": 0.0,
           "moment_hit_at_1_iou07": 0.0,
@@ -565,12 +571,12 @@
           "moment_map_at_05": 0.0,
           "moment_map_at_075": 0.0,
           "moment_map_range_05_095": 0.0,
-          "visual_recall_at_30": 0.7812,
-          "visual_recall_at_120": 0.8405,
+          "visual_recall_at_30": 0.7824,
+          "visual_recall_at_120": 0.8418,
           "lexical_recall_at_30": 0.1768,
-          "fused_recall_at_10": 0.6712,
-          "latency_p50_ms": 40.53,
-          "non_neural_latency_p50_ms": 38.66
+          "fused_recall_at_10": 0.6737,
+          "latency_p50_ms": 23.96,
+          "non_neural_latency_p50_ms": 22.34
         }
       }
     },
@@ -579,30 +585,30 @@
       "ablation_config": "A5",
       "total_queries_evaluated": 201,
       "metrics_overall": {
-        "video_hit_at_1": 0.3881,
+        "video_hit_at_1": 0.393,
         "video_hit_at_1_ci95": [
-          0.3234,
-          0.4527
+          0.3284,
+          0.4578
         ],
-        "video_hit_at_5": 0.5771,
+        "video_hit_at_5": 0.5821,
         "video_hit_at_10": 0.6816,
-        "mean_reciprocal_rank_mrr": 0.4733,
+        "mean_reciprocal_rank_mrr": 0.4774,
         "mrr_ci95": [
-          0.4151,
-          0.5335
+          0.4193,
+          0.5391
         ],
-        "video_ndcg_at_1": 0.3881,
-        "video_ndcg_at_5": 0.4884,
-        "video_ndcg_at_10": 0.5226,
+        "video_ndcg_at_1": 0.393,
+        "video_ndcg_at_5": 0.4932,
+        "video_ndcg_at_10": 0.5258,
         "video_ndcg_at_10_ci95": [
-          0.4661,
-          0.5809
+          0.4688,
+          0.5847
         ],
         "within_dataset_hit_at_1": 0.4129,
         "within_dataset_hit_at_5": 0.6368,
         "within_dataset_hit_at_10": 0.7214,
-        "within_dataset_mrr": 0.5038,
-        "within_dataset_ndcg_at_10": 0.5556,
+        "within_dataset_mrr": 0.5055,
+        "within_dataset_ndcg_at_10": 0.5569,
         "moment_hit_at_1_iou03": 0.0,
         "moment_hit_at_1_iou05": 0.0,
         "moment_hit_at_1_iou05_ci95": [
@@ -610,40 +616,42 @@
           0.0
         ],
         "moment_hit_at_1_iou07": 0.0,
-        "moment_ndcg_at_5": 0.25,
+        "moment_ndcg_at_5": 0.3155,
         "moment_ndcg_at_5_ci95": [
           0.0,
-          0.5
+          0.6309
         ],
-        "moment_ndcg_at_10": 0.25,
-        "moment_map_at_05": 0.1667,
-        "moment_map_at_075": 0.1667,
-        "moment_map_range_05_095": 0.1,
+        "moment_ndcg_at_10": 0.3155,
+        "moment_map_at_05": 0.25,
+        "moment_map_at_075": 0.25,
+        "moment_map_range_05_095": 0.15,
         "mean_boundary_mae_sec": null,
+        "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
+        "boundary_mae_n": 0,
         "pure_asr_fp_top1_count": 0,
         "branch_recall": {
-          "visual_recall_at_30": 0.7811,
-          "visual_recall_at_120": 0.8308,
+          "visual_recall_at_30": 0.7761,
+          "visual_recall_at_120": 0.8259,
           "lexical_recall_at_30": 0.2587,
           "fused_recall_at_10": 0.6866
         },
         "failure_taxonomy": {
-          "F4_FINE_GRAINED_VISUAL_CONFUSION": 72,
-          "PASS": 78,
-          "F1_VISUAL_CANDIDATE_MISS": 31,
-          "F2_LEXICAL_DISTRACTOR_OVERTHROW": 20
+          "F4_FINE_GRAINED_VISUAL_CONFUSION": 71,
+          "PASS": 79,
+          "F1_VISUAL_CANDIDATE_MISS": 32,
+          "F2_LEXICAL_DISTRACTOR_OVERTHROW": 19
         },
-        "latency_mean_ms": 46.16,
-        "latency_p50_ms": 41.25,
-        "latency_p95_ms": 82.71,
-        "non_neural_latency_mean_ms": 44.3,
-        "non_neural_latency_p50_ms": 39.57,
-        "non_neural_latency_p95_ms": 80.22,
+        "latency_mean_ms": 29.09,
+        "latency_p50_ms": 23.77,
+        "latency_p95_ms": 47.31,
+        "non_neural_latency_mean_ms": 27.61,
+        "non_neural_latency_p50_ms": 22.56,
+        "non_neural_latency_p95_ms": 44.14,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 18.93,
-          "fts5_ms": 3.21,
-          "fusion_ms": 12.0,
-          "boundary_ms": 2.37
+          "faiss_ms": 5.3,
+          "fts5_ms": 3.56,
+          "fusion_ms": 10.42,
+          "boundary_ms": 2.13
         }
       },
       "per_dataset_metrics": {
@@ -656,33 +664,33 @@
           ],
           "hit_at_5": 1.0,
           "hit_at_10": 1.0,
-          "mrr": 0.3333,
+          "mrr": 0.4167,
           "mrr_ci95": [
             0.3333,
-            0.3333
+            0.5
           ],
           "video_ndcg_at_1": 0.0,
-          "video_ndcg_at_5": 0.5,
-          "video_ndcg_at_10": 0.5,
+          "video_ndcg_at_5": 0.5655,
+          "video_ndcg_at_10": 0.5655,
           "within_dataset_hit_at_1": 0.5,
           "within_dataset_hit_at_5": 1.0,
           "within_dataset_hit_at_10": 1.0,
-          "within_dataset_mrr": 0.6667,
-          "within_dataset_ndcg_at_10": 0.75,
+          "within_dataset_mrr": 0.75,
+          "within_dataset_ndcg_at_10": 0.8155,
           "moment_hit_at_1_iou03": 0.0,
           "moment_hit_at_1_iou05": 0.0,
           "moment_hit_at_1_iou07": 0.0,
-          "moment_ndcg_at_5": 0.25,
-          "moment_ndcg_at_10": 0.25,
-          "moment_map_at_05": 0.1667,
-          "moment_map_at_075": 0.1667,
-          "moment_map_range_05_095": 0.1,
+          "moment_ndcg_at_5": 0.3155,
+          "moment_ndcg_at_10": 0.3155,
+          "moment_map_at_05": 0.25,
+          "moment_map_at_075": 0.25,
+          "moment_map_range_05_095": 0.15,
           "visual_recall_at_30": 1.0,
           "visual_recall_at_120": 1.0,
           "lexical_recall_at_30": 0.5,
           "fused_recall_at_10": 1.0,
-          "latency_p50_ms": 50.06,
-          "non_neural_latency_p50_ms": 48.28
+          "latency_p50_ms": 28.84,
+          "non_neural_latency_p50_ms": 27.77
         },
         "avc": {
           "queries": 8,
@@ -718,31 +726,31 @@
           "visual_recall_at_120": 0.625,
           "lexical_recall_at_30": 1.0,
           "fused_recall_at_10": 0.875,
-          "latency_p50_ms": 46.75,
-          "non_neural_latency_p50_ms": 44.02
+          "latency_p50_ms": 20.95,
+          "non_neural_latency_p50_ms": 20.37
         },
         "msrvtt": {
           "queries": 191,
-          "hit_at_1": 0.3717,
+          "hit_at_1": 0.377,
           "hit_at_1_ci95": [
-            0.2984,
+            0.3037,
             0.445
           ],
-          "hit_at_5": 0.5602,
+          "hit_at_5": 0.5654,
           "hit_at_10": 0.6702,
-          "mrr": 0.458,
+          "mrr": 0.4614,
           "mrr_ci95": [
-            0.3948,
-            0.5233
+            0.3971,
+            0.5273
           ],
-          "video_ndcg_at_1": 0.3717,
-          "video_ndcg_at_5": 0.4721,
-          "video_ndcg_at_10": 0.5081,
+          "video_ndcg_at_1": 0.377,
+          "video_ndcg_at_5": 0.4765,
+          "video_ndcg_at_10": 0.5107,
           "within_dataset_hit_at_1": 0.3927,
           "within_dataset_hit_at_5": 0.623,
           "within_dataset_hit_at_10": 0.7068,
-          "within_dataset_mrr": 0.4859,
-          "within_dataset_ndcg_at_10": 0.5384,
+          "within_dataset_mrr": 0.4867,
+          "within_dataset_ndcg_at_10": 0.5391,
           "moment_hit_at_1_iou03": 0.0,
           "moment_hit_at_1_iou05": 0.0,
           "moment_hit_at_1_iou07": 0.0,
@@ -751,12 +759,12 @@
           "moment_map_at_05": 0.0,
           "moment_map_at_075": 0.0,
           "moment_map_range_05_095": 0.0,
-          "visual_recall_at_30": 0.7853,
-          "visual_recall_at_120": 0.8377,
+          "visual_recall_at_30": 0.7801,
+          "visual_recall_at_120": 0.8325,
           "lexical_recall_at_30": 0.2251,
           "fused_recall_at_10": 0.6754,
-          "latency_p50_ms": 40.91,
-          "non_neural_latency_p50_ms": 39.32
+          "latency_p50_ms": 23.94,
+          "non_neural_latency_p50_ms": 22.57
         }
       }
     }
@@ -823,16 +831,106 @@
       "non_neural_latency_p50_ms": 38.5
     },
     "A5": {
-      "video_hit_at_1": 0.6133,
-      "video_hit_at_5": 0.72,
+      "video_hit_at_1": 0.62,
+      "video_hit_at_5": 0.7067,
       "video_hit_at_10": 0.7467,
-      "mrr": 0.654,
-      "video_ndcg_at_10": 0.6763,
+      "mrr": 0.6582,
+      "video_ndcg_at_10": 0.6794,
       "moment_hit_at_1_iou03": 0.7727,
       "moment_hit_at_1_iou05": 0.7273,
-      "moment_ndcg_at_5": 0.5323,
-      "moment_map_range_05_095": 0.3493,
-      "non_neural_latency_p50_ms": 26.46
+      "moment_ndcg_at_5": 0.5127,
+      "moment_map_range_05_095": 0.3463,
+      "non_neural_latency_p50_ms": 24.27
     }
-  }
+  },
+  "acceptance_metrics": [
+    {
+      "metric": "video_hit_at_1",
+      "value": 0.62,
+      "threshold": 0.5933333333333334,
+      "source": "dev_150",
+      "n": 150,
+      "verdict": "PASS"
+    },
+    {
+      "metric": "mean_reciprocal_rank_mrr",
+      "value": 0.6582,
+      "threshold": 0.645,
+      "source": "dev_150",
+      "n": 150,
+      "verdict": "PASS"
+    },
+    {
+      "metric": "video_ndcg_at_10",
+      "value": 0.6794,
+      "threshold": 0.675,
+      "source": "dev_150",
+      "n": 150,
+      "verdict": "PASS"
+    },
+    {
+      "metric": "moment_hit_at_1_iou05",
+      "value": 0.7273,
+      "threshold": 0.7272727272727273,
+      "source": "dev_150",
+      "n": 22,
+      "verdict": "PASS"
+    },
+    {
+      "metric": "moment_ndcg_at_5",
+      "value": 0.5127,
+      "threshold": 0.53,
+      "source": "dev_150",
+      "n": 22,
+      "verdict": "FAIL"
+    },
+    {
+      "metric": "pure_asr_fp_top1_count",
+      "value": 0,
+      "threshold": 1,
+      "source": "dev_150",
+      "n": 2,
+      "verdict": "PASS"
+    },
+    {
+      "metric": "non_neural_latency_p50_ms",
+      "value": 24.27,
+      "threshold": 20,
+      "source": "dev_150",
+      "n": 150,
+      "verdict": "FAIL"
+    },
+    {
+      "metric": "non_neural_latency_p95_ms",
+      "value": 106.01,
+      "threshold": 45,
+      "source": "dev_150",
+      "n": 150,
+      "verdict": "FAIL"
+    },
+    {
+      "metric": "cold_latency_p50_ms",
+      "value": null,
+      "threshold": 220,
+      "source": "dev_150",
+      "n": null,
+      "verdict": "NOT_MEASURED"
+    },
+    {
+      "metric": "cold_latency_p95_ms",
+      "value": null,
+      "threshold": 420,
+      "source": "dev_150",
+      "n": null,
+      "verdict": "NOT_MEASURED"
+    },
+    {
+      "metric": "ram_peak_mb",
+      "value": null,
+      "threshold": 4000,
+      "source": "process_memory",
+      "n": null,
+      "verdict": "NOT_MEASURED"
+    }
+  ]
 }

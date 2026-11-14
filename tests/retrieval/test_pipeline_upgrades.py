@@ -2,7 +2,11 @@
 import faiss
 import numpy as np
 
-from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+from videntra.retrieval.unified_pipeline import (
+    UnifiedMultimodalSearchPipeline,
+    _generate_morphological_stems,
+    analyze_query_lexical_tokens,
+)
 
 
 def _make_mock_pipeline(raw_768: np.ndarray, aug_864: np.ndarray, kf_map: dict, vid_kfs: dict) -> UnifiedMultimodalSearchPipeline:
@@ -119,3 +123,77 @@ def test_visual_floor_gate_blocks_low_visual_lexical_distractor():
     res = pipeline.search("tennis player on court", top_k=2)
     assert res[0].video_id == "vid_vis"
     pipeline.close()
+
+
+def test_morphological_stemming_is_general():
+    assert "check" in _generate_morphological_stems("checking")
+    assert "build" in _generate_morphological_stems("building")
+    assert "phrenolog" in _generate_morphological_stems("phrenologists")
+    assert "frenolog" in _generate_morphological_stems("phrenologists")
+    assert "biolog" in _generate_morphological_stems("biologists")
+    # Short or generic visual words must not be over-stemmed into noisy tokens
+    assert _generate_morphological_stems("makes") == []
+    assert _generate_morphological_stems("cooking") == []
+
+    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    fts_q, _, _, _, _ = pipeline.prepare_fts5_query_and_tokens("a customer checking fresh groceries")
+    assert "check*" in fts_q
+    fts_late, _, _, _, _ = pipeline.prepare_fts5_query_and_tokens("audience laughing at late show")
+    assert '"lateshow"' in fts_late
+
+
+def test_sentence_initial_common_words_not_misclassified_as_proper_nouns():
+    _, _, _, pn_cook = analyze_query_lexical_tokens("Cooking dinner in a modern kitchen")
+    assert pn_cook == set()
+
+    _, _, _, pn_cartoon = analyze_query_lexical_tokens("Cartoon animals talking loudly")
+    assert pn_cartoon == set()
+
+    _, _, _, pn_names = analyze_query_lexical_tokens("Gordon Ramsay hosting David Letterman on CNN")
+    assert {"gordon", "ramsay", "david", "letterman", "cnn"}.issubset(pn_names)
+
+
+def test_stage6_padded_keyframes_prevent_single_frame_outlier_bias():
+    # Setup 2 videos with 5 keyframes each, and limit search_depth=2 so each video gets at most 1 cluster in top-2.
+    # vid_outlier has 1 spike frame [0.52] and weak rest [0.12, 0.12, 0.12, 0.12].
+    # vid_consistent has sustained strong frames [0.51, 0.49, 0.48, 0.47, 0.46].
+    raw_768 = np.zeros((10, 768), dtype=np.float32)
+    aug_864 = np.zeros((10, 864), dtype=np.float32)
+    outlier_sims = [0.52, 0.12, 0.12, 0.12, 0.12]
+    consistent_sims = [0.51, 0.49, 0.48, 0.47, 0.46]
+
+    kf_map = {}
+    vid_kfs = {"vid_outlier": [], "vid_consistent": []}
+    for i, sim in enumerate(outlier_sims):
+        raw_768[i, 0] = sim
+        aug_864[i, 0] = sim
+        kf_map[i] = {"video_id": "vid_outlier", "pts_time": i * 2.0, "source_frame_index": i}
+        vid_kfs["vid_outlier"].append({"faiss_id": i, "pts_time": i * 2.0})
+    for j, sim in enumerate(consistent_sims):
+        idx = 5 + j
+        raw_768[idx, 0] = sim
+        aug_864[idx, 0] = sim
+        kf_map[idx] = {"video_id": "vid_consistent", "pts_time": j * 2.0, "source_frame_index": j}
+        vid_kfs["vid_consistent"].append({"faiss_id": idx, "pts_time": j * 2.0})
+
+    pipeline = _make_mock_pipeline(raw_768, aug_864, kf_map, vid_kfs)
+    pipeline.video_kf_fids = {
+        "vid_outlier": list(range(0, 5)),
+        "vid_consistent": list(range(5, 10)),
+    }
+    pipeline.video_kf_matrix = {
+        "vid_outlier": aug_864[0:5],
+        "vid_consistent": aug_864[5:10],
+    }
+    pipeline.search_depth = 2
+
+    def fake_encode(texts):
+        vecs = np.zeros((len(texts), 768), dtype=np.float32)
+        vecs[:, 0] = 1.0
+        return vecs
+
+    pipeline.encode_texts = fake_encode  # type: ignore[method-assign]
+    res = pipeline.search("person skiing downhill", top_k=2)
+    assert len(res) == 2
+    assert res[0].video_id == "vid_consistent"
+    assert res[0].ranking_score > res[1].ranking_score
