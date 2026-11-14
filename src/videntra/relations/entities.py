@@ -17,6 +17,7 @@ class GroundedEntity:
     attributes_matched: dict[str, bool | None]
     evidence_ref: str | None = None
     state: str = "supported"
+    target_classes: tuple[str, ...] = ()
 
 
 def ground_entities(
@@ -41,6 +42,9 @@ def ground_entities(
         ent_id = ent.id
         if ent.type == "text_region":
             matched = any(contains_text_phrase(ocr_t, ent.mention) for ocr_t in ocr_texts)
+            text_aliases = tuple(sorted({
+                v for v in ("text_region", "ocr_observation", "ocr_track", ent.mention.lower().strip()) if v
+            }))
             grounded[ent_id] = GroundedEntity(
                 entity_id=ent_id,
                 matched=matched,
@@ -48,6 +52,7 @@ def ground_entities(
                 attributes_matched={},
                 evidence_ref="ocr_track" if matched else None,
                 state="supported" if matched else "unknown",
+                target_classes=text_aliases,
             )
         else:
             # Person / Object grounding
@@ -67,12 +72,15 @@ def ground_entities(
             if obj_class_coco:
                 target_classes.add(obj_class_coco)
             target_classes.discard("")
+            sorted_targets = tuple(sorted(target_classes))
 
             # If evidence contains detection records, match against them
             if detected_objects:
                 matched_objs = [
                     obj for obj in detected_objects
-                    if (obj.get("class_name", "").lower() in target_classes) or (obj.get("label", "").lower() in target_classes)
+                    if (obj.get("class_name", "").lower() in target_classes)
+                    or (obj.get("label", "").lower() in target_classes)
+                    or (str(obj.get("canonical_class", "")).lower() in target_classes)
                 ]
 
                 attr_matches = {}
@@ -117,6 +125,7 @@ def ground_entities(
                         attributes_matched=attr_matches,
                         evidence_ref="visual_detection",
                         state="supported" if coherent and all(value is True for value in attr_matches.values()) else "partial",
+                        target_classes=sorted_targets,
                     )
                 else:
                     grounded[ent_id] = GroundedEntity(
@@ -126,6 +135,7 @@ def ground_entities(
                         attributes_matched=attr_matches,
                         evidence_ref=None,
                         state="unknown",
+                        target_classes=sorted_targets,
                     )
             else:
                 # A missing detector observation cannot establish an entity or its attributes.
@@ -137,6 +147,7 @@ def ground_entities(
                     attributes_matched=attr_matches,
                     evidence_ref=None,
                     state="unknown",
+                    target_classes=sorted_targets,
                 )
 
     return grounded

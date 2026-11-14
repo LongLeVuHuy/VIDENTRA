@@ -32,11 +32,11 @@ Hệ thống vận hành theo mô hình **Single Source of Truth (SSOT)** thông
    - **ASR:** Phát hiện tiếng nói (VAD) kết hợp `PhoWhisperTranscriber` / `faster-whisper`, căn chỉnh thời gian hai chiều (`TimelineAligner`).
    - **Object Detection & Subspace 864d (`src/videntra/indexing/augmented_vector.py`):** Chiếu xuất đặc trưng đối tượng COCO IDF và tín hiệu văn bản/metadata để mở rộng vector 768d thành không gian **864 chiều chuẩn hóa (Decoupled Subspace Scaling)**, lập chỉ mục trên **FAISS `IndexFlatIP`** và **SQLite FTS5** (chế độ persistent read-only).
 3. **Pipeline Tìm kiếm 7 Chặng (`UnifiedMultimodalSearchPipeline`):**
-   - **Stage 1:** Phân tích truy vấn (`RuleBasedQueryParser` + plural/COCO synonym normalization) & tạo vector 864d với dual-prompt ensemble và LRU RAM cache (512 entries, chuẩn hóa NFC).
-   - **Stage 2:** Truy xuất FAISS IP 864d & căn chỉnh tuần tự đa mệnh đề (`align_sequential_keyframe_clauses`).
+   - **Stage 1:** Phân tích truy vấn (`RuleBasedQueryParser` + plural/COCO role & supplemental action-object mappings) & tạo vector 864d với dual-prompt ensemble và LRU RAM cache (512 entries, chuẩn hóa NFC).
+   - **Stage 2:** Truy xuất FAISS IP, pha trộn đồng nhất **768d + 864d (`0.70 / 0.30`)** cho cả câu đơn và đa mệnh đề (`sub_clauses`), kết hợp căn chỉnh tuần tự đa mệnh đề (`align_sequential_keyframe_clauses`).
    - **Stage 3:** Truy vấn từ vựng SQLite FTS5 theo độ đặc hiệu token (quoted phrases, proper nouns, length-sorted tokens, giới hạn tối đa 14 tokens).
-   - **Stage 4–5:** Gom cụm đa phương thức cục bộ theo thời gian, tính điểm hợp nhất bất biến thứ tự (Order-Invariant RRF) và cổng lọc neo thị giác cho cụm thuần ASR (`Pure-ASR False Positive Gate`).
-   - **Stage 6–7:** Mở rộng biên khoảnh khắc dựa trên neo đỉnh tương đồng (`expand_boundary_contrast`), tổng hợp đa dạng theo video (`diverse_video` / `moment`), và tùy chọn đối chiếu đồ thị quan hệ (`GraphMatcher`, `verify_relations`).
+   - **Stage 4–5:** Gom cụm đa phương thức cục bộ theo thời gian, tính điểm hợp nhất bất biến thứ tự (Order-Invariant RRF), cổng chặn **Pure-ASR False Positive Gate** và **Visual-Floor Lexical Gate** (`s_vis_floor = s_vis_max - 0.065`).
+   - **Stage 6–7:** Tính độ nhất quán cửa sổ cục bộ (`local_window_mean` `±3.5s`), mở rộng biên khoảnh khắc dựa trên neo đỉnh tương đồng (`expand_boundary_contrast`), tổng hợp đa dạng (`diverse_video` / `moment`), và đối chiếu đồ thị quan hệ (`GraphMatcher`, `verify_relations` tích hợp OCR, ASR calibrated + 2D `FrameObjects` cùng frame, hỗ trợ tùy chọn `rerank_with_relations`).
 4. **Logic Tam trị & Bảo vệ Ground Truth Isolation:**
    - Thiếu bằng chứng trả về **`UNKNOWN`** (không bao giờ tự động coi là `FALSE`); lời thoại ASR không tự chứng minh danh tính người nói nếu thiếu neo đối soát.
    - `MediaResolver` (`src/videntra/registry/access.py`) thực thi allowlist cho thư mục media và chặn truy cập (`denied_roots`) đối với các thư mục đánh giá/ground truth (`validation/`, `test_queries/`, `work/evaluation-only/`).
@@ -62,9 +62,9 @@ VIDENTRA/
 │   ├── localization/           # Tinh chỉnh biên thời gian & contrast boundary expansion
 │   ├── ocr/                    # Text detection, tracking & routing (RapidOCR / VietOCR)
 │   ├── query/                  # RuleBasedQueryParser, LLMQueryParser (fallback an toàn) & QueryGraph v1
-│   ├── ranking/                # RelationAwareRanker (kết hợp điểm RRF và đánh giá quan hệ)
+│   ├── ranking/                # RelationAwareRanker & Score Calibration (`calibration.py`: ASR logprob/temperature sigmoid)
 │   ├── registry/               # MediaResolver (allowlist/denylist), registry SQLite & SHA-256 verification
-│   ├── relations/              # GraphMatcher tam trị, kiểm tra thuộc tính và đối tượng
+│   ├── relations/              # GraphMatcher tam trị, 2D spatial cùng frame, action_observation & đối tượng COCO
 │   ├── retrieval/              # UnifiedMultimodalSearchPipeline (SSOT), branches, fusion & alignment
 │   ├── runtime/                # AdmissionController, DeadlineBudget & telemetry
 │   ├── sampling/               # Hybrid Adaptive Sampling
@@ -308,7 +308,7 @@ videntra evaluate `
 ```powershell
 python -B -m pytest -q -p no:cacheprovider
 ```
-Kết quả kiểm thử toàn diện gần nhất sau khi hoàn thiện codebase (Windows CPU): **381 passed (0 failed)** trong ~78.8s.
+Kết quả kiểm thử toàn diện gần nhất sau khi hoàn thiện codebase (Windows CPU): **399 passed (0 failed)** trong ~62.1s.
 
 Hoặc kiểm tra riêng từng lớp thành phần:
 ```powershell
@@ -334,12 +334,14 @@ pytest -q tests/registry/test_asset_roots.py
 
 Số liệu tham khảo từ báo cáo kiểm toán nội bộ [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md) (đo trên kho 1,324 video / 11,179 keyframes 864d, phần cứng **Intel Core i5-7300U CPU, 32GB RAM, Local SSD**):
 
-- **Tập `dev_150` (150 queries):** Video Hit@1 đạt **61.33%** (92/150), MRR **0.6540**, Video nDCG@10 **0.6763**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%** (16/22), **0 ca** Pure-ASR False Positive Top-1.
-- **Độ trễ truy vấn (CPU-only):** Non-neural retrieval trung vị `p50 = 26.46 ms` (`p95 = 46.92 ms`); Cold query (bao gồm SigLIP 2 Text Encoding trên CPU) `p50 = 250.93 ms` (`p95 = 317.82 ms`).
+- **Tập `dev_150` (150 queries):**
+  - Mốc kiểm toán gốc tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md): Video Hit@1 **61.33%** (92/150), MRR **0.6540**, Video nDCG@10 **0.6763**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%** (16/22), **0 ca** Pure-ASR False Positive Top-1.
+  - Sau nâng cấp Phase 5 (đo read-only trực tiếp trên cùng tập `dev_150` với `A5`): Video Hit@1 đạt **62.00%** (93/150), Hit@5 **71.33%**, Hit@10 **74.67%**, MRR **0.6584**, Video nDCG@10 **0.6796**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%**, Moment nDCG@5 **0.5303**.
+- **Độ trễ truy vấn (CPU-only, tham chiếu [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md)):** Non-neural retrieval trung vị `p50 = 26.46 ms` (`p95 = 46.92 ms`); Cold query (bao gồm SigLIP 2 Text Encoding trên CPU) `p50 = 250.93 ms` (`p95 = 317.82 ms`).
 - **Bộ nhớ tiêu thụ:** RSS **420.0 MB**, Peak Working Set **580.0 MB**.
-- **Tập mở rộng:** `dev_full_859` đạt Video Hit@1 **41.68%**, MRR **0.5012**; `heldout_test_201` đạt Video Hit@1 **38.81%**, MRR **0.4733** (chi tiết phân tích sai số `F1..F5` xem tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md)).
+- **Tập mở rộng (mốc kiểm toán trước Phase 5):** `dev_full_859` đạt Video Hit@1 **41.68%**, MRR **0.5012**; `heldout_test_201` đạt Video Hit@1 **38.81%**, MRR **0.4733** (chi tiết phân tích sai số `F1..F5` xem tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md)).
 
 **Giới hạn trung thực:**
 1. Chưa công bố số liệu benchmark chính thức trên phần cứng đích NVIDIA RTX 3060 6GB VRAM vì quá trình đo vừa qua thực hiện trên máy CPU thử nghiệm và GPU Kaggle Tesla T4 cho tác vụ offline extraction.
 2. Các bộ dữ liệu bên thứ ba nếu chưa có biên nhận cấp phép suy luận thương mại được giữ trạng thái `rights_status = "unknown"` và cách ly trong `quarantine`/`denied_roots`.
-3. Chức năng `verify_relations` thực thi kiểm chứng dựa trên quan sát OCR/ASR nằm gọn trong khoảng thời gian moment; những truy vấn hành động/vai trò thuần thị giác thiếu bằng chứng văn bản vẫn được giữ nguyên trạng thái `UNKNOWN` theo thiết kế.
+3. Chức năng `verify_relations` sử dụng OCR, ASR đã hiệu chuẩn và `FrameObjects` 2D bounding boxes nằm trong khoảng thời gian moment (`left_of`, `right_of`, `above`, `below`, `inside`, `near` cùng frame, hoặc `action_observation` tường minh); quan hệ 3D (`behind`/`in_front_of`), quan hệ khác frame, hoặc hành động chỉ có box tĩnh vẫn giữ trạng thái `UNKNOWN` theo logic tam trị.

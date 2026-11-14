@@ -45,6 +45,16 @@ from videntra.indexing.augmented_vector import (
 from videntra.retrieval.alignment import align_sequential_keyframe_clauses
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
+from videntra.ranking.calibration import calibrate_asr_confidence
+
+
+def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
+    """Inspect SQLite table schema safely; return empty set if table is absent."""
+    try:
+        rows = cursor.execute(f"PRAGMA table_info({table_name});").fetchall()
+        return {str(row[1]) for row in rows}
+    except sqlite3.Error:
+        return set()
 
 
 def extract_tensor_features(out: Any) -> torch.Tensor:
@@ -345,15 +355,36 @@ class UnifiedMultimodalSearchPipeline:
                 for vid in self.video_keyframes:
                     self.video_keyframes[vid].sort(key=lambda x: x["pts_time"])
 
-                cursor.execute("SELECT video_id, class_name, timestamp_ms, confidence FROM FrameObjects;")
-                for vid, cls_name, ts_ms, conf in cursor.fetchall():
-                    raw_c = str(cls_name).lower() if cls_name else ""
-                    self.video_objects[vid].append({
-                        "class_name": cls_name,
-                        "canonical_class": COCO_SYNONYM_MAP.get(raw_c, raw_c),
-                        "pts_sec": float(ts_ms) / 1000.0 if ts_ms is not None else 0.0,
-                        "confidence": float(conf) if conf is not None else 1.0,
-                    })
+                fo_cols = _table_columns(cursor, "FrameObjects")
+                has_fo_spatial = {"keyframe_id", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"}.issubset(fo_cols)
+                if has_fo_spatial:
+                    cursor.execute(
+                        "SELECT video_id, class_name, timestamp_ms, confidence, "
+                        "keyframe_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2 FROM FrameObjects;"
+                    )
+                    for vid, cls_name, ts_ms, conf, kf_id, x1, y1, x2, y2 in cursor.fetchall():
+                        raw_c = str(cls_name).lower() if cls_name else ""
+                        obj_rec: dict[str, Any] = {
+                            "class_name": cls_name,
+                            "canonical_class": COCO_SYNONYM_MAP.get(raw_c, raw_c),
+                            "pts_sec": float(ts_ms) / 1000.0 if ts_ms is not None else 0.0,
+                            "confidence": float(conf) if conf is not None else 1.0,
+                        }
+                        if kf_id is not None:
+                            obj_rec["keyframe_id"] = kf_id
+                        if None not in (x1, y1, x2, y2):
+                            obj_rec["bbox"] = (float(x1), float(y1), float(x2), float(y2))
+                        self.video_objects[vid].append(obj_rec)
+                elif fo_cols:
+                    cursor.execute("SELECT video_id, class_name, timestamp_ms, confidence FROM FrameObjects;")
+                    for vid, cls_name, ts_ms, conf in cursor.fetchall():
+                        raw_c = str(cls_name).lower() if cls_name else ""
+                        self.video_objects[vid].append({
+                            "class_name": cls_name,
+                            "canonical_class": COCO_SYNONYM_MAP.get(raw_c, raw_c),
+                            "pts_sec": float(ts_ms) / 1000.0 if ts_ms is not None else 0.0,
+                            "confidence": float(conf) if conf is not None else 1.0,
+                        })
                 for vid in self.video_objects:
                     self.video_objects[vid].sort(key=lambda x: x["pts_sec"])
 
@@ -668,7 +699,14 @@ class UnifiedMultimodalSearchPipeline:
         # Beyond 6.0s: baseline 35th percentile of video to close visual gate (B1)
         return float(np.percentile(sims, 35))
 
-    def search_with_metadata(self, *, snapshot_id: str, verify_relations: bool = False, **kwargs: Any) -> dict[str, Any]:
+    def search_with_metadata(
+        self,
+        *,
+        snapshot_id: str,
+        verify_relations: bool = False,
+        rerank_with_relations: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """Serialize access to the shared SQLite connection and return request-local metadata."""
         with self._search_lock:
             self.last_timings = {}
@@ -676,6 +714,38 @@ class UnifiedMultimodalSearchPipeline:
             moments = self.search(**kwargs)
             verify_start = time.perf_counter()
             relation_assessments = self._verify_relations(kwargs["query"], moments) if verify_relations else []
+            if verify_relations and rerank_with_relations and len(moments) == len(relation_assessments) and moments:
+                scored_pairs: list[tuple[float, RankedMoment, dict[str, Any]]] = []
+                for m, assess in zip(moments, relation_assessments):
+                    base_score = float(m.ranking_score)
+                    status = assess["status"]
+                    struct_score = float(assess.get("structural_score", 0.0))
+                    if status == "contradicted":
+                        adj = max(0.0001, base_score * 0.15)
+                    elif status == "unknown":
+                        adj = base_score
+                    else:
+                        adj = base_score + 0.08 * struct_score
+                    updated_m = RankedMoment(
+                        moment_id=m.moment_id,
+                        video_id=m.video_id,
+                        moment_start_seconds=m.moment_start_seconds,
+                        moment_end_seconds=m.moment_end_seconds,
+                        start_original_frame_index=m.start_original_frame_index,
+                        end_original_frame_index=m.end_original_frame_index,
+                        representative_original_frame_index=m.representative_original_frame_index,
+                        representative_timestamp_seconds=m.representative_timestamp_seconds,
+                        ranking_score=round(adj, 5),
+                        score_type="relation_aware_ranking" if status != "unknown" else m.score_type,
+                        match_status=status if status != "unknown" else m.match_status,
+                        evidence_frame_indices=m.evidence_frame_indices,
+                        unresolved_predicates=tuple(assess.get("unresolved_predicates", ())),
+                        structural_score=round(struct_score, 4),
+                    )
+                    scored_pairs.append((adj, updated_m, assess))
+                scored_pairs.sort(key=lambda pair: pair[0], reverse=True)
+                moments = [pair[1] for pair in scored_pairs]
+                relation_assessments = [pair[2] for pair in scored_pairs]
             timings = deepcopy(self.last_timings)
             if verify_relations:
                 timings["t_relation_ms"] = (time.perf_counter() - verify_start) * 1000.0
@@ -683,35 +753,138 @@ class UnifiedMultimodalSearchPipeline:
                     "timings": timings,
                     "diagnostics": deepcopy(self.last_diagnostics), "relation_assessments": relation_assessments}
 
+    def _collect_moment_evidence(self, video_id: str, start_ms: float, end_ms: float) -> list[dict[str, Any]]:
+        """Collect schema-safe interval-contained OCR, calibrated ASR, and 2D FrameObjects evidence."""
+        if self.db_conn is None:
+            return []
+        evidence: list[dict[str, Any]] = []
+        try:
+            cursor = self.db_conn.cursor()
+            ocr_cols = _table_columns(cursor, "OCRObservations")
+            if ocr_cols:
+                select_cols = ["observation_id", "raw_text", "model_id", "timestamp_ms"]
+                has_ocr_kf = "keyframe_id" in ocr_cols
+                has_ocr_conf = "confidence" in ocr_cols
+                has_ocr_bbox = {"bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"}.issubset(ocr_cols)
+                if has_ocr_kf:
+                    select_cols.append("keyframe_id")
+                if has_ocr_conf:
+                    select_cols.append("confidence")
+                if has_ocr_bbox:
+                    select_cols.extend(["bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"])
+                sql = (
+                    f"SELECT {', '.join(select_cols)} FROM OCRObservations "
+                    "WHERE video_id=? AND timestamp_ms>=? AND timestamp_ms<?"
+                )
+                for row in cursor.execute(sql, (video_id, start_ms, end_ms)):
+                    idx = 4
+                    rec: dict[str, Any] = {
+                        "kind": "ocr_observation",
+                        "evidence_id": row[0],
+                        "text": row[1],
+                        "model_id": row[2],
+                        "timestamp_seconds": float(row[3]) / 1000.0,
+                        "timestamp_ms": float(row[3]),
+                    }
+                    if has_ocr_kf:
+                        rec["keyframe_id"] = row[idx]
+                        idx += 1
+                    if has_ocr_conf:
+                        rec["confidence"] = float(row[idx]) if row[idx] is not None else 0.90
+                        idx += 1
+                    if has_ocr_bbox:
+                        bx1, by1, bx2, by2 = row[idx : idx + 4]
+                        if None not in (bx1, by1, bx2, by2):
+                            rec["bbox"] = (float(bx1), float(by1), float(bx2), float(by2))
+                    evidence.append(rec)
+
+            asr_cols = _table_columns(cursor, "ASRSegments")
+            if asr_cols:
+                has_asr_conf = "confidence" in asr_cols
+                asr_sql = (
+                    "SELECT segment_id, raw_text, model_id, start_ms, end_ms"
+                    + (", confidence" if has_asr_conf else "")
+                    + " FROM ASRSegments WHERE video_id=? AND start_ms>=? AND end_ms<=? AND end_ms>start_ms"
+                )
+                for row in cursor.execute(asr_sql, (video_id, start_ms, end_ms)):
+                    raw_conf = row[5] if has_asr_conf else None
+                    rec = {
+                        "kind": "asr_segment",
+                        "evidence_id": row[0],
+                        "text": row[1],
+                        "model_id": row[2],
+                        "start_seconds": float(row[3]) / 1000.0,
+                        "end_seconds": float(row[4]) / 1000.0,
+                        "confidence": calibrate_asr_confidence(raw_conf),
+                    }
+                    if raw_conf is not None:
+                        rec["raw_confidence"] = float(raw_conf)
+                    evidence.append(rec)
+
+            fo_cols = _table_columns(cursor, "FrameObjects")
+            if fo_cols:
+                fo_select = ["detection_id", "class_name", "timestamp_ms"]
+                has_fo_kf = "keyframe_id" in fo_cols
+                has_fo_conf = "confidence" in fo_cols
+                has_fo_model = "model_id" in fo_cols
+                has_fo_bbox = {"bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"}.issubset(fo_cols)
+                if has_fo_kf:
+                    fo_select.append("keyframe_id")
+                if has_fo_conf:
+                    fo_select.append("confidence")
+                if has_fo_model:
+                    fo_select.append("model_id")
+                if has_fo_bbox:
+                    fo_select.extend(["bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"])
+                fo_sql = (
+                    f"SELECT {', '.join(fo_select)} FROM FrameObjects "
+                    "WHERE video_id=? AND timestamp_ms>=? AND timestamp_ms<?"
+                )
+                for row in cursor.execute(fo_sql, (video_id, start_ms, end_ms)):
+                    idx = 3
+                    cls_name = str(row[1] or "")
+                    rec = {
+                        "kind": "visual_detection",
+                        "evidence_id": row[0],
+                        "class_name": cls_name,
+                        "label": cls_name,
+                        "canonical_class": COCO_SYNONYM_MAP.get(cls_name.lower(), cls_name.lower()),
+                        "timestamp_ms": float(row[2]),
+                        "timestamp_seconds": float(row[2]) / 1000.0,
+                    }
+                    if has_fo_kf:
+                        rec["keyframe_id"] = row[idx]
+                        idx += 1
+                    if has_fo_conf:
+                        rec["confidence"] = float(row[idx]) if row[idx] is not None else 0.85
+                        idx += 1
+                    if has_fo_model:
+                        rec["model_id"] = row[idx]
+                        idx += 1
+                    if has_fo_bbox:
+                        bx1, by1, bx2, by2 = row[idx : idx + 4]
+                        if None not in (bx1, by1, bx2, by2):
+                            rec["bbox"] = (float(bx1), float(by1), float(bx2), float(by2))
+                    evidence.append(rec)
+        except sqlite3.Error as exc:
+            raise RuntimeError("Relation evidence lookup failed") from exc
+        return evidence
+
     def _verify_relations(self, query: str, moments: list[RankedMoment]) -> list[dict[str, Any]]:
-        """Assess shortlist using interval-contained text evidence; do not alter ranking."""
+        """Assess shortlist using interval-contained OCR, ASR, and 2D FrameObjects evidence."""
         from videntra.query.rules import RuleBasedQueryParser
         from videntra.relations.matcher import GraphMatcher
         graph = RuleBasedQueryParser().parse(query)
         matcher = GraphMatcher()
         assessments = []
         for moment in moments:
-            evidence: list[dict[str, Any]] = []
-            if self.db_conn is not None:
-                start, end = moment.moment_start_seconds * 1000, moment.moment_end_seconds * 1000
-                try:
-                    cursor = self.db_conn.cursor()
-                    for eid, text, model_id, timestamp_ms in cursor.execute(
-                        "SELECT observation_id, raw_text, model_id, timestamp_ms FROM OCRObservations WHERE video_id=? AND timestamp_ms>=? AND timestamp_ms<?",
-                        (moment.video_id, start, end)):
-                        evidence.append({"kind": "ocr_observation", "evidence_id": eid, "text": text,
-                                         "model_id": model_id, "timestamp_seconds": timestamp_ms / 1000.0})
-                    for eid, text, model_id, start_ms, end_ms in cursor.execute(
-                        "SELECT segment_id, raw_text, model_id, start_ms, end_ms FROM ASRSegments WHERE video_id=? AND start_ms>=? AND end_ms<=? AND end_ms>start_ms",
-                        (moment.video_id, start, end)):
-                        evidence.append({"kind": "asr_segment", "evidence_id": eid, "text": text,
-                                         "model_id": model_id, "start_seconds": start_ms / 1000.0,
-                                         "end_seconds": end_ms / 1000.0})
-                except sqlite3.Error as exc:
-                    raise RuntimeError("Relation evidence lookup failed") from exc
+            start_ms = moment.moment_start_seconds * 1000.0
+            end_ms = moment.moment_end_seconds * 1000.0
+            evidence = self._collect_moment_evidence(moment.video_id, start_ms, end_ms)
             match = matcher.match(graph, evidence)
             referenced = {ref for value in match.predicate_evaluations.values() for ref in value.evidence_refs}
             assessments.append({"status": match.overall_status,
+                "structural_score": match.structural_score,
                 "unresolved_predicates": match.unresolved_predicates,
                 "predicates": {key: {"status": value.state.value, "reason": value.reason,
                                      "evidence_refs": value.evidence_refs}
@@ -756,7 +929,17 @@ class UnifiedMultimodalSearchPipeline:
         if ablation_config != "A0":
             existing_classes = {o["class_name"] for o in obj_reqs}
             supplemental_mappings = [
-                (["cycle", "cycling", "bicycles"], "bicycle"),
+                (["cycle", "cycling", "cyclist", "bicycles", "riding a bike"], "bicycle"),
+                (["driving", "drive", "steering", "driver"], "car"),
+                (["horseback", "riding a horse"], "horse"),
+                (["skiing", "skier"], "skis"),
+                (["surfing", "surfer"], "surfboard"),
+                (["skateboarding", "skater"], "skateboard"),
+                (["tennis"], "tennis racket"),
+                (["baseball"], "baseball bat"),
+                (["cutting", "chopping", "slicing"], "knife"),
+                (["reading"], "book"),
+                (["talking on phone", "texting"], "cell phone"),
                 (["computer", "desktop"], "laptop"),
                 (["cat", "cats", "kitten"], "cat"),
                 (["dog", "dogs", "puppy"], "dog"),
@@ -862,8 +1045,18 @@ class UnifiedMultimodalSearchPipeline:
                 for sv, sc in zip(sub_vecs_768, sub_clauses)
             ]
             all_864_vecs = np.vstack([primary_q_864_mat] + [sv.reshape(1, -1) for sv in sub_q_864])
-            # Vectorized OpenBLAS GEMM across all query clauses at once
-            all_sims_mat = (all_864_vecs @ self.augmented_embeddings.T).astype(np.float32)
+            has_matched_768 = (
+                len(self.all_embeddings) == len(self.augmented_embeddings)
+                and len(self.augmented_embeddings) > 0
+            )
+            # Vectorized OpenBLAS GEMM across all query clauses (blending 768d + 864d when aligned)
+            all_sims_864 = (all_864_vecs @ self.augmented_embeddings.T).astype(np.float32)
+            if has_matched_768:
+                all_768_vecs = np.vstack([primary_q_768] + [sv.reshape(1, -1) for sv in sub_vecs_768])
+                all_sims_768 = (all_768_vecs @ self.all_embeddings.T).astype(np.float32)
+                all_sims_mat = (0.70 * all_sims_768 + 0.30 * all_sims_864).astype(np.float32)
+            else:
+                all_sims_mat = all_sims_864
             k_part = min(search_depth, all_sims_mat.shape[1])
 
             ids_batch_list = []
@@ -944,7 +1137,12 @@ class UnifiedMultimodalSearchPipeline:
                 if fid in full_map:
                     s_full = float(full_map[fid])
                 else:
-                    s_full = float(np.dot(self.augmented_embeddings[fid], primary_q_864.flatten()))
+                    s_full_864 = float(np.dot(self.augmented_embeddings[fid], primary_q_864.flatten()))
+                    if has_matched_768:
+                        s_full_768 = float(np.dot(self.all_embeddings[fid], primary_q_768.flatten()))
+                        s_full = 0.70 * s_full_768 + 0.30 * s_full_864
+                    else:
+                        s_full = s_full_864
 
                 vid = self.keyframe_map[fid]["video_id"]
                 if vid in video_seq_scores:
@@ -1234,6 +1432,7 @@ class UnifiedMultimodalSearchPipeline:
         # Stage 5: Gated Lexical-Visual Fusion (B1, B9)
         # =========================================================================
         s_vis_max = max((cl["visual_sim"] for cl in clusters), default=0.0)
+        s_vis_floor = s_vis_max - 0.065
         by_video_raw: dict[str, list[tuple[float, float, float, float, str]]] = defaultdict(list)
         k_high_len = len(high_spec_tokens)
         precleaned_qps = [
@@ -1317,6 +1516,8 @@ class UnifiedMultimodalSearchPipeline:
                         ocr_title_bonus = 1.15 if ("ocr" in cl["branches"] and m_high >= 2) else 1.0
                         multi_tok = ((1.0 + 0.45 * min(m_high - 1, 3)) if m_high > 1 else 1.0) * pn_multiplier * rare_bm25_bonus * ocr_title_bonus
                         vis_factor = (0.75 + 0.25 * gamma_vis) if (has_quoted_match or (has_proper_noun_match and (m_high >= 2 or fts_sc >= 10.0))) else (0.35 + 0.65 * gamma_vis)
+                        if v_sim < s_vis_floor and not has_quoted_match and fts_sc < 18.0:
+                            vis_factor *= max(0.25, gamma_vis)
                         lex_boost = 5.5 * base_lex * vis_factor * multi_tok
                     elif m_high == 1 and k_high_len >= 1:
                         if single_common_only:
@@ -1344,6 +1545,8 @@ class UnifiedMultimodalSearchPipeline:
                             rare_bm25_bonus = 1.0
                         multi_tok = ((1.0 + 0.45 * min(m_high - 1, 3)) if m_high > 1 else 1.0) * pn_multiplier * rare_bm25_bonus
                         vis_factor = (0.55 + 0.45 * gamma_vis) if (has_quoted_match or has_proper_noun_match) else gamma_vis
+                        if v_sim < s_vis_floor and not has_quoted_match and fts_sc < 18.0:
+                            vis_factor *= max(0.25, gamma_vis)
                         lex_boost = 5.5 * base_lex * vis_factor * multi_tok
                     elif m_high >= 1 and k_high_len >= 1:
                         cov_ratio = 1.0 / math.sqrt(float(max(1, k_high_len)))
@@ -1395,6 +1598,12 @@ class UnifiedMultimodalSearchPipeline:
             density_bonus = (0.060 * effective_s_max) * min(adjacent_pairs, 3) + 0.015 * effective_s_max * ratio
 
             best_sc, best_st, best_et, best_rep_t, best_branch = vid_items[0]
+            local_window_scores = sorted(
+                (x[0] for x in vid_items if abs(x[3] - best_rep_t) <= 3.5),
+                reverse=True,
+            )[:2]
+            local_window_mean = (sum(local_window_scores) / len(local_window_scores)) if local_window_scores else s_max
+
             if best_branch in ("asr", "ocr", "asr+ocr") and (len(proper_nouns_lower) >= 1 or len(quoted_phrases) >= 1 or m_count == 1):
                 video_score = (
                     0.85 * s_max
@@ -1407,6 +1616,14 @@ class UnifiedMultimodalSearchPipeline:
                     0.65 * s_max
                     + 0.15 * top3_mean
                     + 0.20 * top5_mean
+                    + density_bonus
+                )
+            elif ablation_config == "A5":
+                video_score = (
+                    0.54 * s_max
+                    + 0.15 * top3_mean
+                    + 0.29 * top5_mean
+                    + 0.02 * local_window_mean
                     + density_bonus
                 )
             else:

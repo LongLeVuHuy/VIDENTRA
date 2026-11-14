@@ -11,17 +11,17 @@
 
 ## 2. Luồng Xử lý Dữ liệu (7-Stage Unified Pipeline)
 1. **Stage 1 — Query Analysis & Vector Generation:**
-   - Phân tích truy vấn (`RuleBasedQueryParser`, `decompose_query_clauses`, `extract_object_requirements`) có chuẩn hóa danh từ số nhiều COCO và tách mệnh đề tuần tự thời gian (`after` / `sau khi`).
+   - Phân tích truy vấn (`RuleBasedQueryParser`, `decompose_query_clauses`, `extract_object_requirements`) có chuẩn hóa danh từ số nhiều/vai trò COCO (ví dụ `cyclist`, `skier`, `surfer`, `skater`, `motorcyclist`) và ánh xạ bổ sung hành động–vật thể trong pipeline (`driving -> car`, `tennis -> tennis racket`, `cutting -> knife`, v.v.).
    - Encode văn bản qua SigLIP 2 (`google/siglip2-base-patch16-224`, 768d) kèm dual-prompt ensemble (`0.75 * raw + 0.25 * "a video frame showing ..."`), bounded LRU RAM cache (512 entries, chuẩn hóa NFC, khử trùng batch) và mở rộng thành vector **864d** (`src/videntra/indexing/augmented_vector.py`).
-2. **Stage 2 — FAISS 864d Retrieval & Sequential Alignment:**
-   - Truy xuất ứng viên qua FAISS `IndexFlatIP` 864d, tính điểm căn chỉnh tuần tự đa mệnh đề (`align_sequential_keyframe_clauses`) có hệ số phạt đồng khung (`0.92`).
+2. **Stage 2 — FAISS Retrieval, 768d+864d Multi-Clause Blending & Sequential Alignment:**
+   - Truy xuất ứng viên qua FAISS `IndexFlatIP`, pha trộn đồng nhất **768d Raw SigLIP 2 + 864d Augmented (`0.70 / 0.30`)** cho cả câu đơn lẫn đa mệnh đề (`sub_clauses`), và căn chỉnh tuần tự đa mệnh đề (`align_sequential_keyframe_clauses`) có hệ số phạt đồng khung (`0.92`).
 3. **Stage 3 — Specificity-Sorted SQLite FTS5 Lexical Search:**
    - Truy vấn kết nối SQLite Read-Only (`?mode=ro` được bảo vệ bởi `threading.RLock`), sắp xếp token theo độ đặc hiệu (cụm trích dẫn, danh từ riêng, độ dài từ, giới hạn 14 tokens).
-4. **Stage 4–5 — Multimodal Temporal Clustering & Gated RRF Fusion:**
-   - Gom cụm bằng chứng theo thời gian cục bộ (`lookup_true_visual_sim`), hợp nhất điểm bằng Order-Invariant RRF và áp dụng bộ lọc chặn `Pure-ASR False Positive Gate`.
-5. **Stage 6–7 — Contrast Boundary Expansion, Diversity Aggregation & Relation Verification:**
-   - Tinh chỉnh biên thời gian neo đỉnh (`expand_boundary_contrast` trong `src/videntra/localization/refine.py`), tổng hợp đa dạng theo video (`diverse_video` / `moment`).
-   - Khi bật `--verify-relations` (CLI) hoặc `verify_relations=True` (API) ở chế độ `accurate`, pipeline trả về `relation_assessment` đối soát OCR nằm trong khoảng moment và ASR nằm trọn trong khoảng moment kèm metadata provenance.
+4. **Stage 4–5 — Multimodal Temporal Clustering, Order-Invariant RRF & Visual-Floor Gate:**
+   - Gom cụm bằng chứng theo thời gian cục bộ (`lookup_true_visual_sim`), hợp nhất điểm bằng Order-Invariant RRF và áp dụng cổng chặn **Pure-ASR False Positive Gate** kết hợp **Visual-Floor Lexical Gate** (`s_vis_floor = s_vis_max - 0.065`) để ngăn distractor từ vựng nền vượt mặt ứng viên thị giác dẫn đầu.
+5. **Stage 6–7 — Local Window Coherence, Contrast Boundary Expansion & Relation Verification:**
+   - Tích hợp độ nhất quán cửa sổ cục bộ (`local_window_mean` trong `±3.5s`) khi tổng hợp điểm video, tinh chỉnh biên thời gian neo đỉnh (`expand_boundary_contrast` trong `src/videntra/localization/refine.py`), và tổng hợp đa dạng (`diverse_video` / `moment`).
+   - Khi bật `--verify-relations` (CLI) hoặc `verify_relations=True` (API), `_verify_relations()` truy xuất OCR/ASR kèm `FrameObjects` 2D bounding boxes trong khoảng moment, hiệu chuẩn `ASRSegments.confidence` qua `calibrate_asr_confidence()`, kiểm chứng quan hệ không gian 2D cùng frame (`left_of`, `right_of`, `above`, `below`, `inside`, `near`) và tùy chọn rerank qua `rerank_with_relations`.
 
 ---
 
@@ -41,9 +41,9 @@
 | `videntra.localization` | `refine.py` (`refine_moment_boundaries`, `expand_boundary_contrast`) |
 | `videntra.ocr` | `detection.py`, `recognition.py` (`GeneralOCRRecognizer`, `VietOCRRecognizer`), `routing.py`, `tracking.py` |
 | `videntra.query` | `schemas.py` (`QueryGraph v1`), `rules.py`, `llm_parser.py` (zero-crash fallback) |
-| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`) |
+| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` |
 | `videntra.registry` | `store.py`, `access.py` (`MediaResolver` kiểm soát allowlist, denylist, SHA-256 & `rights_status`) |
-| `videntra.relations` | `matcher.py` (`GraphMatcher` logic tam trị), `entities.py`, `attributes.py`, `temporal.py` |
+| `videntra.relations` | `matcher.py` (`GraphMatcher` logic tam trị), `predicates.py` (2D spatial cùng frame & `action_observation`), `entities.py`, `attributes.py`, `temporal.py` |
 | `videntra.retrieval` | `unified_pipeline.py` (SSOT), `visual.py`, `branches.py`, `fusion.py`, `alignment.py`, `union.py` |
 | `videntra.runtime` | `AdmissionController`, `DeadlineBudget` bảo vệ bộ nhớ/SLA |
 | `videntra.sampling` | Hybrid Adaptive Sampling |
@@ -69,3 +69,4 @@
 | **P3–P4 (Evaluation Suite)** | E1–E5 (Multi-split `dev_150` / `dev_full_859` / `heldout_test_201`, Bootstrap CI, Taxonomy F1–F5, A0–A5 Ablations) | **DONE** (báo cáo tại `benchmark/benchmark_report.md`) |
 | **Provenance & Hardening** | Thread-safe `search_with_metadata`, CLI/API parity (`--backend unified`, `--verify-relations`), `split_lock`, `corpus_gate`, `provenance`, Kaggle A5 pinned worker | **DONE** |
 | **Production Cleanup & Repo Release** | Dọn dẹp file tạm & legacy scripts, thay thế mọi hardcoded personal paths bằng `VIDENTRA_*`, `requirements.txt`, `README.md`, `.gitkeep` + `.gitignore`, Security Scan & GitHub Push | **DONE** (381/381 tests PASS) |
+| **Phase 5 — Accuracy & Relation Verifier Upgrade** | Stage 1/2 multi-clause 768d+864d blending, Stage 5 Visual-Floor Lexical Gate, Stage 6 local window coherence, 2D spatial/action grounding, `calibration.py`, `FrameObjects` evidence & optional `rerank_with_relations` | **DONE** (`dev_150` Hit@1 62.00%, 399/399 tests PASS) |
