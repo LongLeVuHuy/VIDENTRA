@@ -648,7 +648,7 @@ def main() -> None:
     parser.add_argument("--save-dataset", action="store_true", help="Persist extracted JSONL to --dataset when extracting from validation/")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output JSON weights path")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
-    parser.add_argument("--l2-reg", type=float, default=1.0, help="L2 regularization strength")
+    parser.add_argument("--l2-reg", type=float, default=1500000.0, help="L2 regularization strength")
     parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="auto")
     args = parser.parse_args()
 

@@ -46,7 +46,11 @@ from videntra.indexing.augmented_vector import (
     compute_late_interaction_maxsim,
     compute_multiscale_temporal_context,
 )
-from videntra.retrieval.alignment import align_sequential_keyframe_clauses
+from videntra.retrieval.alignment import (
+    align_sequential_keyframe_clauses,
+    shot_aware_graph_diffusion,
+    viterbi_subevent_localization,
+)
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
 from videntra.ranking.calibration import calibrate_asr_confidence
@@ -451,9 +455,9 @@ class TextEmbeddingDiskCache:
     def _load(self) -> None:
         if self.cache_file.exists():
             try:
-                data = np.load(str(self.cache_file))
-                for k in data.files:
-                    self._memory_cache[k] = data[k]
+                with np.load(str(self.cache_file)) as data:
+                    for k in data.files:
+                        self._memory_cache[k] = data[k]
             except Exception:
                 pass
 
@@ -1672,12 +1676,33 @@ class UnifiedMultimodalSearchPipeline:
                         kf_fids = [int(kf["faiss_id"]) for kf in kf_list]
                         cand_mat = self.augmented_embeddings[kf_fids]
 
-                    seq_score, anchor_win = align_sequential_keyframe_clauses(
-                        cand_matrix=cand_mat,
-                        cand_timestamps=cand_ts,
-                        clause_vectors=sub_q_864,
-                        max_transition_sec=35.0,
+                    use_se_viterbi = (
+                        routing_plan is not None
+                        and routing_plan.routing_mode == "llm_compact"
+                        and sub_q_864.shape[0] >= 2
+                        and (
+                            routing_plan.has_temporal_constraints
+                            or (len(routing_plan.ocr_phrases) + len(routing_plan.asr_phrases)) >= 1
+                        )
                     )
+                    seq_score = 0.0
+                    anchor_win: tuple[float, float] | None = None
+                    if use_se_viterbi:
+                        vit_res = viterbi_subevent_localization(
+                            timestamps_sec=cand_ts,
+                            event_vis_curves=(sub_q_864 @ cand_mat.T),
+                            max_gap_sec=35.0,
+                        )
+                        if vit_res is not None:
+                            seq_score = float(vit_res.avg_score)
+                            anchor_win = (float(vit_res.start_sec), float(vit_res.end_sec))
+                    if anchor_win is None:
+                        seq_score, anchor_win = align_sequential_keyframe_clauses(
+                            cand_matrix=cand_mat,
+                            cand_timestamps=cand_ts,
+                            clause_vectors=sub_q_864,
+                            max_transition_sec=35.0,
+                        )
                     video_seq_scores[cvid] = seq_score
                     if anchor_win is not None:
                         video_anchor_windows[cvid] = anchor_win
@@ -1875,19 +1900,22 @@ class UnifiedMultimodalSearchPipeline:
             except sqlite3.Error as exc:
                 raise RuntimeError("Lexical retrieval failed") from exc
 
-        # Phase 7.4: Dense E5 Text Index recall for long/paraphrased queries or sparse FTS5 hits
+        # Phase 7.4: Dense E5 Text Index recall only as FTS5 miss/sparse fallback
+        t_e5_encode_ms = 0.0
         if (
             self.e5_text_index is not None
             and ablation_config not in ("A0", "A1", "A2")
-            and (len(query.split()) >= 3 or (len(ocr_candidates) + len(asr_candidates)) < 5)
+            and (len(ocr_candidates) + len(asr_candidates)) < 5
         ):
+            t_e5_start = time.perf_counter()
             q_e5_384 = self.encode_e5_query(query)
+            t_e5_encode_ms = (time.perf_counter() - t_e5_start) * 1000.0
             if q_e5_384 is not None:
                 existing_ocr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in ocr_candidates}
                 existing_asr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in asr_candidates}
                 for hit in self._search_e5_text_index(q_e5_384, top_k=25):
                     sc = float(hit.get("score", 0.0))
-                    if sc < 0.835:
+                    if sc < 0.855:
                         continue
                     src_type = str(hit.get("source_type", "")).lower()
                     vid = str(hit.get("video_id", ""))
@@ -2374,11 +2402,8 @@ class UnifiedMultimodalSearchPipeline:
                 else float(best_cl.get("visual_sim", 0.0))
             )
 
-            if self.spatial_patches is not None and len(self.spatial_patches) > 0:
-                late_int_sc = self._score_late_interaction_window(
-                    vid, best_st - 2.0, best_et + 2.0, primary_q_768
-                )
-            elif self.temporal_context_768 is not None and len(self.temporal_context_768) > 0:
+            vis_ctx_coherence = float(local_vis_coherence)
+            if self.temporal_context_768 is not None and len(self.temporal_context_768) > 0:
                 rep_fid = best_cl.get("faiss_id")
                 if rep_fid is None:
                     kf_list_v = self.video_keyframes.get(vid, [])
@@ -2389,11 +2414,14 @@ class UnifiedMultimodalSearchPipeline:
                         )
                         rep_fid = int(nearest_kf["faiss_id"])
                 if rep_fid is not None and 0 <= int(rep_fid) < len(self.temporal_context_768):
-                    late_int_sc = float(
+                    vis_ctx_coherence = float(
                         np.dot(self.temporal_context_768[int(rep_fid)], primary_q_768.reshape(-1))
                     )
-                else:
-                    late_int_sc = 0.0
+
+            if self.spatial_patches is not None and len(self.spatial_patches) > 0:
+                late_int_sc = self._score_late_interaction_window(
+                    vid, best_st - 2.0, best_et + 2.0, primary_q_768
+                )
             else:
                 late_int_sc = 0.0
 
@@ -2401,7 +2429,7 @@ class UnifiedMultimodalSearchPipeline:
                 "s_vis_blend_max": float(best_cl.get("visual_sim", 0.0)),
                 "s_vis_top3_mean": float(top3_vis_mean),
                 "s_vis_top5_mean": float(top5_vis_mean),
-                "s_vis_ctx_coherence": float(local_vis_coherence),
+                "s_vis_ctx_coherence": float(vis_ctx_coherence),
                 "s_late_interaction": float(late_int_sc),
                 "spike_drop_ratio": float(spike_drop_val),
                 "rrf_vis": float(best_cl.get("rrf_vis", 0.0)),
@@ -2505,6 +2533,25 @@ class UnifiedMultimodalSearchPipeline:
                     video_curve_cache[vid] = (ts_array, sims)
                     exact_curve = sims.tolist()
 
+                # CM-GD: conservative shot-aware graph diffusion for smoother Stage 6 boundary curves
+                boundary_curve = exact_curve
+                if (
+                    len(ts_array) > 2
+                    and len(exact_curve) == len(ts_array)
+                    and self.all_embeddings is not None
+                    and len(self.all_embeddings) > 0
+                ):
+                    kf_fids = self.video_kf_fids.get(vid) or [int(kf["faiss_id"]) for kf in kf_list]
+                    if len(kf_fids) == len(ts_array) and max(kf_fids) < len(self.all_embeddings):
+                        boundary_curve = shot_aware_graph_diffusion(
+                            self.all_embeddings[kf_fids],
+                            ts_array,
+                            exact_curve,
+                            alpha_d=0.12,
+                            shot_sim_threshold=0.70,
+                            sigma_t=4.0,
+                        ).tolist()
+
                 # B10: Anchor index and anchor window calculation
                 anchor_win = video_anchor_windows.get(vid)
                 if anchor_win is not None:
@@ -2515,7 +2562,7 @@ class UnifiedMultimodalSearchPipeline:
 
                 start_sec, end_sec = expand_boundary_contrast(
                     ts=ts_array,
-                    curve=exact_curve,
+                    curve=boundary_curve,
                     v_dur=v_dur,
                     anchor_idx=best_idx,
                     anchor_window=anchor_win,
@@ -2580,7 +2627,8 @@ class UnifiedMultimodalSearchPipeline:
                         s_orig2, e_orig2, rep_orig2, ev_indices2 = _resolve_moment_frame_indices(
                             kf_list, st2, et2, best_idx2
                         )
-                        win2_score = float(moment.ranking_score) * 0.85 * ((s_max2 / max(s_max1, 1e-8)) ** 2)
+                        peak_ratio = min(1.0, float(s_max2) / max(float(s_max1), 1e-8))
+                        win2_score = float(moment.ranking_score) * 0.85 * (peak_ratio ** 2)
                         final_results.append(RankedMoment(
                             moment_id=f"{vid}_{round(st2, 1)}_{round(et2, 1)}_win2",
                             video_id=vid,
@@ -2599,9 +2647,9 @@ class UnifiedMultimodalSearchPipeline:
         t_boundary_end = time.perf_counter()
 
         t_parse_ms = (t_parse_end - t_start) * 1000.0
-        t_encode_ms = (t_encode_end - t_parse_end) * 1000.0
+        t_encode_ms = (t_encode_end - t_parse_end) * 1000.0 + t_e5_encode_ms
         t_faiss_ms = (t_faiss_end - t_encode_end) * 1000.0
-        t_fts5_ms = (t_fts5_end - t_faiss_end) * 1000.0
+        t_fts5_ms = max(0.0, (t_fts5_end - t_faiss_end) * 1000.0 - t_e5_encode_ms)
         t_fusion_ms = (t_fusion_end - t_fts5_end) * 1000.0
         t_boundary_ms = (t_boundary_end - t_fusion_end) * 1000.0
         t_non_neural_ms = t_faiss_ms + t_fts5_ms + t_fusion_ms + t_boundary_ms

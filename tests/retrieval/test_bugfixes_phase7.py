@@ -634,9 +634,10 @@ def test_issue4_temporal_context_and_late_interaction_wired(tmp_path):
 
     pipeline.search("person running", top_k=2, ablation_config="A5")
     feats_ctx = pipeline.last_diagnostics["candidate_ltr_features"]["vid_t"]
-    assert feats_ctx["s_late_interaction"] > 0.0
+    assert feats_ctx["s_late_interaction"] == 0.0
+    assert feats_ctx["s_vis_ctx_coherence"] > 0.0
 
-    # When spatial_patches is present, _score_late_interaction_window takes precedence
+    # When spatial_patches is present, _score_late_interaction_window populates s_late_interaction
     patches = np.zeros((2, 9, 768), dtype=np.float16)
     patches[0, 2, 0] = 0.75
     patches[0, 2, 1] = float(np.sqrt(1.0 - 0.75**2))
@@ -645,3 +646,62 @@ def test_issue4_temporal_context_and_late_interaction_wired(tmp_path):
     pipeline.search("person running", top_k=2, ablation_config="A5")
     feats_patch = pipeline.last_diagnostics["candidate_ltr_features"]["vid_t"]
     assert abs(feats_patch["s_late_interaction"] - 0.75) < 1e-3
+
+
+def test_e5_sparse_fallback_gate_and_disk_cache(tmp_path):
+    import sqlite3
+    from videntra.retrieval.unified_pipeline import TextEmbeddingDiskCache
+
+    # 1. Disk cache round-trip for query_e5_embeddings_384d.npz
+    cache_file = tmp_path / "query_e5_embeddings_384d.npz"
+    c1 = TextEmbeddingDiskCache(cache_file)
+    vec = np.ones(384, dtype=np.float32) / np.sqrt(384.0)
+    c1.set("query: test e5 cache", vec)
+    c1.save()
+    c2 = TextEmbeddingDiskCache(cache_file)
+    loaded = c2.get("query: test e5 cache")
+    assert loaded is not None and np.allclose(loaded, vec, atol=1e-6)
+
+    # 2. Dense E5 skipped when FTS5 already returns >= 5 hits
+    raw_768 = np.zeros((2, 768), dtype=np.float32)
+    aug_864 = np.zeros((2, 864), dtype=np.float32)
+    raw_768[:, 0] = [0.80, 0.20]
+    aug_864[:, 0] = [0.80, 0.20]
+    kf_map = {
+        0: {"video_id": "vid_vis", "pts_time": 4.0, "source_frame_index": 10},
+        1: {"video_id": "vid_e5", "pts_time": 4.0, "source_frame_index": 20},
+    }
+    vid_kfs = {
+        "vid_vis": [{"faiss_id": 0, "pts_time": 4.0, "source_frame_index": 10}],
+        "vid_e5": [{"faiss_id": 1, "pts_time": 4.0, "source_frame_index": 20}],
+    }
+    pipeline = _make_mock_pipeline(raw_768, aug_864, kf_map, vid_kfs)
+    pipeline.encode_texts = _constant_encoder  # type: ignore[method-assign]
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE VIRTUAL TABLE fts_ocr USING fts5(observation_id, video_id, timestamp_ms, normalized_text)")
+    conn.execute("CREATE VIRTUAL TABLE fts_asr USING fts5(segment_id, video_id, start_ms, end_ms, normalized_text)")
+    for i in range(5):
+        conn.execute(f"INSERT INTO fts_ocr VALUES ('o{i}', 'vid_vis', {1000 * (i + 1)}, 'physics')")
+    pipeline.db_conn = conn
+
+    e5_idx = faiss.IndexFlatIP(384)
+    v_high = np.zeros((1, 384), dtype=np.float32)
+    v_high[0, 0] = 0.90
+    e5_idx.add(v_high)
+    pipeline.e5_text_index = e5_idx
+    pipeline.e5_text_manifest = [
+        {"faiss_id": 0, "source_type": "ocr", "video_id": "vid_e5", "start_ms": 4000, "end_ms": 4000, "raw_text": "quantum"},
+    ]
+    called = {"count": 0}
+
+    def _spy_e5(_q: str) -> np.ndarray:
+        called["count"] += 1
+        out = np.zeros(384, dtype=np.float32)
+        out[0] = 1.0
+        return out
+
+    pipeline.encode_e5_query = _spy_e5  # type: ignore[method-assign]
+    pipeline.search("person explaining physics on board", top_k=5, ablation_config="A5")
+    assert called["count"] == 0
+    pipeline.close()

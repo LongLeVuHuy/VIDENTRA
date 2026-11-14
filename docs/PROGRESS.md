@@ -1,5 +1,33 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Tinh chỉnh Pipeline (`CM-GD`, `SE-Viterbi`, E5 Sparse Fallback) & LTR Regularization (`l2_reg=1.5M`)
+
+- **Tách `s_late_interaction` và `s_vis_ctx_coherence` ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):**
+  - Giữ `s_late_interaction = 0.0` khi chưa có `spatial_patches_fp16.npy`; chuyển tín hiệu `temporal_context_768` sang `s_vis_ctx_coherence` để tránh làm mượt quá mức các đỉnh cục bộ sắc nét.
+- **Tinh chỉnh Stage 3 Dense E5 & Nối `CM-GD` / `SE-Viterbi`:**
+  - Chỉ kích hoạt Dense E5 (`sc >= 0.855`) khi FTS5 thưa/trượt (`len(ocr_candidates) + len(asr_candidates) < 5`), tách thời gian encode E5 khỏi `t_non_neural_ms`, và sửa `TextEmbeddingDiskCache._load()` đóng file handle sạch trên Windows.
+  - Nối `shot_aware_graph_diffusion` (`CM-GD`, `alpha_d=0.12`, `shot_sim_threshold=0.70`, `sigma_t=4.0`) vào `boundary_curve` Stage 6 và `viterbi_subevent_localization` (`SE-Viterbi`, `max_gap_sec=35.0`) ở Stage 2 cho `routing_mode == "llm_compact"`; clamp `peak_ratio <= 1.0` cho `_win2`.
+- **Tinh chỉnh Regularization cho LTR ([train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py)):**
+  - Cập nhật `l2_reg = 1500000.0` trên `dev_full_859` (`40,945` rows, 5-fold GroupKFold: `cv_hit_at_1 = 0.4542, cv_mrr = 0.5709, cv_ndcg_at_10 = 0.6164`), giúp 14/18 đặc trưng giữ trọng số khác 0 đúng dấu vật lý 100% và cải thiện `MRR` (`0.6515 -> 0.6517`) & `Video nDCG@10` (`0.6727 -> 0.6729`) so với no-LTR baseline.
+- **Kiểm thử & Benchmark sau tinh chỉnh (`dev_150`, `A5`):**
+  - Full Test Suite: `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`463 passed, 5 warnings in 217.06s`** (exit code `0`).
+  - `dev_150` Benchmark (`.venv\Scripts\python.exe scripts/run_validation_benchmark.py --single-split-only --max-msrvtt 100 --out-dir work/tmp_bench_tuned`, exit code `0`, `inputs_unchanged=True`, `outputs_verified=True`):
+    - `Video Hit@1`: **61.33%** (tăng từ `59.33%`; QVH `86.36%`, AVC `92.86%`, MSR-VTT `47.00%`), `MRR`: **0.6517** (tăng từ `0.6447`), `Video nDCG@10`: **0.6729** (tăng từ `0.6709`).
+    - `Moment Hit@1 (0.5)`: **72.73%** (khôi phục từ `68.18%`), `Moment nDCG@5`: **0.5119** (tăng từ `0.5026`), `Moment mAP@0.5`: **0.5903**.
+    - `Pure-ASR FP Top-1`: **0**; `Non-Neural Latency (p50/p95)`: **72.68 ms / 378.60 ms** (giảm mạnh từ `381.47 ms / 679.64 ms`; `fts5_ms` p50 = `5.87 ms`).
+
+---
+
+## 14/11/2026 — Rà soát Bản sửa lỗi `f37f7a5` & Đề xuất 3 Tinh chỉnh Nhẹ (Fine-Tuning) cho `dev_150`
+
+- **Xác nhận 90% hạng mục trong `f37f7a5` đã ổn:** Sửa dứt điểm Zombie Thread Leak (`DeadlineStoppingCriteria` + `_infer_lock` + dynamic `qint8` trên CPU trong [llm.py](../src/videntra/query/llm.py)), đồng bộ `PROJECT.md` & `provenance.json` (`run_validation_benchmark.py` pass với exit code `0`), khóa fallback parity cho `_build_routed_fts5_queries`, và hoàn thiện 3 module nghiên cứu (`CM-GD`, `SE-Viterbi`, `PQ-VCA`) với `462 passed` tests.
+- **3 điểm cần tinh chỉnh nhẹ (đã cập nhật chi tiết vào [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md)):**
+  1. **Kẹp trần `win2_score` ở Stage 6 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Khi `s_max1` tính trong `[start_sec, end_sec]` nhỏ hơn `s_max2`, `0.85 * (s_max2 / s_max1)^2 > 1.0` làm `win2_score > moment.ranking_score`, khiến `final_results.sort()` đẩy cửa sổ phụ `_win2` lên Rank 1 đè lên `win1` (làm `Moment Hit@1 (0.5)` giảm từ `72.73%` xuống `68.18%`). Cần kẹp `peak_ratio = min(1.0, s_max2 / max(s_max1, 1e-8))`.
+  2. **Siết điều kiện kích hoạt Dense E5 ở Stage 3 & tách khỏi `t_non_neural_ms`:** Điều kiện `len(query.split()) >= 3` đang kích hoạt `encode_e5_query()` trên 99% câu truy vấn (cộng ~350 ms của mạng Transformer E5 vào `t_fts5_ms` / `t_non_neural_ms` và bơm các đoạn thoại E5 có cosine `>= 0.835` vào các câu thuần thị giác, làm `Video Hit@1` giảm xuống `59.33%`). Chỉ nên gọi E5 khi có `explicit_ocr/asr_intent` hoặc khi FTS5 trả về 0 kết quả với ngưỡng `sc >= 0.865` kèm kiểm tra giao thoa từ vựng.
+  3. **Khử đa cộng tuyến giữa `s_late_interaction` (`temporal_context_768`) và `s_vis_blend_max` trong [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json):** Biểu diễn `s_late_interaction` dưới dạng phần dư bối cảnh thời gian `max(0.0, ctx_sim - 0.85 * base_vis)` và tăng `l2_reg = 200.0` để các đặc trưng thị giác 864d (`s_vis_blend_max`, `z_vis_max`, `s_vis_top3_mean`) không bị ép về `0.0`.
+
+---
+
 ## 14/11/2026 — Sửa 7 Vấn đề Kiểm toán Phase 7 & Triển khai Nền tảng Nghiên cứu (`PQ-VCA`, `CM-GD`, `SE-Viterbi`)
 
 Thực thi đầy đủ theo [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md) qua Swarm:
