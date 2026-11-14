@@ -1,5 +1,13 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Chốt Chiến lược CPU-Safe (Giải pháp 2): Cache/Rules trên CPU & Live LLM khi có CUDA (`VIDENTRA_LLM_ENABLED`)
+
+- Cập nhật `LocalSmallLLMBackend.__init__` trong [llm.py](../src/videntra/query/llm.py):
+  - `enabled=None` mặc định bật live inference khi có CUDA (`_has_cuda()`) hoặc khi truyền `generate_fn` / đặt `VIDENTRA_LLM_ENABLED=1`.
+  - Trên máy thuần CPU (`cuda=False`), mặc định không gọi live LLM để tránh treo 5s timeout mỗi truy vấn; sử dụng RAM/Disk cache (`data/cache/query_decomposition_cache.jsonl`, pre-warm từ Kaggle GPU qua [prewarm_llm_query_cache.py](../scripts/prewarm_llm_query_cache.py)) và fallback `RuleBasedQueryParser` (`<1 ms`).
+
+---
+
 ## 15/11/2026 — Cài đặt Phương án B CPU GGUF (`llama-cpp-python==0.3.36` + `qwen2.5-1.5b-instruct-q4_k_m.gguf`)
 
 - **Cài đặt Runtime & Tải Weights GGUF (Gitignored):**

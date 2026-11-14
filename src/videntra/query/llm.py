@@ -368,7 +368,7 @@ class LocalSmallLLMBackend:
         backend: str = "auto",
         model_revision: str | None = None,
         deadline_ms: int | None = None,
-        enabled: bool = True,
+        enabled: bool | None = None,
         generate_fn: Callable[[str], str] | None = None,
         n_ctx: int = 512,
         n_threads: int | None = None,
@@ -399,7 +399,19 @@ class LocalSmallLLMBackend:
                     self.DEFAULT_CUDA_DEADLINE_MS if self._has_cuda() else self.DEFAULT_CPU_DEADLINE_MS
                 )
 
-        self.enabled = enabled
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        elif generate_fn is not None:
+            self.enabled = True
+        else:
+            env_enabled = os.environ.get("VIDENTRA_LLM_ENABLED", "").strip().lower()
+            if env_enabled in ("1", "true", "yes", "on"):
+                self.enabled = True
+            elif env_enabled in ("0", "false", "no", "off"):
+                self.enabled = False
+            else:
+                # Default auto: enable live inference on CUDA; on CPU-only rely on prewarmed cache + <1ms rules
+                self.enabled = self._has_cuda()
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
         self.n_threads = (
