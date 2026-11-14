@@ -72,6 +72,8 @@ models/*
 !models/ocr/
 !models/asr/
 !models/detection/
+!models/ranking/
+!models/llm/
 
 models/siglip2/*
 !models/siglip2/.gitkeep
@@ -81,6 +83,10 @@ models/asr/*
 !models/asr/.gitkeep
 models/detection/*
 !models/detection/.gitkeep
+models/ranking/*
+!models/ranking/videntra_ltr_v1.json
+models/llm/*
+!models/llm/.gitkeep
 
 # Runtime work artifacts & evaluation splits (keep folder structure via .gitkeep)
 work/*
@@ -153,6 +159,7 @@ ui/dist/
 *.tar
 *.tar.gz
 *.safetensors
+*.gguf
 *.pt
 *.pth
 *.onnx

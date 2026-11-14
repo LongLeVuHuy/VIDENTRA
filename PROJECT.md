@@ -40,7 +40,7 @@
 | `videntra.ingestion` | `probe.py`, `jobs.py` (`IngestionJobManager` với resume an toàn & atomic write) |
 | `videntra.localization` | `refine.py` (`refine_moment_boundaries`, `expand_boundary_contrast`) |
 | `videntra.ocr` | `detection.py`, `recognition.py` (`GeneralOCRRecognizer`, `VietOCRRecognizer`), `routing.py`, `tracking.py` |
-| `videntra.query` | `schemas.py` (`QueryGraph v1`, `ModalityRoutingPlan`, `CompactDecomposedQuery`), `rules.py`, `canonicalize.py`, `llm.py` (`AdaptiveQueryDecomposer`, `LocalSmallLLMBackend`, `QueryComplexityGate`, `SemanticDecomposerValidator`, RAM+Disk cache & `<1ms` fallback) |
+| `videntra.query` | `schemas.py` (`QueryGraph v1`, `ModalityRoutingPlan`, `CompactDecomposedQuery`), `rules.py`, `canonicalize.py`, `llm.py` (`SmallLLMQueryDecomposer` với GGUF `llama-cpp-python` + HF backend, `AdaptiveQueryDecomposer`, `QueryComplexityGate`, `SemanticDecomposerValidator`, RAM+Disk cache & `<1ms` fallback) |
 | `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `learned_ranker.py` (`LearnedRankerLTR` pure-NumPy), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` (18d LTR features & `compute_query_z_scores`) |
 | `videntra.registry` | `store.py`, `access.py` (`MediaResolver` kiểm soát allowlist, denylist, SHA-256 & `rights_status`) |
 | `videntra.relations` | `matcher.py` (`GraphMatcher` logic tam trị), `predicates.py` (2D spatial cùng frame & `action_observation`), `entities.py`, `attributes.py`, `temporal.py` |

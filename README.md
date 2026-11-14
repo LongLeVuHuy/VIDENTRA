@@ -1,349 +1,282 @@
-# VIDENTRA
+# VIDENTRA — Unified Multimodal Video Retrieval & Moment Localization Engine
 
-**Video Intelligence, Evidence & Temporal Retrieval Architecture**  
-*Find the moment. Understand the relation.*
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Architecture](https://img.shields.io/badge/Architecture-864D%20Multimodal%20%2B%20Small--LLM%20%2B%20LTR-success.svg)](#kiến-trúc-pipeline-6-tầng-phase-7)
+[![Test Suite](https://img.shields.io/badge/Pytest-463%20passed-brightgreen.svg)](#kiểm-thử--đánh-giá-benchmark)
 
-VIDENTRA là hệ thống truy hồi khoảnh khắc video đa phương thức (Multimodal Video Moment Retrieval) tối ưu cho tiếng Việt và tiếng Anh, hỗ trợ phân tích quan hệ ngữ nghĩa (`QueryGraph v1`), trích xuất bằng chứng độc lập (**Visual**, **OCR**, **ASR**, **Object Detection**), suy luận logic tam trị (`SUPPORTED` / `CONTRADICTED` / `UNKNOWN`), phát lại HTML5 HTTP 206 Range Streaming và đối soát khung hình chính xác theo timeline (`presentation-order decoded frame ledger`).
+**VIDENTRA** là hệ thống tìm kiếm video đa phương thức (**Multimodal Video Retrieval**) và định vị khoảnh khắc theo thời gian thực (**Temporal Moment Localization**) được thiết kế tối ưu cho phần cứng phổ thông (**RTX 3060 6GB VRAM / 32GB RAM** hoặc chạy suy luận trực tiếp trên **CPU** nhờ cơ chế Memory-Mapped Vector Store và GGUF Quantized LLM).
 
----
-
-## Mục lục
-
-1. [Tổng quan Kiến trúc](#1-tổng-quan-kiến-trúc)
-2. [Cấu trúc Thư mục Dự án](#2-cấu-trúc-thư-mục-dự-án)
-3. [Hướng dẫn Cài đặt từ `requirements.txt`](#3-hướng-dẫn-cài-đặt-từ-requirementstxt)
-4. [Cấu hình Dữ liệu, Trọng số Mô hình & Biến môi trường](#4-cấu-hình-dữ-liệu-trọng-số-mô-hình--biến-môi-trường)
-5. [Hướng dẫn Vận hành Hệ thống (CLI, API & Web UI)](#5-hướng-dẫn-vận-hành-hệ-thống-cli-api--web-ui)
-6. [Kiểm thử Tự động & Công cụ Kiểm toán](#6-kiểm-thử-tự-động--công-cụ-kiểm-toán)
-7. [Hiệu năng & Giới hạn Kỹ thuật đã Ghi nhận](#7-hiệu-năng--giới-hạn-kỹ-thuật-đã-ghi-nhận)
+Hệ thống kết hợp **6 luồng tín hiệu độc lập** trên một trục thời gian chuẩn hóa (`Presentation-Order Decoded Ledger`):
+1. **Biểu diễn Thị giác – Không gian 864 chiều (`864d Augmented Subspace`)**: Ghép nối trực giao giữa `SigLIP2` (`768d` ngữ nghĩa toàn cục) + `YOLOv11n COCO` (`80d` IDF-weighted object counts) + `Spatial Grid 3×3` (`16d` bố cục không gian).
+2. **Phân rã Truy vấn bằng Small-LLM (`SmallLLMQueryDecomposer`)**: Sử dụng mô hình nhẹ `Qwen2.5-1.5B-Instruct` (hỗ trợ cả `GGUF Q4_K_M` qua `llama-cpp-python` và `Transformers`) kèm bộ nhớ đệm `query_decomposition_cache.jsonl` và cơ chế fallback `< 1ms` sang `RuleBasedQueryParser`.
+3. **Truy xuất Văn bản Đa tầng (`SQLite FTS5 BM25` + `Dense E5 Semantic Index`)**: Tìm kiếm độc lập trên cả chữ xuất hiện trong khung hình (**OCR - PaddleOCR**) và lời thoại (**ASR - Faster-Whisper**) thông qua kết hợp từ vựng chính xác (FTS5) và ngữ nghĩa dày đặc (`multilingual-e5-small`).
+4. **Hợp nhất RRF Động & Xếp hạng Học máy (`LearnedRankerLTR` 18 Đặc trưng)**: Xếp hạng ứng viên bằng mô hình Out-of-Fold Pairwise Logistic LTR có ràng buộc chiều đơn điệu (`Monotonic Sign Constraints`) kết hợp chuẩn hóa xác suất `IsotonicCalibrator`.
+5. **Khuếch tán Đồ thị Đa phương thức (`CM-GD`) & Định vị Khoảnh khắc `SE-Viterbi`**: Nội suy đường cong tương đồng theo thời gian thực, mở rộng biên thích ứng (`Adaptive Boundary Contrast`) và căn chỉnh thứ tự sự kiện (`before` / `after` / `then`) bằng quy hoạch động Viterbi.
 
 ---
 
-## 1. Tổng quan Kiến trúc
-
-Hệ thống vận hành theo mô hình **Single Source of Truth (SSOT)** thông qua `UnifiedMultimodalSearchPipeline` (`src/videntra/retrieval/unified_pipeline.py`), dùng chung xuyên suốt giữa CLI, FastAPI Server và bộ Evaluator:
-
-1. **Ingestion & Presentation-Order Timeline Ledger (`src/videntra/timeline/`, `src/videntra/ingestion/`):**
-   - Giải mã video tuần tự theo thứ tự hiển thị (zero-based presentation ordinal), ghi nhận `PTS` và `time_base` gốc qua PyAV (`av==19.0.2`), tuyệt đối không suy diễn `timestamp × FPS` trên video VFR.
-   - Lấy mẫu khung hình thích ứng lai (`Hybrid Adaptive Sampling`) và trích xuất khung hình chính xác mức bit.
-2. **Trích xuất Bằng chứng Đa phương thức Độc lập (`src/videntra/ocr/`, `src/videntra/asr/`, `src/videntra/evidence/`):**
-   - **Visual:** `SigLIP 2` (`google/siglip2-base-patch16-224`, 768d) mã hóa hình ảnh và truy vấn văn bản song ngữ Anh–Việt.
-   - **OCR:** Phát hiện vùng chữ kết hợp `OCRRouter` tự động định tuyến sang `VietOCRRecognizer` (khi có ký tự tiếng Việt có dấu) hoặc `GeneralOCRRecognizer` (`rapidocr-onnxruntime`), gom track theo không gian–thời gian (`OCRTrackRecord`).
-   - **ASR:** Phát hiện tiếng nói (VAD) kết hợp `PhoWhisperTranscriber` / `faster-whisper`, căn chỉnh thời gian hai chiều (`TimelineAligner`).
-   - **Object Detection & Subspace 864d (`src/videntra/indexing/augmented_vector.py`):** Chiếu xuất đặc trưng đối tượng COCO IDF và tín hiệu văn bản/metadata để mở rộng vector 768d thành không gian **864 chiều chuẩn hóa (Decoupled Subspace Scaling)**, lập chỉ mục trên **FAISS `IndexFlatIP`** và **SQLite FTS5** (chế độ persistent read-only).
-3. **Pipeline Tìm kiếm 7 Chặng (`UnifiedMultimodalSearchPipeline`):**
-   - **Stage 1:** Phân tích truy vấn (`RuleBasedQueryParser` + plural/COCO role & supplemental action-object mappings) & tạo vector 864d với dual-prompt ensemble và LRU RAM cache (512 entries, chuẩn hóa NFC).
-   - **Stage 2:** Truy xuất FAISS IP, pha trộn đồng nhất **768d + 864d (`0.70 / 0.30`)** cho cả câu đơn và đa mệnh đề (`sub_clauses`), kết hợp căn chỉnh tuần tự đa mệnh đề (`align_sequential_keyframe_clauses`).
-   - **Stage 3:** Truy vấn từ vựng SQLite FTS5 theo độ đặc hiệu token (quoted phrases, proper nouns, length-sorted tokens, giới hạn tối đa 14 tokens).
-   - **Stage 4–5:** Gom cụm đa phương thức cục bộ theo thời gian, tính điểm hợp nhất bất biến thứ tự (Order-Invariant RRF), cổng chặn **Pure-ASR False Positive Gate** và **Visual-Floor Lexical Gate** (`s_vis_floor = s_vis_max - 0.065`).
-   - **Stage 6–7:** Tính độ nhất quán cửa sổ cục bộ (`local_window_mean` `±3.5s`), mở rộng biên khoảnh khắc dựa trên neo đỉnh tương đồng (`expand_boundary_contrast`), tổng hợp đa dạng (`diverse_video` / `moment`), và đối chiếu đồ thị quan hệ (`GraphMatcher`, `verify_relations` tích hợp OCR, ASR calibrated + 2D `FrameObjects` cùng frame, hỗ trợ tùy chọn `rerank_with_relations`).
-4. **Logic Tam trị & Bảo vệ Ground Truth Isolation:**
-   - Thiếu bằng chứng trả về **`UNKNOWN`** (không bao giờ tự động coi là `FALSE`); lời thoại ASR không tự chứng minh danh tính người nói nếu thiếu neo đối soát.
-   - `MediaResolver` (`src/videntra/registry/access.py`) thực thi allowlist cho thư mục media và chặn truy cập (`denied_roots`) đối với các thư mục đánh giá/ground truth (`validation/`, `test_queries/`, `work/evaluation-only/`).
+## Mục Lục
+1. [Kiến Trúc Pipeline 6 Tầng (Phase 7)](#1-kiến-trúc-pipeline-6-tầng-phase-7)
+2. [Yêu Cầu Hệ Thống & Cài Đặt Nhanh](#2-yêu-cầu-hệ-thống--cài-đặt-nhanh)
+3. [Cấu Trúc Thư Mục Dự Án](#3-cấu-trúc-thư-mục-dự-án)
+4. [Cấu Hình Biến Môi Trường (`.env`)](#4-cấu-hình-biến-môi-trường-env)
+5. [Hướng Dẫn Sử Dụng Nhanh (CLI, Python SDK & Web UI)](#5-hướng-dẫn-sử-dụng-nhanh-cli-python-sdk--web-ui)
+6. [Quản Lý Dữ Liệu, Chỉ Mục & Huấn Luyện Mô Hình](#6-quản-lý-dữ-liệu-chỉ-mục--huấn-luyện-mô-hình)
+7. [Kiểm Thử & Kết Quả Benchmark Thực Nghiệm](#7-kiểm-thử--kết-quả-benchmark-thực-nghiệm)
 
 ---
 
-## 2. Cấu trúc Thư mục Dự án
+## 1. Kiến Trúc Pipeline 6 Tầng (Phase 7)
 
-> **Lưu ý về cấu trúc GitHub:** Để giữ repository gọn nhẹ chuẩn production, toàn bộ dữ liệu nặng (video thô, trọng số mô hình, chỉ mục FAISS/SQLite, cache, kết quả chạy thử, bộ phân tách ground truth) được **bỏ qua khỏi Git**, nhưng cấu trúc thư mục vẫn được duy trì sẵn thông qua các tệp `.gitkeep`.
+```mermaid
+flowchart TD
+    Q["Truy vấn người dùng (Ngắn / Vừa / Dài)"] --> S1["Stage 1: Query Canonicalization & Small-LLM Decomposition<br/>(Qwen2.5-1.5B GGUF / Cache / Rule Fallback < 1ms)"]
+    S1 --> S2["Stage 2: Multi-Representation Query Encoding<br/>(SigLIP2 768d + COCO 80d + Spatial 16d = 864d Vector)"]
+    S1 --> S3A["Nhánh OCR & ASR Lexical<br/>(SQLite FTS5 BM25 + Prefix/Phrase)"]
+    S1 --> S3B["Nhánh Dense Text Fallback<br/>(Multilingual-E5-Small FAISS)"]
+    S2 --> S3C["Nhánh Visual Retrieval<br/>(FAISS 864d Inner-Product + Sub-Clauses)"]
+    S3A & S3B & S3C --> S4["Stage 3 & 4: Query-Adaptive RRF Fusion & Temporal Clustering<br/>(Cross-Modal Consensus + True Visual Rescoring)"]
+    S4 --> S5["Stage 5: 18-Feature LearnedRankerLTR & Guardrails<br/>(Out-of-Fold Pairwise LTR + Pure-ASR FP Demotion)"]
+    S5 --> S6["Stage 6: Temporal Moment Localization & Calibration<br/>(Adaptive Boundary Expansion + SE-Viterbi + Isotonic Calibration)"]
+```
+
+### Không Gian Vector 864 Chiều (`864d Augmented Subspace`)
+Mỗi keyframe và mỗi câu truy vấn đều được ánh xạ vào không gian vector `864d` chuẩn hóa:
+
+$$\mathbf{v}_{864} = \left[\, \alpha_{\text{vis}}\hat{\mathbf{v}}_{\text{SigLIP2}}^{(768)} \;\middle\|\; \alpha_{\text{obj}}\hat{\mathbf{v}}_{\text{COCO-IDF}}^{(80)} \;\middle\|\; \alpha_{\text{sp}}\hat{\mathbf{v}}_{\text{Spatial-3x3}}^{(16)} \,\right] \in \mathbb{R}^{864}$$
+
+- **Chiều `0..767` (`768d`)**: Vector ngữ nghĩa thị giác từ `google/siglip2-base-patch16-224` (kèm nhánh `temporal_context_768` trượt dọc theo cửa sổ thời gian).
+- **Chiều `768..847` (`80d`)**: Histogram 80 lớp đối tượng COCO từ `YOLOv11n` có trọng số nghịch đảo tần suất (`IDF-weighted`), giúp phân biệt chính xác số lượng và loại thực thể.
+- **Chiều `848..863` (`16d`)**: Bố cục lưới không gian $3\times 3$ (`top-left`, `center`, `bottom-right`, diện tích, mật độ, độ phân tán), giúp bắt trúng vị trí đối tượng trong khung hình.
+
+---
+
+## 2. Yêu Cầu Hệ Thống & Cài Đặt Nhanh
+
+### Yêu cầu phần cứng & phần mềm
+- **Hệ điều hành**: Windows 10/11 (PowerShell) hoặc Linux / macOS.
+- **Python**: `3.12+` (khuyến nghị dùng môi trường ảo `.venv`).
+- **FFmpeg / PyAV**: Để giải mã video chính xác theo `PTS/time_base` (hỗ trợ cả video CFR và VFR).
+- **Phần cứng mục tiêu**:
+  - **Chế độ GPU**: NVIDIA GPU $\ge 6\text{GB}$ VRAM (ví dụ RTX 3060) + RAM $\ge 16\text{GB}$.
+  - **Chế độ CPU**: Chạy hoàn toàn trên CPU nhờ cơ chế đọc đĩa `mmap_mode='r'`, bộ đệm `SQLite` và mô hình `GGUF Q4_K_M`.
+
+### Các bước cài đặt từ đầu
+
+**Bước 1: Clone kho mã nguồn và tạo môi trường ảo**
+```powershell
+git clone <repository-url> VIDENTRA
+cd VIDENTRA
+
+# Tạo môi trường ảo Python
+python -m venv .venv
+
+# Kích hoạt môi trường ảo (Windows PowerShell)
+.\.venv\Scripts\Activate.ps1
+```
+
+**Bước 2: Cài đặt các gói thư viện phụ thuộc**
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
+```
+
+**Bước 3: Kiểm tra cài đặt và cấu hình đường dẫn**
+```powershell
+# Kiểm tra toàn bộ đường dẫn tài nguyên và chỉ mục
+.\.venv\Scripts\python.exe -m videntra check-paths
+
+# Chạy bộ kiểm thử tự động để xác nhận hệ thống hoạt động hoàn hảo
+.\.venv\Scripts\pytest.exe -q
+```
+
+---
+
+## 3. Cấu Trúc Thư Mục Dự Án
 
 ```text
 VIDENTRA/
-├── src/videntra/               # Mã nguồn lõi Python package
-│   ├── api/                    # FastAPI REST API routes, HTTP 206 streaming, Web UI HTML, CSV/JSON export
-│   ├── asr/                    # Voice Activity Detection, PhoWhisper/Faster-Whisper ASR & TimelineAligner
-│   ├── config/                 # Cấu hình ingestion, sampling và tham số hệ thống
-│   ├── contracts/              # JSON Schema validators cho dataset, media_asset, frame_record, query_graph, result
-│   ├── encoders/               # SigLIP 2 encoder (real CPU/GPU + deterministic mock cho test)
-│   ├── evaluation/             # Evaluator IR metrics, Bootstrap CI, provenance, split_lock & corpus_gate
-│   ├── evidence/               # Lưu trữ & quản lý Parquet/SQLite cho bằng chứng OCR/ASR
-│   ├── indexing/               # Vector FAISS store, 864d augmented subspace, SQLite FTS5 & SnapshotManifest
-│   ├── ingestion/              # Pipeline ingest media, probe FFmpeg/PyAV, job manager hỗ trợ resume
-│   ├── localization/           # Tinh chỉnh biên thời gian & contrast boundary expansion
-│   ├── ocr/                    # Text detection, tracking & routing (RapidOCR / VietOCR)
-│   ├── query/                  # RuleBasedQueryParser, LLMQueryParser (fallback an toàn) & QueryGraph v1
-│   ├── ranking/                # RelationAwareRanker & Score Calibration (`calibration.py`: ASR logprob/temperature sigmoid)
-│   ├── registry/               # MediaResolver (allowlist/denylist), registry SQLite & SHA-256 verification
-│   ├── relations/              # GraphMatcher tam trị, 2D spatial cùng frame, action_observation & đối tượng COCO
-│   ├── retrieval/              # UnifiedMultimodalSearchPipeline (SSOT), branches, fusion & alignment
-│   ├── runtime/                # AdmissionController, DeadlineBudget & telemetry
-│   ├── sampling/               # Hybrid Adaptive Sampling
-│   ├── storage/                # Quản lý lưu trữ Parquet / snapshot / ZSTD
-│   ├── timeline/               # Presentation-order frame ledger & bit-exact seek
-│   └── cli.py                  # Điểm vào dòng lệnh `videntra` / `python -m videntra`
-├── configs/
-│   ├── experiments/            # Cấu hình thực nghiệm (e01.json, e02.json)
-│   ├── ingestion/              # Cấu hình ingestion chuẩn (m1_default.json)
-│   └── local/
-│       └── asset_roots.example.json  # Mẫu ánh xạ thư mục dữ liệu cục bộ (copy thành asset_roots.json)
-├── manifests/                  # Manifest chuẩn định danh tập dữ liệu và clip mẫu
-├── scripts/                    # Công cụ vận hành: Kaggle worker, ingest kết quả, benchmark, audit provenance/timeline
-├── tests/                      # Bộ kiểm thử tự động toàn diện (unit, integration, parity, isolation)
-├── benchmark/                  # Báo cáo kết quả benchmark tổng hợp (benchmark_report.md, benchmark_summary.json)
-├── docs/                       # Tài liệu thiết kế Blueprint, JSON Schemas, Audit reports & PROGRESS.md
-├── data/                       # [Local Only - .gitkeep] Dữ liệu raw/, processed/ (metadata.db, faiss_index.bin), cache/
-├── models/                     # [Local Only - .gitkeep] Trọng số cục bộ: siglip2/, ocr/, asr/, detection/
-├── work/                       # [Local Only - .gitkeep] Dữ liệu ingest trung gian, fixtures & benchmark runs
-├── validation/                 # [Local Only - .gitkeep] Bộ ground truth đánh giá (tách biệt khỏi runtime)
-├── test_queries/               # [Local Only - .gitkeep] Bộ truy vấn kiểm thử giữ kín (heldout)
-├── requirements.txt            # Danh sách thư viện Python Production đã pin phiên bản
-├── pyproject.toml              # Cấu hình đóng gói & entry point CLI (`videntra`)
-├── PROJECT.md                  # Tài liệu kiến trúc kỹ thuật & danh mục module/feature
-└── README.md                   # Hướng dẫn cài đặt và vận hành hệ thống
+├── benchmark/                  # Báo cáo kết quả đánh giá (benchmark_report.md, benchmark_summary.json)
+├── configs/                    # Cấu hình đường dẫn cục bộ (asset_roots.example.json)
+├── data/
+│   ├── raw/                    # Video gốc theo bộ dữ liệu (qvhighlights, msrvtt, textvr, tvr, avc) & keyframes
+│   ├── processed/              # Chỉ mục đã trích xuất:
+│   │   ├── siglip2/            # Keyframe vectors (864d, 768d, temporal_context_768, faiss_864.index)
+│   │   ├── text_e5/            # Chỉ mục ngữ nghĩa dày đặc (Multilingual-E5-Small FAISS + metadata)
+│   │   └── evidence.sqlite     # Cơ sở dữ liệu SQLite FTS5 (BM25) cho OCR, ASR và YOLO tags
+│   └── cache/                  # Bộ đệm embedding truy vấn & query_decomposition_cache.jsonl
+├── docs/                       # Tài liệu kiến trúc (docs/blueprint/) và nhật ký tiến độ (docs/PROGRESS.md)
+├── manifests/                  # Manifest khóa SHA-256 cho splits và lịch sử thực nghiệm
+├── models/                     # Trọng số mô hình cục bộ:
+│   ├── siglip2/                # google/siglip2-base-patch16-224
+│   ├── llm/                    # Qwen2.5-1.5B-Instruct (GGUF Q4_K_M & HF weights)
+│   ├── ranking/                # Trọng số bộ xếp hạng học máy (videntra_ltr_v1.json)
+│   ├── ocr/ & asr/             # PaddleOCR & Faster-Whisper weights
+│   └── detection/              # YOLOv11n weights
+├── scripts/                    # Các kịch bản huấn luyện LTR, xây dựng chỉ mục, đánh giá benchmark & Kaggle worker
+├── src/videntra/               # Mã nguồn chính của gói thư viện VIDENTRA
+│   ├── api/                    # FastAPI Server & giao diện Web UI Inspector
+│   ├── config/                 # Quản lý cấu hình và biến môi trường VIDENTRA_*
+│   ├── contracts/              # Hợp đồng dữ liệu và kiểm định mốc thời gian (PTS/time_base)
+│   ├── encoders/               # Bộ mã hóa văn bản/hình ảnh SigLIP2
+│   ├── evaluation/             # Bộ tính toán chỉ số (Hit@K, MRR, nDCG@K, Moment IoU) & Provenance Gate
+│   ├── evidence/               # Chuẩn hóa và lưu trữ bằng chứng OCR / ASR / Visual
+│   ├── indexing/               # Xây dựng vector 864d, FAISS store, SQLite FTS5 & Structured Event Synopsis
+│   ├── ingestion/              # Giải mã video (PyAV), lấy mẫu khung hình và trích xuất đặc trưng
+│   ├── localization/           # Tạo đề xuất đoạn (Proposals), Adaptive Boundary Expansion, CM-GD & SE-Viterbi
+│   ├── query/                  # Canonicalization, RuleBasedQueryParser, SmallLLMQueryDecomposer & JSONL Cache
+│   ├── ranking/                # Trích xuất 18 đặc trưng LTR, LearnedRankerLTR & Isotonic Calibration
+│   ├── registry/               # Quản lý định danh video (media_id SHA-256)
+│   ├── relations/              # Phân tích thực thể, vị ngữ không gian và quan hệ thời gian (before/after)
+│   ├── retrieval/              # Pipeline truy xuất hợp nhất 6 tầng (unified_pipeline.py), RRF Fusion & CSLS
+│   └── timeline/               # Sổ cái thời gian (Presentation-Order Frame Ledger)
+├── tests/                      # 463 bài kiểm thử đơn vị (Unit) và tích hợp (Integration)
+├── validation/                 # Tập truy vấn phát triển (80% - dev_150 & dev_full_859)
+├── test_queries/               # Tập truy vấn kiểm thử độc lập (20% - heldout_test_201)
+├── PROJECT.md                  # Tài liệu chi tiết cấu trúc các module trong chương trình
+├── VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md # Báo cáo kiểm định kỹ thuật & lộ trình nghiên cứu
+└── README.md                   # Tài liệu hướng dẫn cài đặt và sử dụng
 ```
 
 ---
 
-## 3. Hướng dẫn Cài đặt từ `requirements.txt`
+## 4. Cấu Hình Biến Môi Trường (`.env`)
 
-### 3.1. Yêu cầu tiên quyết
-- **Hệ điều hành:** Windows 10/11 (64-bit) hoặc Linux (x86_64).
-- **Python:** Phiên bản **3.12** (`>=3.12,<3.13`).
-- **FFmpeg & FFprobe:** Đã cài đặt và thêm vào biến môi trường `PATH` (`ffmpeg -version` chạy thành công).
-- **Phần cứng:**
-  - Mục tiêu đề xuất: NVIDIA GPU >= 6GB VRAM (ví dụ RTX 3060), RAM >= 16–32 GB.
-  - Chế độ suy luận CPU-only vẫn hỗ trợ đầy đủ với SigLIP 2, FAISS CPU và SQLite FTS5 (RAM ~420–580 MB khi truy vấn).
+Hệ thống tự động nhận diện cấu trúc thư mục mặc định tại gốc dự án. Bạn có thể tùy chỉnh linh hoạt thông qua các biến môi trường sau (hoặc tạo file `.env` ở thư mục gốc):
 
-### 3.2. Các bước cài đặt trên Windows (PowerShell)
-
-```powershell
-# 1. Clone repository từ GitHub
-git clone https://github.com/LongLeVuHuy/VIDENTRA.git
-cd VIDENTRA
-
-# 2. Tạo và kích hoạt môi trường ảo Python 3.12
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Nâng cấp pip và cài đặt toàn bộ thư viện từ requirements.txt
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-# 4. Cài đặt gói VIDENTRA ở chế độ editable (kích hoạt lệnh `videntra`)
-pip install --no-build-isolation -e .
-
-# 5. Kiểm tra xung đột thư viện và CLI entry point
-pip check
-videntra --help
-```
-
-### 3.3. Các bước cài đặt trên Linux / macOS
-
-```bash
-git clone https://github.com/LongLeVuHuy/VIDENTRA.git
-cd VIDENTRA
-
-python3.12 -m venv .venv
-source .venv/bin/activate
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-pip install --no-build-isolation -e .
-
-pip check
-videntra --help
-```
-
-> **Ghi chú về GPU (CUDA):** Mặc định `requirements.txt` sử dụng `torch` tiêu chuẩn tương thích cả CPU/GPU theo môi trường pip. Nếu chạy suy luận hoặc embedding quy mô lớn trên máy có card NVIDIA, hãy cài `torch` bản CUDA (ví dụ `--index-url https://download.pytorch.org/whl/cu124`) trước khi chạy `pip install -r requirements.txt`, hoặc sử dụng GPU worker Kaggle kèm sẵn trong `scripts/kaggle_multimodal_offline_worker.py`.
-
----
-
-## 4. Cấu hình Dữ liệu, Trọng số Mô hình & Biến môi trường
-
-### 4.1. Tạo tệp cấu hình thư mục dữ liệu (`configs/local/asset_roots.json`)
-Sao chép tệp mẫu và tùy chỉnh đường dẫn nếu thư mục dữ liệu nằm ở vị trí khác:
-
-```powershell
-Copy-Item configs\local\asset_roots.example.json configs\local\asset_roots.json
-```
-
-Mặc định tệp cấu hình trỏ vào cấu trúc thư mục chuẩn bên trong `VIDENTRA`:
-- `roots`: `data/raw/<dataset>/media`, `work/m1_fixtures`
-- `denied_roots`: `["work/evaluation-only", "validation", "test_queries"]` (đảm bảo runtime tìm kiếm không bao giờ đọc nhầm dữ liệu ground truth).
-
-### 4.2. Chuẩn bị Trọng số Mô hình (Model Checkpoints)
-Đặt trọng số mô hình vào thư mục `models/` tương ứng trước khi chạy suy luận thật (không cần tải weights nếu chỉ chạy unit tests bằng mock hoặc kiểm thử fixture):
-- `models/siglip2/` — SigLIP 2 Base Patch16-224 (`google/siglip2-base-patch16-224`, revision pin `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`).
-- `models/ocr/` — Mô hình nhận diện ký tự (`paddleocr_en/`, `vietocr/`).
-- `models/asr/` — Mô hình chuyển giọng nói thành văn bản (`phowhisper_small/` hoặc `faster-whisper-small`).
-- `models/detection/` — Trọng số phát hiện đối tượng (`yolov8n.pt`).
-
-### 4.3. Biến môi trường hỗ trợ (`VIDENTRA_*`)
-Hệ thống cho phép ghi đè toàn bộ đường dẫn runtime qua biến môi trường thay cho tham số dòng lệnh:
-
-| Biến môi trường | Giá trị mặc định | Mô tả |
+| Biến môi trường | Mặc định | Mô tả chi tiết |
 | :--- | :--- | :--- |
-| `VIDENTRA_DB_PATH` | `data/processed/metadata.db` | Đường dẫn tới cơ sở dữ liệu SQLite FTS5 & metadata chỉ mục |
-| `VIDENTRA_FAISS_PATH` | `data/processed/faiss_index.bin` | Đường dẫn tới tệp chỉ mục vector FAISS |
-| `VIDENTRA_MODEL_DIR` | `models/siglip2` | Thư mục chứa checkpoint mô hình SigLIP 2 |
-| `VIDENTRA_DEVICE` | `cpu` | Thiết bị chạy encoder (`cpu` hoặc `cuda`) |
-| `VIDENTRA_ASSETS_ROOT` | `data/raw` | Thư mục gốc chứa raw datasets cho các script chuẩn bị dữ liệu |
-| `VIDENTRA_QVH_MEDIA_DIR` | `data/raw/qvhighlights/media` | Thư mục chứa video media của QVHighlights |
-| `VIDENTRA_ASR_MODEL_DIR` | `models/asr/phowhisper_small` | Thư mục chứa checkpoint mô hình ASR |
+| `VIDENTRA_RAW_VIDEOS_DIR` | `data/raw` | Thư mục chứa video gốc của các tập dữ liệu |
+| `VIDENTRA_PROCESSED_DIR` | `data/processed` | Thư mục chứa chỉ mục `siglip2/`, `text_e5/` và `evidence.sqlite` |
+| `VIDENTRA_MODELS_DIR` | `models` | Thư mục chứa trọng số các mô hình cục bộ |
+| `VIDENTRA_CACHE_DIR` | `data/cache` | Thư mục lưu cache truy vấn và `query_decomposition_cache.jsonl` |
+| `VIDENTRA_WORK_DIR` | `work` | Thư mục lưu kết quả trung gian và nhật ký thực nghiệm |
+| `VIDENTRA_LLM_ENABLED` | Tự động bật khi có CUDA | Đặt `1` để bật suy luận trực tiếp `Qwen2.5-1.5B-Instruct` (GGUF/HF); đặt `0` để chỉ dùng Cache + Rule Parser (`< 1ms`) |
+| `VIDENTRA_LLM_MODEL_PATH` | `models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf` | Đường dẫn tới file `.gguf` hoặc thư mục HuggingFace của Small-LLM |
+| `VIDENTRA_LLM_DEADLINE_MS` | `60.0` (ms) | Ngưỡng thời gian tối đa cho phép Small-LLM suy luận trước khi tự động chuyển về `RuleBasedQueryParser` |
 
 ---
 
-## 5. Hướng dẫn Vận hành Hệ thống (CLI, API & Web UI)
+## 5. Hướng Dẫn Sử Dụng Nhanh (CLI, Python SDK & Web UI)
 
-Tất cả câu lệnh đều có thể gọi qua `videntra ...` hoặc `python -m videntra ...`.
+### 5.1. Tìm kiếm video trực tiếp từ dòng lệnh (CLI)
 
-### 5.1. Kiểm tra nhanh bằng Dữ liệu Fixture (Không cần tải dataset/model nặng)
+Sử dụng lệnh `videntra search` để tìm kiếm video và định vị khoảnh khắc `(start_sec, end_sec)` cho bất kỳ câu truy vấn nào:
 
 ```powershell
-# Kiểm tra toàn bộ manifest và JSON schema
-videntra manifests validate --all
-
-# Tạo bộ video fixture tổng hợp để kiểm thử end-to-end
-videntra fixtures build --output work/fixtures
+.\.venv\Scripts\python.exe -m videntra search `
+  --query "A woman in a white blouse speaks to the camera while a news banner appears at the bottom" `
+  --top-k 5
 ```
 
-### 5.2. Quy trình Xây dựng Dữ liệu & Chỉ mục (Ingest $\to$ Evidence $\to$ Index)
-
+**Bật trực tiếp Small-LLM (`Qwen2.5-1.5B-Instruct` GGUF) khi tìm kiếm câu truy vấn mới:**
 ```powershell
-# Bước 1: Ingest video và dựng Presentation-Order Timeline Ledger
-videntra ingest `
-  --manifest manifests/qvh24.media.json `
-  --config configs/ingestion/m1_default.json `
-  --output work/ingest `
-  --asset-roots configs/local/asset_roots.json `
-  --resume
-
-# Bước 2: Trích xuất bằng chứng đa phương thức (OCR & ASR)
-videntra evidence build `
-  --manifest manifests/qvh24.media.json `
-  --ingest-dir work/ingest `
-  --output work/evidence `
-  --modalities ocr,asr `
-  --asset-roots configs/local/asset_roots.json
-
-# Bước 3: Lập chỉ mục Visual Vector Index
-videntra index build `
-  --manifest manifests/qvh24.media.json `
-  --ingest-dir work/ingest `
-  --output work/index `
-  --model-path models/siglip2 `
-  --device cpu `
-  --asset-roots configs/local/asset_roots.json
+$env:VIDENTRA_LLM_ENABLED="1"
+$env:VIDENTRA_LLM_DEADLINE_MS="3000"
+.\.venv\Scripts\python.exe -m videntra search `
+  --query "First a chef chops vegetables on a wooden board, then he pours them into a boiling pot" `
+  --top-k 5
 ```
 
-> **Offload Embedding & Extraction nặng lên Kaggle GPU:** Với tập dữ liệu hàng nghìn video, sử dụng quy trình đóng gói & đồng bộ có kiểm tra SHA-256 + timeline ledger:
-> 1. Đóng gói keyframe input: `python scripts/package_kaggle_inputs.py`
-> 2. Chạy worker GPU trên Kaggle: `scripts/kaggle_multimodal_offline_worker.py` (đã pin model revisions & PyAV)
-> 3. Kiểm tra provenance & nạp kết quả vào snapshot mới (không ghi đè lịch sử): `python scripts/ingest_kaggle_offline_results.py`
+### 5.2. Khởi chạy Giao diện Web UI Inspector & FastAPI Server
 
-### 5.3. Tìm kiếm Khoảnh khắc qua CLI (`videntra search`)
-
-**Chế độ Production (`--backend unified` — khuyến nghị):** Sử dụng cùng pipeline 7 chặng của benchmark và API, hỗ trợ bật kiểm chứng quan hệ `--verify-relations`:
+VIDENTRA cung cấp sẵn máy chủ API cùng giao diện **Web UI Inspector** trực quan để tra cứu video, xem điểm thành phần của từng nhánh (`Visual`, `OCR`, `ASR`, `Spatial`), xem kết quả phân rã truy vấn và phát trực tiếp đúng khoảnh khắc video tìm được:
 
 ```powershell
-videntra search `
-  --backend unified `
-  --db-path data/processed/metadata.db `
-  --faiss-path data/processed/faiss_index.bin `
-  --model-path models/siglip2 `
-  --snapshot-id local-prod-v1 `
-  --mode accurate `
-  --ranking-mode diverse_video `
-  --verify-relations `
-  --query "a person riding a bicycle near a shop sign" `
-  --top-k 10 `
-  --output work/predictions.jsonl
+.\.venv\Scripts\uvicorn.exe videntra.api.app:app --host 127.0.0.1 --port 8000
+```
+- Mở trình duyệt tại: **`http://127.0.0.1:8000/`** để sử dụng giao diện tìm kiếm trực quan.
+- Tài liệu OpenAPI (Swagger UI): **`http://127.0.0.1:8000/docs`**.
+
+**Ví dụ gọi REST API (`POST /api/search`):**
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/search" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"query": "a man playing guitar on stage", "top_k": 5}'
 ```
 
-**Chế độ Visual Cơ bản (`--backend visual`):** Dùng cho index cục bộ tạo trực tiếp bởi `videntra index build`:
+### 5.3. Sử dụng trực tiếp trong Python SDK (`UnifiedRetrievalPipeline`)
 
-```powershell
-videntra search `
-  --index-dir work/index `
-  --query "màn hình kiểm tra màu sắc chuẩn" `
-  --top-k 10 `
-  --output work/predictions_visual.jsonl
-```
+```python
+from videntra.retrieval.unified_pipeline import UnifiedRetrievalPipeline
 
-### 5.4. Khởi chạy Server REST API & Web UI Inspector (`videntra serve`)
+# Khởi tạo pipeline (tự động nạp chỉ mục 864d, SQLite FTS5, Dense E5 và LearnedRankerLTR)
+pipeline = UnifiedRetrievalPipeline()
 
-```powershell
-videntra serve `
-  --backend unified `
-  --host 127.0.0.1 `
-  --port 8000 `
-  --db-path data/processed/metadata.db `
-  --faiss-path data/processed/faiss_index.bin `
-  --model-path models/siglip2 `
-  --ingest-dir work/ingest `
-  --asset-roots configs/local/asset_roots.json `
-  --snapshot-id local-prod-v1
-```
+query = 'A man in a dark suit talks in an interview after a title card reading "BREAKING NEWS"'
 
-Sau khi khởi động, mở trình duyệt tại `http://127.0.0.1:8000/` để sử dụng **Web UI Inspector** (tài liệu OpenAPI tương tác có tại `http://127.0.0.1:8000/docs`).
+# 1. Xem kế hoạch phân rã và định tuyến đa phương thức của truy vấn
+routing_plan = pipeline.decompose_and_route(query)
+print("Routing mode:", routing_plan.routing_mode)
+print("Modality weights (Vis / OCR / ASR / Spatial):",
+      routing_plan.w_vis, routing_plan.w_ocr, routing_plan.w_asr, routing_plan.w_spatial)
 
-#### Ví dụ gọi API `POST /v1/search`:
-```powershell
-curl -X POST "http://127.0.0.1:8000/v1/search" `
-  -H "Content-Type: application/json" `
-  -d '{"query": "person wearing red jacket", "top_k": 5, "mode": "accurate", "ranking_mode": "diverse_video", "verify_relations": true}'
-```
-
-#### Phím tắt trên trình phát Web UI Inspector:
-- `Space`: Phát / Tạm dừng (Play / Pause)
-- `R`: Phát lại đúng khoảng thời gian khoảnh khắc tìm được
-- `,` / `.`: Lùi 1 khung hình / Tiến 1 khung hình (đối soát `X-Frame-Index`, `X-PTS`, `X-Timestamp-Us`)
-- `Esc`: Đóng trình phát
-
-### 5.5. Đánh giá Offline (`videntra evaluate`)
-Chỉ chạy ở pha Evaluator sau khi toàn bộ predictions đã được xuất cố định:
-
-```powershell
-videntra evaluate `
-  --predictions work/predictions.jsonl `
-  --ground-truth validation/qvhighlights/dev_labels.jsonl `
-  --output work/evaluation_report.json
+# 2. Thực hiện truy xuất video và định vị khoảnh khắc
+results = pipeline.search(query=query, top_k=5)
+for rank, item in enumerate(results, start=1):
+    print(
+        f"#{rank} | Video: {item['video_id']} "
+        f"| Moment: [{item['start_sec']:.1f}s - {item['end_sec']:.1f}s] "
+        f"| Score: {item['score']:.4f} | Calibrated: {item.get('calibrated_prob', 0.0):.3f}"
+    )
 ```
 
 ---
 
-## 6. Kiểm thử Tự động & Công cụ Kiểm toán
+## 6. Quản Lý Dữ Liệu, Chỉ Mục & Huấn Luyện Mô Hình
 
-### 6.1. Chạy toàn bộ bộ kiểm thử (`pytest`)
+### 6.1. Nạp và giải mã video mới (`ingest`)
 ```powershell
-python -B -m pytest -q -p no:cacheprovider
-```
-Kết quả kiểm thử toàn diện gần nhất sau khi hoàn thiện Phase 6 (Windows CPU): **402 passed (0 failed)** trong ~88.8s.
-
-Hoặc kiểm tra riêng từng lớp thành phần:
-```powershell
-# Kiểm tra Ground Truth Isolation (E12)
-pytest -q tests/evaluation/test_isolation.py
-
-# Kiểm tra đồng nhất giữa API, CLI Unified & Relation Verifier
-pytest -q tests/api/test_unified_parity.py
-
-# Kiểm tra cấu hình đường dẫn và bảo vệ denied_roots
-pytest -q tests/registry/test_asset_roots.py
+.\.venv\Scripts\python.exe -m videntra ingest `
+  --video-path data/raw/qvhighlights/example_video.mp4 `
+  --dataset qvhighlights
 ```
 
-### 6.2. Các Script Kiểm toán Read-Only
-- `python scripts/audit_model_index.py --db data/processed/metadata.db --index data/processed/faiss_index.bin --model-dir models/siglip2` — Đối soát cấu trúc DB, số lượng vector FAISS và hash checkpoint mô hình.
-- `python scripts/audit_decoded_timeline.py` — Đối chiếu PTS giải mã thực tế từng frame với metadata lưu trữ.
-- `python scripts/audit_kaggle_provenance.py` — Kiểm toán SHA-256 đầu ra Kaggle worker và `keyframe_manifest.json`.
-- `python scripts/run_validation_benchmark.py` — Chạy bộ benchmark đánh giá đa tập (yêu cầu dữ liệu chỉ mục và split đánh giá đầy đủ trong máy cục bộ).
+### 6.2. Xây dựng chỉ mục ngữ nghĩa dày đặc `Dense E5` cho OCR & ASR
+```powershell
+.\.venv\Scripts\python.exe scripts/build_e5_text_index.py
+```
+
+### 6.3. Pre-warm bộ nhớ đệm phân rã truy vấn (`query_decomposition_cache.jsonl`)
+```powershell
+# Chế độ nhanh (Rule-based < 1 giây cho toàn bộ tập truy vấn)
+.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py --rule-only
+
+# Chế độ đầy đủ bằng Qwen2.5-1.5B-Instruct (GGUF hoặc CUDA GPU)
+$env:VIDENTRA_LLM_ENABLED="1"
+$env:VIDENTRA_LLM_DEADLINE_MS="30000"
+.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py
+```
+
+### 6.4. Huấn luyện lại bộ xếp hạng học máy `LearnedRankerLTR` (5-Fold Out-of-Fold CV)
+```powershell
+.\.venv\Scripts\python.exe scripts/train_ltr_ranker_cv.py
+```
+Kịch bản sẽ trích xuất 18 đặc trưng đa phương thức trên tập `dev_full_859` (bảo đảm tách biệt 100% với `heldout_test_201`), tối ưu hóa hàm mất mát Pairwise Logistic Loss với ràng buộc dấu vật lý (`MONOTONIC_DIRECTIONS`), khớp bộ hiệu chỉnh xác suất `IsotonicCalibrator` và xuất trọng số ra `models/ranking/videntra_ltr_v1.json`.
 
 ---
 
-## 7. Hiệu năng & Giới hạn Kỹ thuật đã Ghi nhận
+## 7. Kiểm Thử & Kết Quả Benchmark Thực Nghiệm
 
-Số liệu tham khảo từ báo cáo kiểm toán [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md) (đo trên kho 1,324 video / 11,179 keyframes 864d, phần cứng **Intel Core i5-7300U CPU, 32GB RAM, Local SSD**):
+### 7.1. Chạy bộ kiểm thử tự động (`pytest`)
+```powershell
+.\.venv\Scripts\pytest.exe -q
+```
+- **Trạng thái hiện tại**: **`463 passed`** (bao gồm kiểm thử đơn vị và tích hợp cho toàn bộ các module: `timeline`, `indexing`, `query/llm`, `ranking/learned_ranker`, `localization/refine`, `retrieval/unified_pipeline`, `evaluation/provenance`).
 
-- **Tập `dev_150` (150 queries):**
-  - Mốc kiểm toán P4 tại [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md): Video Hit@1 **61.33%** (92/150), MRR **0.6540**, Video nDCG@10 **0.6763**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%** (16/22), **0 ca** Pure-ASR False Positive Top-1.
-  - Sau nâng cấp **Phase 6** (cập nhật [`benchmark/benchmark_summary.json`](benchmark/benchmark_summary.json), sử dụng SigLIP 2 text embedding disk cache): Video Hit@1 **62.00%** (93/150), Hit@5 **70.67%**, Hit@10 **74.67%**, MRR **0.6582**, Video nDCG@10 **0.6794**, MSRVTT Hit@1 **48.00%**, Moment Hit@1 (tIoU $\ge 0.5$) **72.73%**, `F4` giảm từ `28 -> 27`, **0 ca** Pure-ASR FP.
-- **Tập mở rộng & Held-out Test (Phase 6 Multi-Split):**
-  - **`dev_full_859` (859 queries):** Video Hit@1 **41.68%** (358/859), MRR **0.5018** (tăng từ 0.5012), Video nDCG@10 **0.5465** (tăng từ 0.5455), `Pure-ASR FP = 0` (giảm từ 1).
-  - **`heldout_test_201` (201 queries chưa từng tune):** Video Hit@1 **39.30%** (79/201, tăng từ 38.81%), MRR **0.4774** (tăng từ 0.4733), Video nDCG@10 **0.5258** (tăng từ 0.5226), MSRVTT Hit@1 **37.70%**, `Pure-ASR FP = 0`.
-  - Chi tiết chẩn đoán **Overfitting / Mix Shift** và phân loại lỗi `F1..F5` xem tại Mục 8 trong [`benchmark/benchmark_report.md`](benchmark/benchmark_report.md).
-- **Độ trễ & Bộ nhớ (CPU-only):** Non-neural retrieval khi đánh giá Phase 6 đạt trung vị `p50 = 24.27 ms` (`p95 = 106.01 ms`). Phép đo tham chiếu P4 cho cold query (bao gồm SigLIP 2 Text Encoding CPU) đạt `p50 = 250.93 ms` (`p95 = 317.82 ms`), RSS **420.0 MB**, Peak Working Set **580.0 MB** (các chỉ tiêu cold latency/RAM đánh dấu `NOT_MEASURED` trong lần chạy cache Phase 6).
+### 7.2. Chạy đánh giá Benchmark chính thức (Có cổng kiểm định chống rò rỉ dữ liệu)
+```powershell
+.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py
+```
+Kịch bản đánh giá tự động kiểm tra chữ ký SHA-256 của toàn bộ tệp Ground Truth trước và sau khi chạy (`inputs_unchanged=True`, `outputs_verified=True`), tuyệt đối không cho phép pipeline đọc nhãn Ground Truth trong quá trình tìm kiếm.
 
-**Giới hạn trung thực:**
-1. Chưa công bố số liệu benchmark chính thức trên phần cứng đích NVIDIA RTX 3060 6GB VRAM vì quá trình đo vừa qua thực hiện trên máy CPU thử nghiệm và GPU Kaggle Tesla T4 cho tác vụ offline extraction.
-2. Các bộ dữ liệu bên thứ ba nếu chưa có biên nhận cấp phép suy luận thương mại được giữ trạng thái `rights_status = "unknown"` và cách ly trong `quarantine`/`denied_roots`.
-3. Chức năng `verify_relations` sử dụng OCR, ASR đã hiệu chuẩn và `FrameObjects` 2D bounding boxes nằm trong khoảng thời gian moment (`left_of`, `right_of`, `above`, `below`, `inside`, `near` cùng frame, hoặc `action_observation` tường minh); quan hệ 3D (`behind`/`in_front_of`), quan hệ khác frame, hoặc hành động chỉ có box tĩnh vẫn giữ trạng thái `UNKNOWN` theo logic tam trị.
+### 7.3. Bảng kết quả thực nghiệm hiện tại (Phase 7 - Commit `9beb770`)
+
+| Tập Đánh Giá | Số Truy Vấn | Video Hit@1 | Video Hit@5 | Video Hit@10 | Video MRR | Video nDCG@10 | Moment Hit@1 (IoU $\ge 0.5$) | Moment nDCG@5 | Pure-ASR FP Top-1 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`dev_150` (Validation Core)** | 150 | **`61.33%`** | **`74.67%`** | **`76.67%`** | **`0.6517`** | **`0.6729`** | **`72.73%`** | **`0.5119`** | **`0`** |
+| **`heldout_test_201` (Blind Test 20%)** | 201 | **`41.79%`** | **`59.70%`** | **`66.67%`** | **`0.4910`** | **`0.5327`** | **`44.74%`** | **`0.3696`** | **`0`** |
+
+> Xem phân tích kiểm định chi tiết và lộ trình nâng cấp tiếp theo tại: [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](file:///C:/Users/DELL/Desktop/VIDENTRA/VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md).

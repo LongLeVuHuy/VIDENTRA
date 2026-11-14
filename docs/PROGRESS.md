@@ -1,5 +1,22 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kiểm định sau bản vá Hydrogen (`8fe684a`–`9beb770`), Dọn dẹp dự án & Viết lại `README.md`
+
+- **Kiểm định kỹ thuật sau các commits `8fe684a`, `7c1cd53`, `9beb770` ([VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md)):**
+  - **Các phần đã ổn định:**
+    1. Bộ trọng số `LearnedRankerLTR` ([videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json)) với `l2_reg = 1500000.0` và tách `s_vis_ctx_coherence` đã kích hoạt 14/18 đặc trưng cân bằng, 100% đúng chiều vật lý.
+    2. Kẹp trần `peak_ratio` cho `_win2` tại Stage 6 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py#L2630-L2631)) đã phục hồi `Moment Hit@1 (0.5)` từ `68.18%` lên **`72.73%`** và kéo `Video Hit@1` trên `dev_150` lên **`61.33%`**, `MRR = 0.6517`, `Video nDCG@10 = 0.6729`, `Pure-ASR FP Top-1 = 0`.
+    3. Backend `llama-cpp-python` (`qwen2.5-1.5b-instruct-q4_k_m.gguf`) + cơ chế CPU-safe (`VIDENTRA_LLM_ENABLED`) và bộ kiểm thử `463 passed` + Provenance Gate `exit code = 0`.
+  - **Các điểm chưa ổn & hướng dẫn sửa chi tiết đã ghi nhận:**
+    1. Lỗi `AttributeError` (`sub_q_864.shape[0]`) và `TypeError` (`sub_q_864 @ cand_mat.T`) tại [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py#L1682-L1693) do `sub_q_864` là `list[np.ndarray]` khi `routing_mode == "llm_compact"`.
+    2. Điều kiện cổng `Dense E5` ở Stage 3 (`(len(ocr_candidates) + len(asr_candidates)) < 5`) vẫn chạy trên mọi truy vấn thuần thị giác, làm tăng `Non-Neural p50` (`72.68 ms`) và giữ `Video Hit@1` ở `61.33%` (92/150) thay vì `62.00%` (93/150).
+    3. Ngưỡng `shot_aware_graph_diffusion` ở Stage 6 (`len(ts_array) >= 12`, `alpha_d = 0.06`) để bảo toàn `Moment nDCG@5 >= 0.5127`.
+- **Dọn dẹp không gian làm việc & Viết lại [README.md](../README.md):**
+  - Xóa toàn bộ thư mục tạm `__pycache__`, `.pytest_cache`, `models/llm/.cache`, `work/search_result.jsonl`, cùng các bản nháp kế hoạch cũ không còn dùng (`PLAN/`, `VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md`), giữ thư mục gốc gọn gàng và tuân thủ quy tắc bảo toàn dữ liệu trong `AGENTS.md`.
+  - Viết lại toàn diện [README.md](../README.md) hướng dẫn cài đặt từ đầu, cấu hình biến môi trường (`VIDENTRA_*`), sử dụng CLI, Python SDK, FastAPI + Web UI Inspector, prewarm LLM cache, huấn luyện LTR và chạy benchmark.
+
+---
+
 ## 15/11/2026 — Chốt Chiến lược CPU-Safe (Giải pháp 2): Cache/Rules trên CPU & Live LLM khi có CUDA (`VIDENTRA_LLM_ENABLED`)
 
 - Cập nhật `LocalSmallLLMBackend.__init__` trong [llm.py](../src/videntra/query/llm.py):
