@@ -323,8 +323,12 @@ UI_HTML = """<!DOCTYPE html>
       }
 
       const player = document.getElementById("player");
+      player.onloadedmetadata = () => {
+        if (Number.isFinite(item.moment_start_seconds)) {
+          player.currentTime = item.moment_start_seconds;
+        }
+      };
       player.src = `/v1/media/${encodeURIComponent(item.video_id)}`;
-      player.currentTime = item.moment_start_seconds;
 
       loadExactFrame(item.video_id, currentOrdinal);
 
@@ -375,10 +379,14 @@ UI_HTML = """<!DOCTYPE html>
         const blob = await resp.blob();
         img.src = URL.createObjectURL(blob);
 
+        const parsedTs = parseInt(tsUs, 10);
+        const tsDisplay = Number.isFinite(parsedTs)
+          ? `${tsUs} µs (${(parsedTs / 1e6).toFixed(4)}s)`
+          : "N/A";
         details.innerHTML = `
           <div><strong>Ordinal:</strong> ${ordinal}</div>
           <div><strong>PTS:</strong> ${pts}</div>
-          <div><strong>Timestamp:</strong> ${tsUs} µs (${(parseInt(tsUs)/1e6).toFixed(4)}s)</div>
+          <div><strong>Timestamp:</strong> ${tsDisplay}</div>
           <div><strong>Revision:</strong> ${rev}</div>
         `;
       } catch (err) {

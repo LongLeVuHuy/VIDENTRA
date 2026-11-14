@@ -262,3 +262,116 @@ def test_search_accurate_mode_with_query_graph(api_test_env):
     first = data["results"][0]
     assert "match_status" in first
     assert "unresolved_predicates" in first
+
+
+def _create_tiny_mp4(path: Path, num_frames: int = 5) -> None:
+    """Create a tiny valid MP4 file in tmp_path using PyAV."""
+    import av
+    import numpy as np
+
+    container = av.open(str(path), mode="w")
+    try:
+        stream = container.add_stream("mpeg4", rate=25)
+        stream.width = 64
+        stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        for i in range(num_frames):
+            arr = np.full((64, 64, 3), fill_value=(i * 40) % 255, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    finally:
+        container.close()
+
+
+def test_unified_media_and_frame_fallback_without_manifest_or_ingest_dir(tmp_path):
+    """Ensure unified serve works with allow_unregistered_roots=True and no ingest_dir."""
+    from fastapi.testclient import TestClient
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    video_id = "sample_clip_01"
+    _create_tiny_mp4(media_dir / f"{video_id}.mp4")
+
+    denied_dir = tmp_path / "validation"
+    denied_dir.mkdir()
+    (denied_dir / "secret_val_video.mp4").write_bytes(b"fake")
+
+    resolver = MediaResolver(
+        {"fixtures": media_dir, "blocked": denied_dir},
+        [],
+        denied_roots=(denied_dir,),
+        allow_unregistered_roots=True,
+    )
+    app = create_app(engine=None, resolver=resolver, ingest_dir=None, snapshot_id="unified_test")
+    client = TestClient(app)
+
+    media_resp = client.get(f"/v1/media/{video_id}")
+    assert media_resp.status_code == 200
+    assert len(media_resp.content) > 0
+
+    range_resp = client.get(f"/v1/media/{video_id}", headers={"Range": "bytes=0-99"})
+    assert range_resp.status_code == 206
+    assert len(range_resp.content) == 100
+
+    frame_resp = client.get(f"/v1/frames/{video_id}/0")
+    assert frame_resp.status_code == 200
+    assert frame_resp.headers["Content-Type"] == "image/jpeg"
+    assert frame_resp.headers["X-Frame-Index"] == "0"
+    assert frame_resp.headers["X-Timeline-Revision"] == "direct_decode"
+    assert len(frame_resp.content) > 100
+
+    blocked_resp = client.get("/v1/media/secret_val_video")
+    assert blocked_resp.status_code == 404
+
+
+def test_frame_lookup_prefers_unified_keyframe_when_present(tmp_path):
+    """Verify /v1/frames serves pre-extracted keyframe from metadata.db when ingest_dir is absent."""
+    import io
+    import sqlite3
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    video_id = "sample_clip_02"
+    _create_tiny_mp4(media_dir / f"{video_id}.mp4")
+
+    kf_path = tmp_path / "000012.jpg"
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), color=(255, 0, 0)).save(buf, format="JPEG")
+    kf_bytes = buf.getvalue()
+    kf_path.write_bytes(kf_bytes)
+
+    db_path = tmp_path / "metadata.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE Keyframes (video_id TEXT, source_frame_index INTEGER, keyframe_path TEXT, pts INTEGER, timestamp_ms INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO Keyframes VALUES (?, ?, ?, ?, ?)",
+            (video_id, 12, str(kf_path), 12000, 500),
+        )
+
+    resolver = MediaResolver(
+        {"fixtures": media_dir},
+        [],
+        allow_unregistered_roots=True,
+    )
+    app = create_app(
+        engine=None,
+        resolver=resolver,
+        ingest_dir=None,
+        pipeline=SimpleNamespace(db_path=str(db_path)),
+    )
+    client = TestClient(app)
+
+    resp = client.get(f"/v1/frames/{video_id}/12")
+    assert resp.status_code == 200
+    assert resp.content == kf_bytes
+    assert resp.headers["X-Timeline-Revision"] == "unified_keyframe"
+    assert resp.headers["X-PTS"] == "12000"
+    assert resp.headers["X-Timestamp-Us"] == "500000"

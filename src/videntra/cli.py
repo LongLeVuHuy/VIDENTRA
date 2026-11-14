@@ -157,7 +157,12 @@ def _get_encoder(model_path: str | None, device: str = "cpu", mock: bool = False
     return MockSigLIP2Encoder()
 
 
-def _build_resolver(asset_roots: str | Path | None, records: list[dict] | None = None):
+def _build_resolver(
+    asset_roots: str | Path | None,
+    records: list[dict] | None = None,
+    *,
+    allow_unregistered_roots: bool = False,
+):
     from .registry.access import MediaResolver
     if not asset_roots:
         return None
@@ -181,6 +186,7 @@ def _build_resolver(asset_roots: str | Path | None, records: list[dict] | None =
         roots=roots_dict,
         records=records or [],
         denied_roots=denied_tuple,
+        allow_unregistered_roots=allow_unregistered_roots,
     )
 
 
@@ -346,8 +352,17 @@ def handle_serve(args):
     records = []
     if args.manifest and Path(args.manifest).exists():
         records = load_manifest(args.manifest).get("records", [])
-    if args.asset_roots:
-        resolver = _build_resolver(args.asset_roots, records)
+    asset_roots_path = Path(args.asset_roots) if args.asset_roots else None
+    if asset_roots_path and not asset_roots_path.exists():
+        fallback_roots = Path("configs/local/asset_roots.example.json")
+        if fallback_roots.exists():
+            asset_roots_path = fallback_roots
+    if asset_roots_path:
+        resolver = _build_resolver(
+            asset_roots_path,
+            records,
+            allow_unregistered_roots=not records,
+        )
 
     app = create_app(
         engine=engine,

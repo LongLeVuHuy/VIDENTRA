@@ -1,5 +1,17 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Sửa kết nối Media Streaming & Frame/Thumbnail cho Unified Backend (`videntra serve`)
+
+- **Nguyên nhân gốc rễ:** Khi chạy `videntra serve --backend unified --db-path data/processed/metadata.db` không truyền `--manifest` và `--ingest-dir`, `MediaResolver` có `records=[]` nên `/v1/media/{video_id}` trả `404`, đồng thời `/v1/frames/{video_id}/{index}` trả `503` vì yêu cầu bắt buộc `--ingest-dir` (`frames.parquet`), dẫn đến giao diện Web không hiển thị thumbnail và không phát được video.
+- **Thay đổi đã triển khai:**
+  - [access.py](../src/videntra/registry/access.py): Bổ sung tùy chọn `allow_unregistered_roots` cho `MediaResolver` để tự động quét media trong các thư mục `roots` hợp lệ (`data/raw/{avc,msrvtt,qvhighlights}/media`, ...) mà vẫn giữ nguyên kiểm tra `denied_roots` và cách ly Ground Truth (`validation`, `test_queries`, `work/evaluation-only`).
+  - [cli.py](../src/videntra/cli.py): Trong `handle_serve`, tự động bật `allow_unregistered_roots=True` khi không truyền `--manifest`, và fallback về `configs/local/asset_roots.example.json` nếu thiếu `configs/local/asset_roots.json`.
+  - [frames.py](../src/videntra/api/frames.py): Bổ sung cơ chế fallback 3 tầng cho `GET /v1/frames/{video_id}/{index}`: (1) `exact_seek_frame` từ `frames.parquet` nếu có `--ingest-dir`; (2) đọc trực tiếp JPEG keyframe đã trích xuất từ bảng `Keyframes` trong `metadata.db` hoặc `data/raw/keyframes/` (`X-Timeline-Revision: unified_keyframe`); (3) decode trực tiếp frame ordinal từ file video bằng PyAV (`X-Timeline-Revision: direct_decode`).
+  - [ui_html.py](../src/videntra/api/ui_html.py): Gắn `player.onloadedmetadata` để seek đúng thời điểm `moment_start_seconds` khi mở Inspector và xử lý an toàn trường hợp thiếu timestamp header.
+- **Kiểm thử:** Bổ sung 2 unit/API tests mới trong [test_routes.py](../tests/api/test_routes.py) (`test_unified_media_and_frame_fallback_without_manifest_or_ingest_dir`, `test_frame_lookup_prefers_unified_keyframe_when_present`) và chạy toàn bộ test suite `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider`: **404 passed in 45.83s (0 failed, 0 skipped)**.
+
+---
+
 ## 14/11/2026 — Hoàn tất Phase 6: Chẩn đoán Overfitting, Nâng cấp Tổng quát hóa Đa tập & Chuẩn hóa `requirements.txt`
 
 - **Chẩn đoán Overfitting & Generalization Gap:**
