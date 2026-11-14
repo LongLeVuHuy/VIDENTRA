@@ -295,8 +295,11 @@ def test_compute_keyframe_hubness_radii_cross_video(tmp_path: Path):
     assert np.allclose(loaded_r, radii)
     assert med_r == pytest.approx(float(np.median(radii)), abs=1e-6)
 
-    # Empty edge case
+    # Empty & single-video edge cases
     assert compute_keyframe_hubness_radii(np.zeros((0, 16), dtype=np.float32)).size == 0
+    same_vid_r = compute_keyframe_hubness_radii(vecs[:5], video_ids=["v0"] * 5, k_neighbors=3, sample_anchors=5)
+    assert same_vid_r.shape == (5,)
+    assert np.allclose(same_vid_r, 0.0)
 
 
 def test_snap_boundaries_to_shot_cuts():
@@ -382,4 +385,12 @@ def test_se_viterbi_llm_compact_no_crash_and_e5_pure_visual_gate():
     assert len(res) >= 2
     assert res[0].ranking_score > res[1].ranking_score
     assert e5_calls == []  # Pure-visual query must NOT invoke E5 encoder!
+
+    # Pure-visual query with generic words like "talking" / "screen" must also NOT invoke E5
+    _ = pipeline.search("a man talking on screen", top_k=5, ablation_config="A5")
+    assert e5_calls == []
+
+    # Quoted phrase MUST invoke E5 when FTS5 yields < 5 results
+    _ = pipeline.search('"exact phrase"', top_k=5, ablation_config="A5")
+    assert e5_calls == ['"exact phrase"']
 

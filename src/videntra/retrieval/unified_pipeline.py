@@ -35,7 +35,6 @@ from videntra.query.llm import AdaptiveQueryDecomposer
 from videntra.query.schemas import ModalityRoutingPlan
 from videntra.retrieval.visual import (
     RankedMoment,
-    build_or_load_keyframe_hubness_radii,
     ensemble_clause_scores,
     temporal_iou,
 )
@@ -57,7 +56,7 @@ from videntra.retrieval.alignment import (
     viterbi_subevent_localization,
 )
 from videntra.relations.entities import compute_object_verification_boost
-from videntra.localization.refine import expand_boundary_contrast, snap_boundaries_to_shot_cuts
+from videntra.localization.refine import expand_boundary_contrast
 from videntra.ranking.calibration import calibrate_asr_confidence
 from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_22d
 from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
@@ -570,8 +569,6 @@ class UnifiedMultimodalSearchPipeline:
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
         self.temporal_context_768: np.ndarray | None = None
-        self.keyframe_hubness_radii: np.ndarray | None = None
-        self.hubness_median_radius: float = 0.0
         self.e5_text_index: faiss.Index | None = None
         self.e5_text_manifest: list[dict[str, Any]] = []
         self.e5_tokenizer: Any | None = None
@@ -704,30 +701,12 @@ class UnifiedMultimodalSearchPipeline:
                 )
             else:
                 self.temporal_context_768 = None
-            kf_vids = [
-                self.keyframe_map.get(i, {}).get("video_id", f"__kf_{i}")
-                for i in range(len(self.augmented_embeddings))
-            ]
-            hub_cache = (
-                Path("data/cache/keyframe_hubness_radii.npy")
-                if len(self.augmented_embeddings) >= 100
-                else None
-            )
-            self.keyframe_hubness_radii, self.hubness_median_radius = build_or_load_keyframe_hubness_radii(
-                self.augmented_embeddings,
-                video_ids=kf_vids,
-                cache_path=hub_cache,
-                k_neighbors=16,
-                sample_anchors=2048,
-            )
         else:
             self.all_embeddings = np.zeros((0, 768), dtype=np.float32)
             self.augmented_embeddings = np.zeros((0, 864), dtype=np.float32)
             self.aug_index = faiss.IndexFlatIP(864)
             self.mean_vec_768 = np.zeros(768, dtype=np.float32)
             self.temporal_context_768 = None
-            self.keyframe_hubness_radii = None
-            self.hubness_median_radius = 0.0
 
         # Precompute per-video keyframe matrices and timestamp lists for fast O(1) lookup
         self.video_kf_pts: dict[str, list[float]] = {}
@@ -1941,17 +1920,17 @@ class UnifiedMultimodalSearchPipeline:
             except sqlite3.Error as exc:
                 raise RuntimeError("Lexical retrieval failed") from exc
 
-        # Phase 7.4: Dense E5 Text Index recall only when lexical modality intent exists and FTS5 is sparse
+        # Phase 7.4 / 8: Dense E5 Text Index recall only when explicit lexical modality intent exists and FTS5 is sparse
         t_e5_encode_ms = 0.0
         sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5
+        _q_lower_e5 = f" {query.lower()} "
         _lexical_intent_cues = (
-            "board", "sign", "screen", "text", "title", "slide", "label", "logo",
-            "banner", "poster", "menu", "paper", "explaining", "lecture", "speech",
-            "says", "said", "saying", "speaking", "talking", "interview", "written",
+            "explaining", "whiteboard", "blackboard", "on board",
+            "subtitle", "subtitles", "caption", "captions",
+            "written", "reads", "slide", "slides", "title", "logo",
         )
         has_lexical_modality_intent = (
             bool(quoted_phrases)
-            or any(re.search(rf"\b{w}\b", q_low) for w in _lexical_intent_cues)
             or (
                 routing_plan is not None
                 and (
@@ -1961,6 +1940,7 @@ class UnifiedMultimodalSearchPipeline:
                     or bool(routing_plan.asr_phrases)
                 )
             )
+            or any(f" {cue} " in _q_lower_e5 for cue in _lexical_intent_cues)
         )
         if (
             self.e5_text_index is not None
