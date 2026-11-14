@@ -23,6 +23,7 @@ class SearchRequest(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict, description="Optional filters")
     client_request_id: str | None = Field(default=None, description="Client request ID for cancellation")
     verify_relations: bool = False
+    rerank_with_relations: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -94,6 +95,7 @@ def execute_search(req: SearchRequest, request: Request) -> SearchResponse:
         search_result = pipeline.search_with_metadata(
             snapshot_id=snapshot_id,
             verify_relations=req.verify_relations and req.mode == "accurate",
+            rerank_with_relations=req.rerank_with_relations,
             query=req.query,
             top_k=req.top_k,
             mode=req.mode,

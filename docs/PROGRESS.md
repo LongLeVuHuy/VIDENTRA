@@ -1,5 +1,47 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Hoàn tất Triển khai Phase 7 (Sửa 6 Bugs, Small-LLM Query Decomposer, Z-Score/LTR & QAT-LateInteraction Foundation)
+
+Đã thực thi nâng cấp toàn diện theo [VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md](../VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md) qua Swarm đa tác tử (4 author workers + 1 verifier độc lập):
+
+### 1. Phase 7.1 — Sửa 6 Bugs Codebase & Bimodal Valley Multi-Window
+- **Bug 1 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Bổ sung `_resolve_moment_frame_indices` để ánh xạ chính xác `source_frame_index` từ `Keyframes` cho `start_original_frame_index`, `end_original_frame_index`, `representative_original_frame_index` và `evidence_frame_indices` trên cả cửa sổ chính và `_win2`.
+- **Bug 2 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Thống nhất `_compute_video_visual_curve` (`0.70 * sims_768 + 0.30 * sims_864`) cho `_video_sorted_visual_scores`, `lookup_true_visual_sim` và Stage 6 boundary expansion.
+- **Bug 3 ([predicates.py](../src/videntra/relations/predicates.py), [canonicalize.py](../src/videntra/query/canonicalize.py), [rules.py](../src/videntra/query/rules.py)):** Hỗ trợ `roles["reference"]` trong `_evaluate_spatial_predicate` và bổ sung đầy đủ ánh xạ/regex không gian 2D song ngữ Việt–Anh (`left_of`, `right_of`, `near`, `above`, `below`, `inside`).
+- **Bug 4 ([matcher.py](../src/videntra/relations/matcher.py)):** Tự động suy diễn `event_intervals` từ `evidence_refs` của các vị từ `SUPPORTED`/`PARTIAL` trước Pass 2 (`evaluate_temporal_order`), kết hợp truyền `event_intervals` từ `align_sequential_keyframe_clauses` ở Stage 7.
+- **Bug 5 ([entities.py](../src/videntra/relations/entities.py)):** Chuẩn hóa `_object_frame_key` (`keyframe_id` $\to$ `pts_sec` $\to$ `timestamp_ms` $\to$ `timestamp_seconds`) đồng nhất giữa `ground_entities` và `compute_object_verification_boost`.
+- **Bug 6 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py), [search.py](../src/videntra/api/search.py)):** Hỗ trợ `filters` (`video_ids`, `dataset_prefix`, `min_duration`, `max_duration`), tách `DOMAIN_LEXICAL_SYNONYMS` thành bảng cấu hình, và thêm `rerank_with_relations: bool = False` vào `SearchRequest`.
+- **Bimodal Valley Multi-Window:** Áp dụng điều kiện thung lũng `min(valley_scores) <= s_min + 0.60 * (s_max2 - s_min)` và trọng số `moment.ranking_score * 0.85 * (s_max2 / s_max1)^2` cho `_win2`.
+
+### 2. Phase 7.2 — Small-LLM Query Decomposer & Modality Router
+- **[schemas.py](../src/videntra/query/schemas.py) & [llm.py](../src/videntra/query/llm.py):** Cài đặt `ModalityRoutingPlan`, `CompactDecomposedQuery`, `LocalSmallLLMBackend` (hỗ trợ `llama_cpp` GGUF / `transformers` qua `VIDENTRA_LLM_MODEL_PATH`, lazy-load, timeout cứng `250 ms`), `QueryComplexityGate` (`short`/`medium`/`long`, Tri-Modal Broadcast vs Fast Rule Path), `expand_compact_wire_to_query_graph` (sắp xếp topo DAG + đảo ngữ `after`), `SemanticDecomposerValidator` (5 bước chống bịa từ OCR/ASR, bảo toàn phủ định, kiểm tra chu trình DAG, nhập nhằng màu `"xanh"` $\to$ `blue_or_green`, chuẩn schema `QueryGraph v1`) và `AdaptiveQueryDecomposer` (cache RAM + JSONL trên đĩa và fallback `<1 ms` về `RuleBasedQueryParser`).
+- **[unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py):** Tích hợp `ModalityRoutingPlan` vào Stage 1, Stage 2 (tăng trọng số tuần tự `0.35 -> 0.45` khi có ràng buộc thời gian), Stage 3 (`_build_routed_fts5_queries` tách riêng `fts_ocr_query` và `fts_asr_query`), Stage 5 (điều tiết theo `explicit_ocr/asr_intent` mà không nới cổng `Pure-ASR`) và Stage 7 (`_verify_relations`).
+
+### 3. Phase 7.3 & 7.4 — Query-Adaptive Z-Score, LearnedRankerLTR, QAT-LateInteraction & E5 Text Index
+- **[features.py](../src/videntra/ranking/features.py), [learned_ranker.py](../src/videntra/ranking/learned_ranker.py), [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py):** Cài đặt `compute_query_z_scores` (Top-120), bộ trích xuất 18 đặc trưng liên tục `extract_ltr_features_18d`, `LearnedRankerLTR` thuần NumPy và script huấn luyện 5-fold `GroupKFold` CV theo `source_video_id` trên `dev_full_859` (kèm chốt chặn fail-closed `assert_no_heldout_leakage`).
+- **[augmented_vector.py](../src/videntra/indexing/augmented_vector.py), [kaggle_multimodal_offline_worker.py](../scripts/kaggle_multimodal_offline_worker.py) & [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py):** Bổ sung `compute_temporal_motion_delta`, `compute_multiscale_temporal_context`, `compute_late_interaction_maxsim`, trích xuất $3\times 3$ `float16` spatial patches (`spatial_patches_fp16.npy`) + `multilingual-e5-small` 384d FAISS (`faiss_text_e5_384.bin`) trong Kaggle worker, và hook nạp tùy chọn an toàn trong `UnifiedMultimodalSearchPipeline`.
+
+### 4. Kiểm thử & Benchmark sau nâng cấp
+- **Unit & Integration Tests:** `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`444 passed in 75.14s` (0 failed, 0 skipped)** (bao gồm 40 test mới trong `tests/retrieval/test_bugfixes_phase7.py`, `tests/relations/test_bugfixes_relations_phase7.py`, `tests/query/test_llm_decomposer.py`, `tests/ranking/test_learned_ranker.py`, `tests/indexing/test_qat_motion_delta.py`).
+- **`dev_150` Validation Benchmark (chế độ RuleBased fallback, chưa nạp `videntra_ltr_v1.json` hay artifact Kaggle $3\times 3$ / E5):**
+  - Command: `.venv\Scripts\python.exe scripts/run_validation_benchmark.py --single-split-only --max-msrvtt 100 --out-dir work/tmp_bench_phase7`
+  - `Video Hit@1`: **61.33%** (`95% CI: [53.33%, 68.67%]`), `MRR`: **0.6515**, `Video nDCG@10`: **0.6727**.
+  - `Moment Hit@1 (0.5)`: **72.73%**, `Moment nDCG@5`: **0.5127**, **`Pure-ASR FP Top-1 = 0`**, `Non-Neural Latency (p50/p95)`: `22.88 ms / 60.04 ms`.
+- **Dependencies (`requirements.txt`):** Không thêm dependency bắt buộc mới (`llama-cpp-python` và `lightgbm` giữ dạng tùy chọn với fallback thuần Python/NumPy).
+
+---
+
+## 14/11/2026 — Đánh giá Toàn diện Hệ thống, Kế hoạch Sửa 6 Bugs, Thiết kế Small-LLM Query Decomposer & Lộ trình Nâng cấp Độ chính xác Thế hệ Mới
+
+- **Kiểm toán mã nguồn & benchmark (`src/videntra/`, `benchmark/`, `docs/blueprint/`):**
+  - Đánh giá điểm mạnh kiến trúc, các điểm mới đột phá (864D Late-Fusion Vector, Dynamic Intent Adaptive Fusion, Bimodal Valley Moment Refiner, Three-Valued Logic Verification), các điểm hạn chế hiện tại và xác định **6 bugs tiềm ẩn** trong [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py), [rules.py](../src/videntra/query/rules.py), [predicates.py](../src/videntra/relations/predicates.py), [matcher.py](../src/videntra/relations/matcher.py), [entities.py](../src/videntra/relations/entities.py), và [search.py](../src/videntra/api/search.py).
+- **Tạo Kế hoạch Tổng hợp (Master Plan) tại thư mục gốc:**
+  - Tạo file [VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md](../VIDENTRA_MASTER_UPGRADE_AND_LLM_QUERY_PLAN.md) gộp chung 2 bản kế hoạch chi tiết:
+    1. **Kế hoạch sửa 6 Bugs & Phương pháp Nâng cấp Độ chính xác Thế hệ Mới:** Đề xuất phương pháp **QAT-LateInteraction + GBDT-LTR + Dense E5 Speech/OCR + Bimodal Multi-Window** phù hợp phần cứng RTX 3060 6GB VRAM.
+    2. **Kế hoạch tích hợp Small-LLM Query Decomposer & Modality Router:** Thiết kế pipeline dùng Small LLM (`Qwen2.5-1.5B-Instruct` GGUF Q4_K_M / `Qwen2.5-0.5B-Instruct`) kết hợp `QueryComplexityGate` để bóc tách câu truy vấn **Ngắn / Vừa / Dài** thành 6 kênh (`Visual`, `OCR`, `ASR`, `COCO Objects`, `Spatial 2D`, `Temporal trước/sau`) với cơ chế chống bịa từ (Anti-Hallucination Span Validator) và định tuyến trực tiếp vào 7 tầng của `UnifiedMultimodalSearchPipeline`.
+
+---
+
 ## 14/11/2026 — Sửa kết nối Media Streaming & Frame/Thumbnail cho Unified Backend (`videntra serve`)
 
 - **Nguyên nhân gốc rễ:** Khi chạy `videntra serve --backend unified --db-path data/processed/metadata.db` không truyền `--manifest` và `--ingest-dir`, `MediaResolver` có `records=[]` nên `/v1/media/{video_id}` trả `404`, đồng thời `/v1/frames/{video_id}/{index}` trả `503` vì yêu cầu bắt buộc `--ingest-dir` (`frames.parquet`), dẫn đến giao diện Web không hiển thị thumbnail và không phát được video.

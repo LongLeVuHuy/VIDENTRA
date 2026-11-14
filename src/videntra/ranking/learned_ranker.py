@@ -1,0 +1,186 @@
+"""Lightweight pure-NumPy Learning-to-Rank (LTR) scorer for VIDENTRA Stage 6.
+
+Supports:
+- L2-regularized pairwise logistic / linear weights with optional feature standardization.
+- Optional compact GBDT / LightGBM tree-ensemble JSON representation.
+- Graceful fallback to calibrated default weights when no trained model artifact exists.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+from videntra.ranking.features import (
+    LTR_FEATURE_NAMES,
+    QueryZScoreResult,
+    extract_ltr_features_batch,
+)
+
+DEFAULT_LTR_MODEL_PATH = Path("models/ranking/videntra_ltr_v1.json")
+
+# Sensible prior weights aligned with Plan §4.2 when trained artifact is absent.
+_FALLBACK_LINEAR_WEIGHTS: dict[str, float] = {
+    "s_vis_blend_max": 1.00,
+    "z_vis_max": 0.35,
+    "delta_z_vis": -0.45,
+    "s_vis_top3_mean": 0.30,
+    "s_vis_top5_mean": 0.25,
+    "s_vis_ctx_coherence": 0.20,
+    "s_late_interaction": 0.40,
+    "spike_drop_ratio": -0.25,
+    "rrf_vis": 0.45,
+    "rrf_ocr": 0.30,
+    "rrf_asr": 0.25,
+    "bm25_log_score": 0.15,
+    "high_spec_token_coverage": 0.35,
+    "anchor_lexical_match": 0.40,
+    "number_consistency": 0.35,
+    "yolo_object_verification_boost": 0.25,
+    "graph_relation_score": 0.30,
+    "llm_modality_alignment": 0.20,
+}
+
+
+class LearnedRankerLTR:
+    """Pure-NumPy LTR ranker over the 18 continuous multimodal features."""
+
+    def __init__(self, model_path: str | Path | None = DEFAULT_LTR_MODEL_PATH) -> None:
+        self.model_path: Path | None = Path(model_path) if model_path is not None else None
+        self.is_loaded: bool = False
+        self.model_type: str = "fallback_linear"
+        self.feature_names: tuple[str, ...] = LTR_FEATURE_NAMES
+        self.n_features: int = len(LTR_FEATURE_NAMES)
+        self.feature_mean: np.ndarray = np.zeros(self.n_features, dtype=np.float64)
+        self.feature_std: np.ndarray = np.ones(self.n_features, dtype=np.float64)
+        self.weights: np.ndarray = np.array(
+            [_FALLBACK_LINEAR_WEIGHTS[name] for name in LTR_FEATURE_NAMES],
+            dtype=np.float64,
+        )
+        self.bias: float = 0.0
+        self.learning_rate: float = 1.0
+        self.trees: list[dict[str, Any]] = []
+        self.metadata: dict[str, Any] = {}
+
+        if self.model_path is not None and self.model_path.is_file():
+            self.load(self.model_path)
+
+    def load(self, path: str | Path) -> None:
+        """Load linear/logistic or tree-ensemble LTR weights from a JSON file."""
+        src = Path(path)
+        payload = json.loads(src.read_text(encoding="utf-8"))
+
+        names = tuple(payload.get("feature_names", LTR_FEATURE_NAMES))
+        if len(names) != self.n_features:
+            raise ValueError(
+                f"Expected {self.n_features} features in LTR model, got {len(names)}"
+            )
+        self.feature_names = names
+
+        model_type = str(payload.get("model_type", "pairwise_logistic")).lower()
+        self.model_type = model_type
+        self.metadata = dict(payload.get("metadata", {}))
+
+        mean_arr = payload.get("feature_mean")
+        std_arr = payload.get("feature_std")
+        if mean_arr is not None:
+            self.feature_mean = np.asarray(mean_arr, dtype=np.float64)
+        else:
+            self.feature_mean = np.zeros(self.n_features, dtype=np.float64)
+        if std_arr is not None:
+            raw_std = np.asarray(std_arr, dtype=np.float64)
+            self.feature_std = np.where(raw_std > 1e-8, raw_std, 1.0)
+        else:
+            self.feature_std = np.ones(self.n_features, dtype=np.float64)
+
+        self.bias = float(payload.get("bias", payload.get("base_score", 0.0)))
+        self.learning_rate = float(payload.get("learning_rate", 1.0))
+
+        if model_type in {"tree_ensemble", "gbdt", "lightgbm"}:
+            trees = payload.get("trees")
+            if not isinstance(trees, list):
+                raise ValueError("tree_ensemble model JSON must contain a 'trees' list")
+            self.trees = trees
+            self.weights = np.zeros(self.n_features, dtype=np.float64)
+        else:
+            raw_weights = payload.get("weights")
+            if raw_weights is None or len(raw_weights) != self.n_features:
+                raise ValueError(
+                    f"Linear/logistic LTR model must provide {self.n_features} weights"
+                )
+            self.weights = np.asarray(raw_weights, dtype=np.float64)
+            self.trees = []
+
+        self.model_path = src
+        self.is_loaded = True
+
+    def _predict_tree_batch(self, tree: dict[str, Any], X: np.ndarray) -> np.ndarray:
+        """Evaluate one compact decision tree over all rows in X."""
+        n_rows = X.shape[0]
+        preds = np.empty(n_rows, dtype=np.float64)
+
+        def _eval(node: dict[str, Any], mask: np.ndarray) -> None:
+            if not np.any(mask):
+                return
+            if "leaf_value" in node:
+                preds[mask] = float(node["leaf_value"])
+                return
+            f_idx = int(node["feature_idx"])
+            thresh = float(node["threshold"])
+            go_left = mask & (X[:, f_idx] <= thresh)
+            go_right = mask & (~go_left)
+            if np.any(go_left):
+                _eval(node["left"], go_left)
+            if np.any(go_right):
+                _eval(node["right"], go_right)
+
+        _eval(tree, np.ones(n_rows, dtype=bool))
+        return preds
+
+    def score_matrix(self, features: np.ndarray) -> np.ndarray:
+        """Score an (N, 18) or (18,) feature matrix in pure NumPy."""
+        X = np.asarray(features, dtype=np.float64)
+        if X.ndim == 1:
+            if X.size == 0:
+                return np.zeros(0, dtype=np.float64)
+            X = X.reshape(1, -1)
+        if X.shape[0] == 0:
+            return np.zeros(0, dtype=np.float64)
+        if X.shape[1] != self.n_features:
+            raise ValueError(f"Expected {self.n_features} feature columns, got {X.shape[1]}")
+
+        X = np.where(np.isfinite(X), X, 0.0)
+
+        if self.model_type in {"tree_ensemble", "gbdt", "lightgbm"} and self.trees:
+            scores = np.full(X.shape[0], self.bias, dtype=np.float64)
+            for tree in self.trees:
+                scores += self.learning_rate * self._predict_tree_batch(tree, X)
+            return scores
+
+        X_norm = (X - self.feature_mean) / self.feature_std
+        return (X_norm @ self.weights) + self.bias
+
+    def score_candidates(
+        self,
+        candidates: Sequence[Mapping[str, Any]],
+        z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+    ) -> np.ndarray:
+        """Extract 18D features for candidates and return their LTR scores."""
+        if not candidates:
+            return np.zeros(0, dtype=np.float64)
+        X = extract_ltr_features_batch(candidates, z_stats=z_stats)
+        return self.score_matrix(X)
+
+    def score_one(
+        self,
+        candidate: np.ndarray | Mapping[str, Any],
+        z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+    ) -> float:
+        """Score a single candidate feature vector or signal mapping."""
+        if isinstance(candidate, Mapping):
+            scores = self.score_candidates([candidate], z_stats=z_stats)
+        else:
+            scores = self.score_matrix(np.asarray(candidate, dtype=np.float64))
+        return float(scores[0]) if scores.size > 0 else 0.0

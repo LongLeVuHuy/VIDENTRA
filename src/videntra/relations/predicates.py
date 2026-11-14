@@ -228,7 +228,12 @@ def _evaluate_spatial_predicate(
 
     canonical_op = _SPATIAL_ALIASES.get(op_low)
     subj_ref = pred.roles.get("subject") or pred.roles.get("source") or pred.roles.get("arg1")
-    obj_ref = pred.roles.get("object") or pred.roles.get("target") or pred.roles.get("arg2")
+    obj_ref = (
+        pred.roles.get("object")
+        or pred.roles.get("reference")
+        or pred.roles.get("target")
+        or pred.roles.get("arg2")
+    )
     if canonical_op is None or not subj_ref or not obj_ref:
         return PredicateEvaluation(
             predicate_id=pred.id,

@@ -441,6 +441,189 @@ def rebuild_augmented_864d_cache(
     return augmented, mean_vec_768, coco_idf_map
 
 
+def _extract_kf_video_and_time(kinfo: Any) -> tuple[str, float]:
+    """Extract (video_id, pts_time_sec) from a keyframe dict or attribute object."""
+    if isinstance(kinfo, dict):
+        vid = str(kinfo.get("video_id", ""))
+        if "pts_time" in kinfo and kinfo["pts_time"] is not None:
+            t_sec = float(kinfo["pts_time"])
+        elif "pts_sec" in kinfo and kinfo["pts_sec"] is not None:
+            t_sec = float(kinfo["pts_sec"])
+        elif "timestamp_ms" in kinfo and kinfo["timestamp_ms"] is not None:
+            t_sec = float(kinfo["timestamp_ms"]) / 1000.0
+        else:
+            t_sec = 0.0
+        return vid, t_sec
+
+    vid = str(getattr(kinfo, "video_id", ""))
+    pts_time = getattr(kinfo, "pts_time", None)
+    if pts_time is None:
+        pts_time = getattr(kinfo, "pts_sec", None)
+    if pts_time is None:
+        ts_ms = getattr(kinfo, "timestamp_ms", None)
+        t_sec = float(ts_ms) / 1000.0 if ts_ms is not None else 0.0
+    else:
+        t_sec = float(pts_time)
+    return vid, t_sec
+
+
+def _group_keyframes_by_video(
+    keyframe_map: dict[int, Any] | Sequence[Any],
+    n_total: int,
+) -> dict[str, list[tuple[int, float]]]:
+    """Group keyframe (global_idx, pts_sec) pairs by video_id, sorted by pts_sec."""
+    by_vid: dict[str, list[tuple[int, float]]] = {}
+    is_dict = isinstance(keyframe_map, dict)
+    for fid in range(n_total):
+        kinfo = keyframe_map.get(fid) if is_dict else (keyframe_map[fid] if fid < len(keyframe_map) else None)
+        if kinfo is None:
+            continue
+        vid, t_sec = _extract_kf_video_and_time(kinfo)
+        by_vid.setdefault(vid, []).append((fid, t_sec))
+
+    for vid in by_vid:
+        by_vid[vid].sort(key=lambda item: (item[1], item[0]))
+    return by_vid
+
+
+def compute_temporal_motion_delta(
+    embeddings_768: np.ndarray,
+    keyframe_map: dict[int, Any] | Sequence[Any],
+) -> np.ndarray:
+    """Compute CPU-fast Temporal Motion Delta subspace (Delta v_i) per video.
+
+    Formula (Plan §4.1):
+        Delta v_i = (v_{i+1} - v_{i-1}) / (||v_{i+1} - v_{i-1}||_2 + 1e-8)
+    Boundary keyframes use forward (i=0) or backward (i=M-1) difference;
+    single-keyframe videos receive a zero vector.
+    """
+    vecs = np.asarray(embeddings_768, dtype=np.float32)
+    if vecs.ndim != 2:
+        raise ValueError(f"Expected 2D embeddings array, got shape {vecs.shape}")
+    n_total, dim = vecs.shape
+    deltas = np.zeros((n_total, dim), dtype=np.float32)
+    if n_total == 0:
+        return deltas
+
+    by_vid = _group_keyframes_by_video(keyframe_map, n_total)
+    for items in by_vid.values():
+        m = len(items)
+        if m <= 1:
+            continue
+        fids = np.array([it[0] for it in items], dtype=np.int64)
+        vid_vecs = vecs[fids]
+
+        diffs = np.empty_like(vid_vecs)
+        diffs[0] = vid_vecs[1] - vid_vecs[0]
+        diffs[-1] = vid_vecs[-1] - vid_vecs[-2]
+        if m > 2:
+            diffs[1:-1] = vid_vecs[2:] - vid_vecs[:-2]
+
+        norms = np.linalg.norm(diffs, axis=1, keepdims=True) + 1e-8
+        deltas[fids] = diffs / norms
+
+    return deltas
+
+
+def compute_multiscale_temporal_context(
+    embeddings_768: np.ndarray,
+    keyframe_map: dict[int, Any] | Sequence[Any],
+    window_sec: float = 3.0,
+    sigma_sec: float = 1.5,
+) -> np.ndarray:
+    """Compute Gaussian-weighted Multi-Scale Temporal Context vectors within [t_i - window_sec, t_i + window_sec]."""
+    vecs = np.asarray(embeddings_768, dtype=np.float32)
+    if vecs.ndim != 2:
+        raise ValueError(f"Expected 2D embeddings array, got shape {vecs.shape}")
+    n_total, dim = vecs.shape
+    ctx = np.zeros((n_total, dim), dtype=np.float32)
+    if n_total == 0:
+        return ctx
+
+    sigma = max(1e-4, float(sigma_sec))
+    win = max(0.0, float(window_sec))
+    inv_2sigma2 = 1.0 / (2.0 * sigma * sigma)
+
+    by_vid = _group_keyframes_by_video(keyframe_map, n_total)
+    for items in by_vid.values():
+        fids = np.array([it[0] for it in items], dtype=np.int64)
+        times = np.array([it[1] for it in items], dtype=np.float64)
+        vid_vecs = vecs[fids]
+
+        # Pairwise time differences (M, M) within the same video
+        dt = times[:, None] - times[None, :]
+        in_window = np.abs(dt) <= win
+        weights = np.where(in_window, np.exp(-(dt * dt) * inv_2sigma2), 0.0).astype(np.float32)
+        weight_sums = np.sum(weights, axis=1, keepdims=True)
+        weight_sums = np.where(weight_sums > 1e-8, weight_sums, 1.0)
+
+        blended = (weights @ vid_vecs) / weight_sums
+        norms = np.linalg.norm(blended, axis=1, keepdims=True) + 1e-8
+        ctx[fids] = blended / norms
+
+    return ctx
+
+
+def compute_late_interaction_maxsim(
+    query_tokens: np.ndarray,
+    query_idf: Sequence[float] | np.ndarray | None,
+    window_patches: np.ndarray,
+) -> float:
+    """Compute QAT-LateInteraction token-to-region MaxSim score (Plan §4.1).
+
+    Args:
+        query_tokens: Query content token embeddings of shape (L, D) or (D,).
+        query_idf: Optional per-token IDF weights of shape (L,). Defaults to 1.0.
+        window_patches: Spatial 3x3 patch tokens in candidate window of shape
+            (K, 9, D), (K*9, D), or (D,) (float16 or float32).
+
+    Returns:
+        IDF-weighted average of max cosine similarities across all window patches.
+    """
+    q = np.asarray(query_tokens, dtype=np.float32)
+    p = np.asarray(window_patches, dtype=np.float32)
+
+    if q.size == 0 or p.size == 0:
+        return 0.0
+
+    if q.ndim == 1:
+        q = q.reshape(1, -1)
+    if p.ndim == 1:
+        p = p.reshape(1, -1)
+    elif p.ndim == 3:
+        p = p.reshape(-1, p.shape[-1])
+    elif p.ndim != 2:
+        raise ValueError(f"Expected 2D or 3D window_patches, got shape {p.shape}")
+
+    if q.shape[1] != p.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch between query_tokens ({q.shape[1]}) and window_patches ({p.shape[1]})"
+        )
+
+    q_norms = np.linalg.norm(q, axis=1, keepdims=True)
+    p_norms = np.linalg.norm(p, axis=1, keepdims=True)
+    q_unit = q / np.where(q_norms > 1e-8, q_norms, 1.0)
+    p_unit = p / np.where(p_norms > 1e-8, p_norms, 1.0)
+
+    # Single vectorized matrix multiply: (L, K*9)
+    sim_matrix = q_unit @ p_unit.T
+    max_sims = np.max(sim_matrix, axis=1)  # (L,)
+
+    if query_idf is None:
+        return float(np.mean(max_sims))
+
+    idf = np.asarray(query_idf, dtype=np.float32).ravel()
+    if idf.shape[0] != q.shape[0]:
+        raise ValueError(
+            f"query_idf length ({idf.shape[0]}) must match query_tokens ({q.shape[0]})"
+        )
+    idf = np.maximum(idf, 0.0)
+    idf_sum = float(np.sum(idf))
+    if idf_sum <= 1e-8:
+        return float(np.mean(max_sims))
+    return float(np.dot(idf, max_sims) / idf_sum)
+
+
 if __name__ == "__main__":
     import time
     t0 = time.time()

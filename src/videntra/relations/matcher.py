@@ -1,11 +1,48 @@
 """Structural graph matcher aggregating multi-branch evaluations under three-valued logic."""
 from dataclasses import dataclass
+import math
 from typing import Any, Sequence
 
 from videntra.query.schemas import QueryGraph
 from .entities import ground_entities, GroundedEntity
 from .predicates import evaluate_predicate, PredicateEvaluation, MatchState
 from .temporal import evaluate_temporal_order
+
+
+def _extract_evidence_interval(item: dict[str, Any]) -> tuple[float, float] | None:
+    """Extract (start_sec, end_sec) interval from an evidence item."""
+    start_sec: float | None = None
+    end_sec: float | None = None
+
+    for key in ("start_sec", "start_seconds"):
+        if item.get(key) is not None:
+            start_sec = float(item[key])
+            break
+    if start_sec is None and item.get("start_ms") is not None:
+        start_sec = float(item["start_ms"]) / 1000.0
+
+    for key in ("end_sec", "end_seconds"):
+        if item.get(key) is not None:
+            end_sec = float(item[key])
+            break
+    if end_sec is None and item.get("end_ms") is not None:
+        end_sec = float(item["end_ms"]) / 1000.0
+
+    if start_sec is not None and end_sec is not None:
+        if math.isfinite(start_sec) and math.isfinite(end_sec) and start_sec <= end_sec:
+            return (start_sec, end_sec)
+
+    point_sec: float | None = None
+    for key in ("pts_sec", "timestamp_seconds"):
+        if item.get(key) is not None:
+            point_sec = float(item[key])
+            break
+    if point_sec is None and item.get("timestamp_ms") is not None:
+        point_sec = float(item["timestamp_ms"]) / 1000.0
+
+    if point_sec is not None and math.isfinite(point_sec):
+        return (point_sec, point_sec)
+    return None
 
 
 @dataclass(frozen=True)
@@ -31,7 +68,7 @@ class GraphMatcher:
 
         # 2. Evaluate each predicate
         pred_evals: dict[str, PredicateEvaluation] = {}
-        intervals = event_intervals or {}
+        intervals: dict[str, tuple[float, float]] = dict(event_intervals) if event_intervals else {}
 
         # First pass: evaluate non-temporal predicates
         for p in query_graph.predicates:
@@ -41,6 +78,28 @@ class GraphMatcher:
                 else:
                     ev = evaluate_predicate(p, evidence_items, grounded)
                 pred_evals[p.id] = ev
+
+        # Infer missing event intervals from grounded evidence_refs before temporal pass
+        evidence_by_id = {
+            str(item["evidence_id"]): item
+            for item in evidence_items
+            if item.get("evidence_id") not in (None, "")
+        }
+        for p_id, ev in pred_evals.items():
+            if p_id in intervals:
+                continue
+            if ev.state not in (MatchState.SUPPORTED, MatchState.PARTIAL):
+                continue
+            spans: list[tuple[float, float]] = []
+            for ref in ev.evidence_refs:
+                item = evidence_by_id.get(str(ref))
+                if item is None:
+                    continue
+                span = _extract_evidence_interval(item)
+                if span is not None:
+                    spans.append(span)
+            if spans:
+                intervals[p_id] = (min(s for s, _ in spans), max(e for _, e in spans))
 
         # Second pass: evaluate temporal predicates referencing prior events
         for p in query_graph.predicates:

@@ -36,12 +36,12 @@
 | `videntra.encoders` | `siglip2.py` (`SigLIP2Encoder`, `MockSigLIP2Encoder`) |
 | `videntra.evaluation` | `evaluator.py` (Hit@K, MRR, nDCG, mAP, Bootstrap CI), `provenance.py`, `split_lock.py`, `corpus_gate.py` |
 | `videntra.evidence` | `store.py` (đọc/ghi `OCRTrackRecord` và `ASRSegmentRecord` dạng Parquet) |
-| `videntra.indexing` | `augmented_vector.py` (864d subspace), `text_store.py` (SQLite FTS5), `visual_store.py`, `snapshot.py` |
+| `videntra.indexing` | `augmented_vector.py` (864d subspace, Temporal Motion Delta, Multi-scale Context, QAT-LateInteraction `MaxSim`), `text_store.py` (SQLite FTS5), `visual_store.py`, `snapshot.py` |
 | `videntra.ingestion` | `probe.py`, `jobs.py` (`IngestionJobManager` với resume an toàn & atomic write) |
 | `videntra.localization` | `refine.py` (`refine_moment_boundaries`, `expand_boundary_contrast`) |
 | `videntra.ocr` | `detection.py`, `recognition.py` (`GeneralOCRRecognizer`, `VietOCRRecognizer`), `routing.py`, `tracking.py` |
-| `videntra.query` | `schemas.py` (`QueryGraph v1`), `rules.py`, `llm_parser.py` (zero-crash fallback) |
-| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` |
+| `videntra.query` | `schemas.py` (`QueryGraph v1`, `ModalityRoutingPlan`, `CompactDecomposedQuery`), `rules.py`, `canonicalize.py`, `llm.py` (`AdaptiveQueryDecomposer`, `LocalSmallLLMBackend`, `QueryComplexityGate`, `SemanticDecomposerValidator`, RAM+Disk cache & `<1ms` fallback) |
+| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `learned_ranker.py` (`LearnedRankerLTR` pure-NumPy), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` (18d LTR features & `compute_query_z_scores`) |
 | `videntra.registry` | `store.py`, `access.py` (`MediaResolver` kiểm soát allowlist, denylist, SHA-256 & `rights_status`) |
 | `videntra.relations` | `matcher.py` (`GraphMatcher` logic tam trị), `predicates.py` (2D spatial cùng frame & `action_observation`), `entities.py`, `attributes.py`, `temporal.py` |
 | `videntra.retrieval` | `unified_pipeline.py` (SSOT), `visual.py`, `branches.py`, `fusion.py`, `alignment.py`, `union.py` |
@@ -54,7 +54,7 @@
 
 ## 4. Các Công cụ Vận hành & Kiểm toán (`scripts/`)
 - **Benchmark & Ablation:** `run_validation_benchmark.py`, `evaluate_multimodal_ablations.py`, `evaluate.py`, `profile_text_encoder.py`.
-- **Kaggle GPU Offload & Ingestion:** `package_kaggle_inputs.py`, `kaggle_multimodal_offline_worker.py` (pin SigLIP revision `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`, weights SHA-256 & PyAV), `ingest_kaggle_offline_results.py` (chặn ghi đè, kiểm tra preflight PTS/confidence).
+- **Kaggle GPU Offload & Ingestion:** `package_kaggle_inputs.py`, `kaggle_multimodal_offline_worker.py` (pin SigLIP revision `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`, weights SHA-256, PyAV, $3\times 3$ spatial patches `float16` & `multilingual-e5-small` 384d FAISS), `ingest_kaggle_offline_results.py` (chặn ghi đè, kiểm tra preflight PTS/confidence), `train_ltr_ranker_cv.py` (5-fold `GroupKFold` CV theo `source_video_id`).
 - **Kiểm toán Provenance & Timeline (Read-Only):** `audit_model_index.py`, `audit_decoded_timeline.py`, `audit_kaggle_provenance.py`, `audit_qvh_coverage.py`, `audit_qvh_a5_readiness.py`, `audit_timeline_dependencies.py`, `propose_timeline_repairs.py`.
 - **Quản lý Corpus & Split Lock:** `acquire_qvh_quarantine.py`, `freeze_qvh_source_split.py`, `export_qvh_inference_queries.py`, `evaluate_qvh_frozen_predictions.py`, `verify_asset_roots.py`.
 
@@ -71,3 +71,4 @@
 | **Production Cleanup & Repo Release** | Dọn dẹp file tạm & legacy scripts, thay thế mọi hardcoded personal paths bằng `VIDENTRA_*`, `requirements.txt`, `README.md`, `.gitkeep` + `.gitignore`, Security Scan & GitHub Push | **DONE** (381/381 tests PASS) |
 | **Phase 5 — Accuracy & Relation Verifier Upgrade** | Stage 1/2 multi-clause 768d+864d blending, Stage 5 Visual-Floor Lexical Gate, Stage 6 local window coherence, 2D spatial/action grounding, `calibration.py`, `FrameObjects` evidence & optional `rerank_with_relations` | **DONE** (`dev_150` Hit@1 62.00%, 399/399 tests PASS) |
 | **Phase 6 — De-Overfitting & Generalization Upgrade** | Chẩn đoán Overfitting (`dev_150` vs `dev_full_859` vs `heldout_test_201`), tổng quát hóa proper-noun/stemming/OCR-bigram, chặn Pure-ASR số học (`Pure-ASR FP = 0` trên cả 3 tập), chống đỉnh ngoại lai 1 khung hình Stage 6 & chuẩn hóa `requirements.txt` duy nhất | **DONE** (`dev_150` 62.00%, `dev_full_859` 41.68%, `heldout_test_201` 39.30%, 402/402 tests PASS) |
+| **Phase 7 — Master Upgrade & Small-LLM Query Decomposer** | Sửa 6 Bugs (Bug 1–6) & Bimodal Valley Multi-Window; tích hợp `AdaptiveQueryDecomposer` (`ModalityRoutingPlan`, `LocalSmallLLMBackend`, `QueryComplexityGate`, `SemanticDecomposerValidator`, RAM+Disk cache); `Query-Adaptive Z-Score` + `LearnedRankerLTR` (18d) + `train_ltr_ranker_cv.py`; `QAT-LateInteraction` (Motion Delta + $3\times 3$ patches) & E5 Text Index hooks | **DONE (Code + Tests)** (444/444 tests PASS; `dev_150` RuleBased fallback: Video Hit@1 61.33%, Moment Hit@1 72.73%, `Pure-ASR FP = 0`; chờ chạy Kaggle GPU worker & train LTR) |

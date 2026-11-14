@@ -3,6 +3,7 @@
 
 - Trao đổi và viết tài liệu chủ yếu bằng tiếng Việt; giữ identifiers/technical terms bằng English.
 - Thư mục nhật kí ở C:\Users\DELL\Desktop\VIDENTRA\docs\PROGRESS.md. trước khi làm nhớ đọc qua. Sau khi làm xong nhớ cập nhật
+- Tập validations nằm ở thư mục validations và tập test ở thư mục test_queries (tỷ lệ 80% validations và 20% test trên tổng số data videos)
 - Đây là greenfield VIDENTRA. Không kế thừa B4 EVOI, Selective Verification hoặc Evidence Sufficiency Ledger mặc định.
 - Blueprint đã được người dùng duyệt ngày 05/11/2026; M0-CODE-01 đã được phép triển khai. Tiếp tục theo milestone được giao, không tự mở rộng sang full engine.
 - Trước coding, đọc README, docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md, 06_DATA_SCHEMAS_AND_TIMESTAMPS.md và milestone hiện tại trong10_IMPLEMENTATION_ROADMAP.md.

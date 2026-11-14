@@ -14,6 +14,7 @@ from collections import deque
 import gc
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from importlib import metadata as importlib_metadata
@@ -26,6 +27,9 @@ import numpy as np
 SIGLIP_MODEL_ID = "google/siglip2-base-patch16-224"
 SIGLIP_REVISION = "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
 SIGLIP_WEIGHTS_SHA256 = "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031fadee6a0b"
+E5_MODEL_ID = "intfloat/multilingual-e5-small"
+E5_REVISION = os.environ.get("VIDENTRA_E5_REVISION", "c007d7ef6fd86656326059b28395a7a03a7c5846")
+E5_EMBEDDING_DIM = 384
 ASR_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
 A5_MODEL_FILES = {
     "whisper-small/config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
@@ -108,7 +112,8 @@ def frame_time_seconds(frame: Any, stream: Any, origin_pts: int = 0) -> float:
 
 
 def ensure_output_files_absent(out_dir: Path) -> None:
-    names = ("frame_embeddings.npy", "videos.json", "keyframe_manifest.json", "frame_objects.json",
+    names = ("frame_embeddings.npy", "spatial_patches_fp16.npy", "faiss_text_e5_384.bin",
+             "e5_text_manifest.json", "videos.json", "keyframe_manifest.json", "frame_objects.json",
              "ocr_observations.json", "asr_segments.json", "summary.json")
     existing = [name for name in names if (out_dir / name).exists()]
     if existing:
@@ -159,6 +164,156 @@ def extract_tensor_features(out):
     if isinstance(out, (list, tuple)):
         return out[0]
     return out
+
+
+def extract_spatial_patches_3x3(last_hidden_state: Any) -> np.ndarray:
+    """Pool SigLIP 2 last_hidden_state (B, H*W, D) into 3x3 L2-normalized fp16 patch tokens.
+
+    Returns:
+        np.ndarray of shape (B, 9, D) with dtype float16.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if not isinstance(last_hidden_state, torch.Tensor):
+        hidden = torch.as_tensor(last_hidden_state)
+    else:
+        hidden = last_hidden_state
+
+    if hidden.ndim != 3:
+        raise ValueError(f"Expected 3D last_hidden_state (B, N, D), got {tuple(hidden.shape)}")
+
+    bsz, n_tokens, dim = hidden.shape
+    side = int(math.isqrt(n_tokens))
+    if side * side != n_tokens:
+        # Handle ViT architectures that prepend a CLS token
+        side_minus = int(math.isqrt(n_tokens - 1))
+        if side_minus * side_minus == n_tokens - 1:
+            hidden = hidden[:, 1:, :]
+            side = side_minus
+        else:
+            raise ValueError(f"Cannot reshape {n_tokens} patch tokens into a square grid")
+
+    grid = hidden.float().view(bsz, side, side, dim).permute(0, 3, 1, 2)  # (B, D, H, W)
+    pooled = F.adaptive_avg_pool2d(grid, output_size=(3, 3))  # (B, D, 3, 3)
+    patches = pooled.permute(0, 2, 3, 1).reshape(bsz, 9, dim)  # (B, 9, D)
+    norms = patches.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
+    patches = patches / norms
+    return patches.detach().cpu().numpy().astype(np.float16)
+
+
+def encode_e5_passages(
+    texts: list[str],
+    tokenizer: Any,
+    model: Any,
+    device: str = "cpu",
+    batch_size: int = 64,
+) -> np.ndarray:
+    """Encode ASR/OCR passages into L2-normalized 384d float32 embeddings for E5."""
+    import torch
+
+    if not texts:
+        return np.zeros((0, E5_EMBEDDING_DIM), dtype=np.float32)
+
+    prefixed = [t if t.startswith("passage: ") else f"passage: {t}" for t in texts]
+    chunks: list[np.ndarray] = []
+
+    for st in range(0, len(prefixed), batch_size):
+        batch = prefixed[st : st + batch_size]
+        enc = tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=256,
+            return_tensors="pt",
+        )
+        enc = {k: v.to(device) for k, v in enc.items()}
+        with torch.no_grad():
+            out = model(**enc)
+            hidden = out.last_hidden_state.float()
+            mask = enc["attention_mask"].unsqueeze(-1).expand(hidden.size()).float()
+            summed = (hidden * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1e-9)
+            emb = summed / counts
+            emb = emb / emb.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
+            chunks.append(emb.detach().cpu().numpy().astype(np.float32))
+
+    return np.vstack(chunks)
+
+
+def build_e5_text_faiss_index(
+    asr_segments: list[dict[str, Any]],
+    ocr_observations: list[dict[str, Any]],
+    out_dir: Path,
+    tokenizer: Any = None,
+    model: Any = None,
+    device: str = "cpu",
+    model_id: str = E5_MODEL_ID,
+    revision: str = E5_REVISION,
+) -> dict[str, Any]:
+    """Build and persist faiss_text_e5_384.bin + e5_text_manifest.json for ASR & OCR."""
+    import faiss
+
+    entries: list[dict[str, Any]] = []
+    texts: list[str] = []
+
+    for seg in asr_segments:
+        raw_txt = str(seg.get("raw_text", "")).strip()
+        if not raw_txt:
+            continue
+        entries.append({
+            "faiss_id": len(entries),
+            "source_type": "asr",
+            "item_id": seg.get("segment_id", ""),
+            "video_id": seg.get("video_id", ""),
+            "start_ms": int(seg.get("start_ms", 0)),
+            "end_ms": int(seg.get("end_ms", 0)),
+            "raw_text": raw_txt,
+        })
+        texts.append(raw_txt)
+
+    for obs in ocr_observations:
+        raw_txt = str(obs.get("raw_text", "")).strip()
+        if not raw_txt:
+            continue
+        ts_ms = int(obs.get("timestamp_ms", 0))
+        entries.append({
+            "faiss_id": len(entries),
+            "source_type": "ocr",
+            "item_id": obs.get("observation_id", ""),
+            "video_id": obs.get("video_id", ""),
+            "start_ms": ts_ms,
+            "end_ms": ts_ms,
+            "raw_text": raw_txt,
+        })
+        texts.append(raw_txt)
+
+    index = faiss.IndexFlatIP(E5_EMBEDDING_DIM)
+    if texts:
+        if tokenizer is None or model is None:
+            from transformers import AutoModel, AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
+            model = AutoModel.from_pretrained(model_id, revision=revision).to(device)
+            model.eval()
+        vectors = encode_e5_passages(texts, tokenizer=tokenizer, model=model, device=device)
+        if vectors.shape[1] != E5_EMBEDDING_DIM:
+            raise ValueError(f"Expected {E5_EMBEDDING_DIM}d E5 vectors, got {vectors.shape[1]}")
+        index.add(np.ascontiguousarray(vectors, dtype=np.float32))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    faiss_path = out_dir / "faiss_text_e5_384.bin"
+    manifest_path = out_dir / "e5_text_manifest.json"
+    faiss.write_index(index, str(faiss_path))
+    manifest_path.write_text(
+        json.dumps(entries, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return {
+        "index_path": str(faiss_path),
+        "manifest_path": str(manifest_path),
+        "num_entries": len(entries),
+        "ntotal": int(index.ntotal),
+    }
 
 
 def compute_grid_hist_512(img_rgb: np.ndarray) -> np.ndarray:
@@ -307,6 +462,7 @@ def main():
     global_videos: list[dict] = []
     global_keyframes: list[dict] = []
     global_embeddings_list: list[np.ndarray] = []
+    global_spatial_patches_list: list[np.ndarray] = []
     global_objects: list[dict] = []
     global_ocr_obs: list[dict] = []
     global_asr_segs: list[dict] = []
@@ -527,7 +683,13 @@ def main():
                     inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}
 
                 with torch.no_grad():
-                    if hasattr(siglip_model, "get_image_features"):
+                    if hasattr(siglip_model, "vision_model") and "pixel_values" in inputs:
+                        raw_out = siglip_model.vision_model(pixel_values=inputs["pixel_values"])
+                        if getattr(raw_out, "last_hidden_state", None) is not None:
+                            global_spatial_patches_list.append(
+                                extract_spatial_patches_3x3(raw_out.last_hidden_state)
+                            )
+                    elif hasattr(siglip_model, "get_image_features"):
                         raw_out = siglip_model.get_image_features(**inputs)
                     else:
                         raw_out = siglip_model(**inputs)
@@ -624,7 +786,26 @@ def main():
     else:
         final_embeddings = np.empty((0, 768), dtype=np.float32)
 
+    if global_spatial_patches_list:
+        final_spatial_patches = np.vstack(global_spatial_patches_list)
+    else:
+        final_spatial_patches = np.empty((0, 9, 768), dtype=np.float16)
+
     np.save(str(out_dir / "frame_embeddings.npy"), final_embeddings)
+    np.save(str(out_dir / "spatial_patches_fp16.npy"), final_spatial_patches)
+
+    e5_status: dict[str, Any] = {"available": False, "num_entries": 0}
+    try:
+        e5_info = build_e5_text_faiss_index(
+            asr_segments=global_asr_segs,
+            ocr_observations=global_ocr_obs,
+            out_dir=out_dir,
+            device=device,
+        )
+        e5_status = {"available": True, **e5_info}
+    except Exception as e5_err:
+        log(f"E5 text index build skipped/failed: {e5_err}")
+        e5_status = {"available": False, "error": str(e5_err), "num_entries": 0}
     with open(out_dir / "videos.json", "w", encoding="utf-8") as f:
         json.dump(global_videos, f, indent=2, ensure_ascii=False)
     with open(out_dir / "keyframe_manifest.json", "w", encoding="utf-8") as f:
@@ -650,8 +831,11 @@ def main():
                     "license": "Apache-2.0", "config_sha256": OCR_CONFIG_SHA256},
             "detection": {"model_id": "YOLOv8n", "revision": "ultralytics/assets/v8.3.0",
                           "license": "AGPL-3.0"},
+            "e5_text": {"model_id": E5_MODEL_ID, "revision": E5_REVISION,
+                        "embedding_dim": E5_EMBEDDING_DIM, "license": "MIT"},
             "model_files_sha256": model_hashes,
         },
+        "e5_text_index": e5_status,
         "runtime_versions": runtime_versions,
         "limitations": ["ASR confidence is an uncalibrated average log probability, not a probability.",
                         "Transitive dependencies, GPU drivers and runtime wheel hashes require separate verification.",
@@ -660,6 +844,7 @@ def main():
         "total_videos": len(global_videos),
         "total_keyframes": len(global_keyframes),
         "embedding_matrix_shape": list(final_embeddings.shape),
+        "spatial_patches_shape": list(final_spatial_patches.shape),
         "total_objects_detected": len(global_objects),
         "total_ocr_observations": len(global_ocr_obs),
         "total_asr_segments": len(global_asr_segs),

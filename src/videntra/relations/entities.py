@@ -20,6 +20,15 @@ class GroundedEntity:
     target_classes: tuple[str, ...] = ()
 
 
+def _object_frame_key(obj: dict[str, Any]) -> Any:
+    """Return the first non-None frame identifier for per-frame cardinality counting."""
+    for key in ("keyframe_id", "pts_sec", "timestamp_ms", "timestamp_seconds"):
+        val = obj.get(key)
+        if val is not None:
+            return val
+    return None
+
+
 def ground_entities(
     query_graph: QueryGraph,
     evidence_items: Sequence[dict[str, Any]],
@@ -92,7 +101,7 @@ def ground_entities(
                             req_count = int(attr.value)
                             counts_by_frame = {}
                             for obj in matched_objs:
-                                f_key = obj.get("keyframe_id", obj.get("pts_sec"))
+                                f_key = _object_frame_key(obj)
                                 if f_key is not None:
                                     counts_by_frame[f_key] = counts_by_frame.get(f_key, 0) + 1
                             if counts_by_frame:
@@ -198,12 +207,12 @@ def compute_object_verification_boost(
                 obj_canonical = COCO_SYNONYM_MAP.get(obj_name, obj_name)
                 if obj_name == raw_class or obj_canonical == canonical_class:
                     matched.append(obj)
-                    f_key = obj.get("keyframe_id", obj.get("pts_sec"))
+                    f_key = _object_frame_key(obj)
                     if f_key is not None:
                         counts_by_frame[f_key] = counts_by_frame.get(f_key, 0) + 1
             elif obj_canonical == canonical_class:
                 matched.append(obj)
-                f_key = obj.get("pts_sec")
+                f_key = _object_frame_key(obj)
                 if f_key is not None:
                     counts_by_frame[f_key] = counts_by_frame.get(f_key, 0) + 1
 

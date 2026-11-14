@@ -113,3 +113,68 @@ class QueryGraph:
     def validate_schema(self) -> None:
         """Validate structure against official JSON schema."""
         validate("query_graph", self.to_dict())
+
+
+@dataclass(frozen=True)
+class CompactDecomposedQuery:
+    """Compact Wire JSON structure (~60-100 tokens) emitted by Small-LLM before deterministic expansion."""
+
+    lang: str = "unknown"
+    events: tuple[dict[str, Any], ...] = ()
+    spatial: tuple[dict[str, Any], ...] = ()
+    temporal: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompactDecomposedQuery":
+        return cls(
+            lang=str(data.get("lang", "unknown")),
+            events=tuple(dict(e) for e in (data.get("events") or []) if isinstance(e, dict)),
+            spatial=tuple(dict(s) for s in (data.get("spatial") or []) if isinstance(s, dict)),
+            temporal=tuple(dict(t) for t in (data.get("temporal") or []) if isinstance(t, dict)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lang": self.lang,
+            "events": [dict(e) for e in self.events],
+            "spatial": [dict(s) for s in self.spatial],
+            "temporal": [dict(t) for t in self.temporal],
+        }
+
+
+@dataclass(frozen=True)
+class ModalityRoutingPlan:
+    """Structured modality routing plan derived from QueryGraph for downstream retrieval stages."""
+
+    original_query: str
+    query_length_tier: str  # "short", "medium", "long"
+    visual_clauses: tuple[str, ...]
+    ocr_phrases: tuple[str, ...]
+    asr_phrases: tuple[str, ...]
+    object_requirements: tuple[dict[str, Any], ...]
+    has_explicit_ocr_intent: bool
+    has_explicit_asr_intent: bool
+    has_spatial_constraints: bool
+    has_temporal_constraints: bool
+    query_graph: QueryGraph
+    routing_mode: str = "fast_rule"  # "fast_rule", "tri_modal_broadcast", "llm_compact", "fallback"
+    cache_hit: bool = False
+    decomposer_latency_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "original_query": self.original_query,
+            "query_length_tier": self.query_length_tier,
+            "visual_clauses": list(self.visual_clauses),
+            "ocr_phrases": list(self.ocr_phrases),
+            "asr_phrases": list(self.asr_phrases),
+            "object_requirements": [dict(o) for o in self.object_requirements],
+            "has_explicit_ocr_intent": self.has_explicit_ocr_intent,
+            "has_explicit_asr_intent": self.has_explicit_asr_intent,
+            "has_spatial_constraints": self.has_spatial_constraints,
+            "has_temporal_constraints": self.has_temporal_constraints,
+            "query_graph": self.query_graph.to_dict(),
+            "routing_mode": self.routing_mode,
+            "cache_hit": self.cache_hit,
+            "decomposer_latency_ms": self.decomposer_latency_ms,
+        }

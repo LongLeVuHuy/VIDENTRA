@@ -552,21 +552,78 @@ class RuleBasedQueryParser:
             )
 
         # 6. Spatial relation detection
-        sp_m = re.search(r'\b(phía sau|đằng sau|behind|phía trước|in front of)\b', raw_query, re.IGNORECASE)
+        sp_m = re.search(
+            r'\b('
+            r'to the left of|on the left of|left of|'
+            r'to the right of|on the right of|right of|'
+            r'in front of|next to|close to|on top of|'
+            r'beside|near|above|below|underneath|beneath|under|inside|within|behind|'
+            r'phía bên trái|ở bên trái|bên trái|'
+            r'phía bên phải|ở bên phải|bên phải|'
+            r'phía sau|đằng sau|ở sau|phía trước|đằng trước|'
+            r'bên cạnh|kế bên|ở gần|gần|'
+            r'phía trên|bên trên|ở trên|'
+            r'phía dưới|bên dưới|ở dưới|'
+            r'ở bên trong|bên trong|ở trong'
+            r')\b',
+            raw_query,
+            re.IGNORECASE,
+        )
         if sp_m:
             sp_phrase = sp_m.group(1).lower()
             can_sp = canonicalize_spatial(sp_phrase)
             if can_sp == "behind":
                 ambiguities.append("phía sau chưa chỉ rõ sau người nào hay nền cảnh; không chốt 3D behind")
 
-            roles = {}
-            if ocr_entity_id:
-                roles["subject"] = ocr_entity_id
-            elif obj_entity_id:
-                roles["subject"] = obj_entity_id
+            roles: dict[str, str] = {}
+            sp_start, sp_end = sp_m.start(), sp_m.end()
+            pre_ent: tuple[int, str] | None = None
+            post_ent: tuple[int, str] | None = None
+            for ent in entities:
+                mention_low = ent.mention.strip().lower()
+                if not mention_low:
+                    continue
+                search_pos = 0
+                while True:
+                    idx = low.find(mention_low, search_pos)
+                    if idx == -1:
+                        break
+                    m_end = idx + len(mention_low)
+                    if m_end <= sp_start:
+                        if pre_ent is None or m_end > pre_ent[0]:
+                            pre_ent = (m_end, ent.id)
+                    elif idx >= sp_end:
+                        if post_ent is None or idx < post_ent[0]:
+                            post_ent = (idx, ent.id)
+                    search_pos = idx + 1
 
-            if person_spans:
-                roles["reference"] = person_spans[0]
+            if pre_ent and post_ent and pre_ent[1] != post_ent[1]:
+                roles["subject"] = pre_ent[1]
+                roles["object"] = post_ent[1]
+            elif pre_ent:
+                roles["subject"] = pre_ent[1]
+                fallback_ref = next(
+                    (e.id for e in entities if e.id != pre_ent[1]),
+                    None,
+                )
+                if fallback_ref:
+                    roles["object"] = fallback_ref
+            elif post_ent:
+                roles["object"] = post_ent[1]
+                fallback_subj = next(
+                    (e.id for e in entities if e.id != post_ent[1]),
+                    None,
+                )
+                if fallback_subj:
+                    roles["subject"] = fallback_subj
+            else:
+                if ocr_entity_id:
+                    roles["subject"] = ocr_entity_id
+                elif obj_entity_id:
+                    roles["subject"] = obj_entity_id
+
+                if person_spans:
+                    roles["reference"] = person_spans[0]
 
             predicates.append(
                 Predicate(
@@ -603,7 +660,7 @@ class RuleBasedQueryParser:
                 id="action_main",
                 kind="action",
                 operator="generic_action",
-                roles={"subject": "person_main"} if person_spans else {},
+                roles={"subject": person_spans[0]} if person_spans else {},
                 source_span=raw_query,
                 polarity=default_polarity,
             )
