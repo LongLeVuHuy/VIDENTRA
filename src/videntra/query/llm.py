@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Callable
 import unicodedata
@@ -328,6 +329,21 @@ class QueryComplexityGate:
         )
 
 
+class DeadlineStoppingCriteria:
+    """Stop HuggingFace generation at the current token once monotonic time reaches deadline."""
+
+    def __init__(self, deadline_monotonic: float) -> None:
+        self.deadline_monotonic = float(deadline_monotonic)
+
+    def __call__(self, input_ids: Any, scores: Any = None, **kwargs: Any) -> Any:
+        is_done = time.monotonic() >= self.deadline_monotonic
+        if hasattr(input_ids, "shape") and hasattr(input_ids, "device"):
+            import torch  # type: ignore
+
+            return torch.full((input_ids.shape[0],), is_done, device=input_ids.device, dtype=torch.bool)
+        return bool(is_done)
+
+
 class LocalSmallLLMBackend:
     """Lazy-loading local Small-LLM adapter (llama_cpp GGUF or transformers) with hard deadline_ms guard."""
 
@@ -335,6 +351,7 @@ class LocalSmallLLMBackend:
     DEFAULT_MODEL_REVISION = "qwen2.5-1.5b-instruct"
     DEFAULT_CUDA_DEADLINE_MS = 250
     DEFAULT_CPU_DEADLINE_MS = 5000
+    DEFAULT_MAX_NEW_TOKENS = 96
 
     @staticmethod
     def _has_cuda() -> bool:
@@ -355,6 +372,7 @@ class LocalSmallLLMBackend:
         generate_fn: Callable[[str], str] | None = None,
         n_ctx: int = 1024,
         n_threads: int = 4,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     ):
         env_path = os.environ.get("VIDENTRA_LLM_MODEL_PATH")
         resolved_path = model_path if model_path is not None else env_path
@@ -385,6 +403,7 @@ class LocalSmallLLMBackend:
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
         self.n_threads = n_threads
+        self.max_new_tokens = max(1, int(max_new_tokens))
 
         self._loaded_backend: str | None = None
         self._llama_model: Any = None
@@ -392,6 +411,8 @@ class LocalSmallLLMBackend:
         self._hf_model: Any = None
         self._load_attempted: bool = False
         self._available: bool = False
+        self._infer_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="videntra-llm")
 
     def _discover_model_path(self) -> Path | None:
         if self.model_path is not None:
@@ -450,12 +471,15 @@ class LocalSmallLLMBackend:
                 self._hf_tokenizer = AutoTokenizer.from_pretrained(str(discovered), local_files_only=True)
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 dtype = torch.float16 if device == "cuda" else torch.float32
-                self._hf_model = AutoModelForCausalLM.from_pretrained(
+                model = AutoModelForCausalLM.from_pretrained(
                     str(discovered),
                     local_files_only=True,
                     torch_dtype=dtype,
                 ).to(device)
-                self._hf_model.eval()
+                model.eval()
+                if device == "cpu":
+                    model = self._quantize_cpu_model(model, torch)
+                self._hf_model = model
                 self._loaded_backend = "transformers"
                 self._available = True
                 return True
@@ -465,7 +489,29 @@ class LocalSmallLLMBackend:
         self._available = False
         return False
 
-    def _invoke_sync(self, prompt: str) -> str:
+    @staticmethod
+    def _quantize_cpu_model(model: Any, torch_module: Any) -> Any:
+        """Apply dynamic int8 quantization on CPU Linear layers with safe fallback."""
+        try:
+            ao_quant = getattr(getattr(torch_module, "ao", None), "quantization", None)
+            if ao_quant is not None and hasattr(ao_quant, "quantize_dynamic"):
+                return ao_quant.quantize_dynamic(
+                    model,
+                    {torch_module.nn.Linear},
+                    dtype=torch_module.qint8,
+                )
+            legacy_quant = getattr(torch_module, "quantization", None)
+            if legacy_quant is not None and hasattr(legacy_quant, "quantize_dynamic"):
+                return legacy_quant.quantize_dynamic(
+                    model,
+                    {torch_module.nn.Linear},
+                    dtype=torch_module.qint8,
+                )
+        except Exception:
+            pass
+        return model
+
+    def _invoke_sync(self, prompt: str, deadline_monotonic: float | None = None) -> str:
         if self.generate_fn is not None:
             return self.generate_fn(prompt)
 
@@ -476,7 +522,7 @@ class LocalSmallLLMBackend:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
-                max_tokens=160,
+                max_tokens=self.max_new_tokens,
                 response_format={"type": "json_object"},
             )
             return res["choices"][0]["message"]["content"]
@@ -491,9 +537,15 @@ class LocalSmallLLMBackend:
             text = self._hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self._hf_tokenizer([text], return_tensors="pt").to(self._hf_model.device)
             gen_kwargs: dict[str, Any] = {
-                "max_new_tokens": 160,
+                "max_new_tokens": self.max_new_tokens,
                 "do_sample": False,
             }
+            if deadline_monotonic is not None:
+                from transformers import StoppingCriteriaList  # type: ignore
+
+                gen_kwargs["stopping_criteria"] = StoppingCriteriaList(
+                    [DeadlineStoppingCriteria(deadline_monotonic)]
+                )
             eos_id = getattr(self._hf_tokenizer, "eos_token_id", None)
             if eos_id is not None:
                 gen_kwargs["pad_token_id"] = eos_id
@@ -512,15 +564,33 @@ class LocalSmallLLMBackend:
             return None
 
         eff_deadline_ms = self.deadline_ms if deadline_ms is None else max(1, int(deadline_ms))
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._invoke_sync, prompt)
+        if not self._infer_lock.acquire(blocking=False):
+            raise TimeoutError(
+                f"LocalSmallLLMBackend is busy with an in-flight request (deadline_ms={eff_deadline_ms})"
+            )
+
+        deadline_monotonic = time.monotonic() + (eff_deadline_ms / 1000.0)
+
+        def _run_guarded() -> str:
+            try:
+                return self._invoke_sync(prompt, deadline_monotonic=deadline_monotonic)
+            finally:
+                self._infer_lock.release()
+
+        try:
+            future = self._executor.submit(_run_guarded)
+        except Exception:
+            self._infer_lock.release()
+            raise
+
         try:
             return future.result(timeout=eff_deadline_ms / 1000.0)
         except FuturesTimeoutError as exc:
-            executor.shutdown(wait=False, cancel_futures=True)
             raise TimeoutError(f"LocalSmallLLMBackend exceeded deadline_ms={eff_deadline_ms}") from exc
-        finally:
-            executor.shutdown(wait=False)
+
+    def close(self) -> None:
+        """Shut down the single reusable inference executor."""
+        self._executor.shutdown(wait=False)
 
 
 def _topological_event_order(

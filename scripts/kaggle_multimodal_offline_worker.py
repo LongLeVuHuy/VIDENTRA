@@ -30,6 +30,8 @@ SIGLIP_WEIGHTS_SHA256 = "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031
 E5_MODEL_ID = "intfloat/multilingual-e5-small"
 E5_REVISION = os.environ.get("VIDENTRA_E5_REVISION", "c007d7ef6fd86656326059b28395a7a03a7c5846")
 E5_EMBEDDING_DIM = 384
+FLORENCE2_MODEL_ID = "microsoft/Florence-2-base"
+FLORENCE2_REVISION = os.environ.get("VIDENTRA_FLORENCE2_REVISION", "5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac")
 ASR_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
 A5_MODEL_FILES = {
     "whisper-small/config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
@@ -314,6 +316,104 @@ def build_e5_text_faiss_index(
         "num_entries": len(entries),
         "ntotal": int(index.ntotal),
     }
+
+
+def extract_florence2_keyframe_captions(
+    keyframe_records: list[dict[str, Any]],
+    out_dir: Path | None = None,
+    *,
+    processor: Any = None,
+    model: Any = None,
+    device: str = "cuda",
+    batch_size: int = 16,
+    task_prompt: str = "<DETAILED_CAPTION>",
+    max_new_tokens: int = 96,
+    model_id: str = FLORENCE2_MODEL_ID,
+    revision: str = FLORENCE2_REVISION,
+) -> list[dict[str, Any]]:
+    """PQ-VCA Mode B: Generate detailed keyframe captions using Florence-2-base on Kaggle T4 GPU.
+
+    Each record in ``keyframe_records`` should provide ``video_id``, ``timestamp_ms``,
+    optional ``faiss_id``, and either ``image`` (PIL/ndarray) or ``keyframe_path``.
+    """
+    if not keyframe_records:
+        return []
+
+    import torch
+    from PIL import Image
+
+    if processor is None or model is None:
+        from transformers import AutoModelForCausalLM, AutoProcessor
+
+        dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
+        processor = AutoProcessor.from_pretrained(
+            model_id, revision=revision, trust_remote_code=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, revision=revision, torch_dtype=dtype, trust_remote_code=True
+        ).to(device)
+        model.eval()
+
+    captions: list[dict[str, Any]] = []
+    bs = max(1, int(batch_size))
+
+    for start in range(0, len(keyframe_records), bs):
+        batch = keyframe_records[start : start + bs]
+        images: list[Any] = []
+        valid_recs: list[tuple[int, dict[str, Any]]] = []
+
+        for offset, rec in enumerate(batch):
+            img = rec.get("image")
+            if img is None and rec.get("keyframe_path"):
+                img_path = Path(str(rec["keyframe_path"]))
+                if img_path.is_file():
+                    img = Image.open(img_path).convert("RGB")
+            elif isinstance(img, np.ndarray):
+                img = Image.fromarray(img.astype(np.uint8)).convert("RGB")
+
+            if img is not None:
+                images.append(img)
+                valid_recs.append((start + offset, rec))
+
+        if not images:
+            continue
+
+        prompts = [task_prompt] * len(images)
+        inputs = processor(text=prompts, images=images, return_tensors="pt")
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        else:
+            inputs = {
+                k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()
+            }
+
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=int(max_new_tokens),
+                num_beams=1,
+                do_sample=False,
+            )
+
+        decoded = processor.batch_decode(generated_ids, skip_special_tokens=True)
+        for (global_idx, rec), raw_cap in zip(valid_recs, decoded):
+            cap_text = str(raw_cap).replace(task_prompt, "").strip()
+            captions.append({
+                "faiss_id": int(rec.get("faiss_id", global_idx)),
+                "video_id": str(rec["video_id"]),
+                "timestamp_ms": int(rec["timestamp_ms"]),
+                "caption_text": cap_text,
+            })
+
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "keyframe_captions.json"
+        out_file.write_text(
+            json.dumps(captions, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    return captions
 
 
 def compute_grid_hist_512(img_rgb: np.ndarray) -> np.ndarray:

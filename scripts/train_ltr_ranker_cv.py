@@ -31,6 +31,30 @@ DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr_v1.json")
 
 _FORBIDDEN_PATH_TOKENS = ("heldout_test_201", "heldout", "test_queries")
 
+POSITIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
+    "s_vis_blend_max",
+    "z_vis_max",
+    "s_vis_top3_mean",
+    "s_vis_top5_mean",
+    "s_vis_ctx_coherence",
+    "s_late_interaction",
+    "rrf_vis",
+    "rrf_ocr",
+    "rrf_asr",
+    "bm25_log_score",
+    "high_spec_token_coverage",
+    "anchor_lexical_match",
+    "number_consistency",
+    "yolo_object_verification_boost",
+    "graph_relation_score",
+    "llm_modality_alignment",
+})
+
+NEGATIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
+    "delta_z_vis",
+    "spike_drop_ratio",
+})
+
 
 def assert_no_heldout_leakage(path: str | Path) -> Path:
     """Fail closed if a training or validation path references held-out test data."""
@@ -125,6 +149,21 @@ def build_pairwise_differences(
     return np.vstack(diffs).astype(np.float64), np.asarray(labels, dtype=np.float64)
 
 
+def _build_monotonic_masks(
+    n_features: int,
+    feature_names: Sequence[str] = LTR_FEATURE_NAMES,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build boolean masks for positive (>= 0) and negative (<= 0) monotonic constraints."""
+    pos_mask = np.zeros(n_features, dtype=bool)
+    neg_mask = np.zeros(n_features, dtype=bool)
+    for idx, name in enumerate(feature_names[:n_features]):
+        if name in POSITIVE_MONOTONIC_FEATURES:
+            pos_mask[idx] = True
+        elif name in NEGATIVE_MONOTONIC_FEATURES:
+            neg_mask[idx] = True
+    return pos_mask, neg_mask
+
+
 def train_pairwise_logistic_l2(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -132,8 +171,13 @@ def train_pairwise_logistic_l2(
     l2_reg: float = 1.0,
     learning_rate: float = 0.08,
     max_iter: int = 400,
+    monotonic_constraints: bool = True,
+    feature_names: Sequence[str] = LTR_FEATURE_NAMES,
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """Train L2-regularized pairwise logistic regression in pure NumPy.
+
+    Applies Monotonic Sign Projection after each Adam step when
+    ``monotonic_constraints=True`` so physical feature signs cannot invert.
 
     Returns:
         (weights, bias, feature_mean, feature_std)
@@ -152,6 +196,7 @@ def train_pairwise_logistic_l2(
     if X_pair.shape[0] == 0:
         return weights, 0.0, feat_mean, feat_std
 
+    pos_mask, neg_mask = _build_monotonic_masks(n_features, feature_names=feature_names)
     n_pairs = float(X_pair.shape[0])
     # Adam optimizer for fast, deterministic convergence without SciPy
     m = np.zeros(n_features, dtype=np.float64)
@@ -168,6 +213,10 @@ def train_pairwise_logistic_l2(
         m_hat = m / (1.0 - beta1**step)
         v_hat = v / (1.0 - beta2**step)
         weights -= learning_rate * m_hat / (np.sqrt(v_hat) + eps)
+
+        if monotonic_constraints:
+            weights[pos_mask] = np.maximum(0.0, weights[pos_mask])
+            weights[neg_mask] = np.minimum(0.0, weights[neg_mask])
 
     return weights, 0.0, feat_mean, feat_std
 
@@ -422,14 +471,16 @@ def extract_dev859_ltr_dataset(
 
     from scripts.run_validation_benchmark import load_validation_queries
     from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+    import torch
 
+    runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
     pipeline = UnifiedMultimodalSearchPipeline(
         db_path=Path("data/processed/metadata.db"),
         faiss_path=Path("data/processed/faiss_index.bin"),
         model_dir=Path("models/siglip2"),
-        device="cpu",
-        use_disk_cache=False,
-        memory_cache_size=0,
+        device=runtime_device,
+        use_disk_cache=True,
+        memory_cache_size=1024,
     )
     try:
         indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
@@ -503,34 +554,44 @@ def extract_dev859_ltr_dataset(
             if not (has_pos and has_neg):
                 continue
 
+            cand_ltr_map = diag.get("candidate_ltr_features", {})
+            z_stats = diag.get("z_stats")
+            if z_stats is None:
+                z_stats = compute_query_z_scores(
+                    [float(c["score"]) for c in vis_cands],
+                    top_k=120,
+                )
+
             for m in all_cands:
                 vid = m.video_id
-                v_scores = sorted(vis_scores_by_vid.get(vid, ()), reverse=True)
-                s_max = v_scores[0] if v_scores else float(m.ranking_score)
-                top3 = sum(v_scores[:3]) / len(v_scores[:3]) if v_scores else s_max
-                top5 = sum(v_scores[:5]) / len(v_scores[:5]) if v_scores else s_max
-                spike_drop = (v_scores[0] - v_scores[1]) if len(v_scores) >= 2 else 0.0
-                has_lex = ("ocr" in m.match_status) or ("asr" in m.match_status)
-
-                cand_dict = {
-                    "s_vis_blend_max": s_max,
-                    "s_vis_top3_mean": top3,
-                    "s_vis_top5_mean": top5,
-                    "s_vis_ctx_coherence": s_max,
-                    "s_late_interaction": 0.0,
-                    "spike_drop_ratio": spike_drop,
-                    "rrf_vis": rrf_vis_by_vid.get(vid, 0.0),
-                    "rrf_ocr": rrf_ocr_by_vid.get(vid, 0.0),
-                    "rrf_asr": rrf_asr_by_vid.get(vid, 0.0),
-                    "fts_score": max(fts_ocr_by_vid.get(vid, 0.0), fts_asr_by_vid.get(vid, 0.0)),
-                    "m_high": 1.0 if has_lex else 0.0,
-                    "k_high": 1.0,
-                    "anchor_lexical_match": 1.0 if has_lex else 0.0,
-                    "number_consistency": 1.0,
-                    "yolo_object_verification_boost": 0.0,
-                    "graph_relation_score": 0.0,
-                    "llm_modality_alignment": 1.0 if has_lex else 0.0,
-                }
+                if vid in cand_ltr_map:
+                    cand_dict = cand_ltr_map[vid]
+                else:
+                    v_scores = sorted(vis_scores_by_vid.get(vid, ()), reverse=True)
+                    s_max = v_scores[0] if v_scores else 0.0
+                    top3 = sum(v_scores[:3]) / len(v_scores[:3]) if v_scores else s_max
+                    top5 = sum(v_scores[:5]) / len(v_scores[:5]) if v_scores else s_max
+                    spike_drop = (v_scores[0] - v_scores[1]) if len(v_scores) >= 2 else 0.0
+                    has_lex = ("ocr" in m.match_status) or ("asr" in m.match_status)
+                    cand_dict = {
+                        "s_vis_blend_max": s_max,
+                        "s_vis_top3_mean": top3,
+                        "s_vis_top5_mean": top5,
+                        "s_vis_ctx_coherence": s_max,
+                        "s_late_interaction": 0.0,
+                        "spike_drop_ratio": spike_drop,
+                        "rrf_vis": rrf_vis_by_vid.get(vid, 0.0),
+                        "rrf_ocr": rrf_ocr_by_vid.get(vid, 0.0),
+                        "rrf_asr": rrf_asr_by_vid.get(vid, 0.0),
+                        "fts_score": max(fts_ocr_by_vid.get(vid, 0.0), fts_asr_by_vid.get(vid, 0.0)),
+                        "m_high": 1.0 if has_lex else 0.0,
+                        "k_high": 1.0,
+                        "anchor_lexical_match": 1.0 if has_lex else 0.0,
+                        "number_consistency": 1.0,
+                        "yolo_object_verification_boost": 0.0,
+                        "graph_relation_score": 0.0,
+                        "llm_modality_alignment": 1.0 if has_lex else 0.0,
+                    }
                 vec = extract_ltr_features_18d(cand_dict, z_stats=z_stats, return_dict=False)
                 lbl = 1.0 if vid in target_set else 0.0
 
@@ -547,8 +608,11 @@ def extract_dev859_ltr_dataset(
                         "features": [float(v) for v in vec],
                     })
 
-            if idx % 200 == 0 or idx == len(queries):
-                print(f"[LTR Extract] Processed {idx}/{len(queries)} dev_full_859 queries ({len(rows)} candidate rows)")
+            if idx % 50 == 0 or idx == len(queries):
+                print(
+                    f"[LTR Extract] Processed {idx}/{len(queries)} dev_full_859 queries ({len(rows)} candidate rows)",
+                    flush=True,
+                )
     finally:
         pipeline.close()
 

@@ -8,6 +8,7 @@ import pytest
 from videntra.contracts import validate
 from videntra.query.llm import (
     AdaptiveQueryDecomposer,
+    DeadlineStoppingCriteria,
     LocalSmallLLMBackend,
     QueryComplexityGate,
     SemanticDecomposerValidator,
@@ -462,3 +463,161 @@ def test_discover_model_path_prefers_1_5b_and_reflects_model_revision(tmp_path: 
     # Explicit model_revision is preserved
     custom_backend = LocalSmallLLMBackend(enabled=False, model_revision="custom-rev")
     assert custom_backend.model_revision == "custom-rev"
+
+
+# ---------------------------------------------------------------------------
+# 8. DeadlineStoppingCriteria, Single Executor Lock, & CPU Dynamic Quantization
+# ---------------------------------------------------------------------------
+
+
+def test_deadline_stopping_criteria_stops_after_deadline(monkeypatch):
+    import torch
+
+    now = [100.0]
+    monkeypatch.setattr("videntra.query.llm.time.monotonic", lambda: now[0])
+
+    criteria = DeadlineStoppingCriteria(deadline_monotonic=105.0)
+    input_ids = torch.zeros((2, 4), dtype=torch.long)
+
+    before = criteria(input_ids, scores=None)
+    assert isinstance(before, torch.BoolTensor)
+    assert before.shape == (2,)
+    assert not bool(before.any())
+
+    now[0] = 105.0
+    at_deadline = criteria(input_ids, scores=None)
+    assert isinstance(at_deadline, torch.BoolTensor)
+    assert bool(at_deadline.all())
+
+    # Scalar fallback when input_ids has no tensor shape/device
+    assert criteria([[1, 2, 3]], scores=None) is True
+
+
+def test_hf_invoke_sync_passes_stopping_criteria_and_max_new_tokens():
+    import torch
+    from transformers import StoppingCriteriaList
+
+    captured_kwargs: dict = {}
+
+    class DummyInputs(dict):
+        def to(self, _device):
+            return self
+
+    class DummyTokenizer:
+        eos_token_id = 2
+
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+            return "prompt"
+
+        def __call__(self, texts, return_tensors="pt"):
+            return DummyInputs({"input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long)})
+
+        def decode(self, gen_ids, skip_special_tokens=True):
+            return '{"lang":"en","events":[]}'
+
+    class DummyModel:
+        device = torch.device("cpu")
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.long)
+
+    backend = LocalSmallLLMBackend(enabled=True, max_new_tokens=96)
+    backend._loaded_backend = "transformers"
+    backend._hf_tokenizer = DummyTokenizer()
+    backend._hf_model = DummyModel()
+
+    deadline = time.monotonic() + 5.0
+    out = backend._invoke_sync("test prompt", deadline_monotonic=deadline)
+    assert out == '{"lang":"en","events":[]}'
+    assert captured_kwargs["max_new_tokens"] == 96
+    assert isinstance(captured_kwargs["stopping_criteria"], StoppingCriteriaList)
+    assert len(captured_kwargs["stopping_criteria"]) == 1
+    assert isinstance(captured_kwargs["stopping_criteria"][0], DeadlineStoppingCriteria)
+    assert captured_kwargs["stopping_criteria"][0].deadline_monotonic == pytest.approx(deadline)
+    backend.close()
+
+
+def test_single_executor_and_busy_infer_lock_prevents_zombie_threads(tmp_path: Path):
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    seen_threads: list[int] = []
+
+    def blocking_llm(_prompt: str) -> str:
+        seen_threads.append(threading.get_ident())
+        started.set()
+        release.wait(timeout=2.0)
+        return json.dumps(
+            {
+                "lang": "en",
+                "events": [
+                    {"id": "e1", "vis": "person walking", "ocr": [], "asr": [], "objs": [], "pol": "pos"}
+                ],
+            }
+        )
+
+    backend = LocalSmallLLMBackend(generate_fn=blocking_llm, deadline_ms=500)
+    try:
+        executor_ref = backend._executor
+        results: list[str | None] = []
+
+        def first_call():
+            results.append(backend.generate("query 1", deadline_ms=500))
+
+        t1 = threading.Thread(target=first_call)
+        t1.start()
+        assert started.wait(timeout=1.0)
+
+        # While first call holds _infer_lock, second call must fail fast with TimeoutError
+        t0 = time.perf_counter()
+        with pytest.raises(TimeoutError, match="busy"):
+            backend.generate("query 2", deadline_ms=500)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        assert elapsed_ms < 100.0
+
+        # AdaptiveQueryDecomposer also falls back cleanly when backend is busy
+        decomposer = AdaptiveQueryDecomposer(
+            llm_backend=backend,
+            cache_path=tmp_path / "cache.jsonl",
+            enable_disk_cache=False,
+        )
+        plan = decomposer.decompose("A woman in a red coat walking past a bakery shop")
+        assert plan.routing_mode == "fallback"
+
+        release.set()
+        t1.join(timeout=2.0)
+        assert len(results) == 1 and results[0] is not None
+
+        # After release, subsequent call reuses the exact same executor and worker thread
+        out2 = backend.generate("query 3", deadline_ms=500)
+        assert out2 is not None
+        assert backend._executor is executor_ref
+        assert len(seen_threads) == 2
+        assert seen_threads[0] == seen_threads[1]
+    finally:
+        release.set()
+        backend.close()
+
+
+def test_cpu_dynamic_int8_quantization_and_safe_fallback():
+    import torch
+
+    tiny = torch.nn.Sequential(torch.nn.Linear(8, 4))
+    quantized = LocalSmallLLMBackend._quantize_cpu_model(tiny, torch)
+    assert isinstance(quantized[0], torch.ao.nn.quantized.dynamic.Linear)
+
+    # Safe fallback if quantize_dynamic raises
+    class BrokenTorch:
+        qint8 = torch.qint8
+        nn = torch.nn
+
+        class ao:
+            class quantization:
+                @staticmethod
+                def quantize_dynamic(*_args, **_kwargs):
+                    raise RuntimeError("quantization unsupported")
+
+    fallback_model = LocalSmallLLMBackend._quantize_cpu_model(tiny, BrokenTorch)
+    assert fallback_model is tiny

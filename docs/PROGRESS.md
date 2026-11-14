@@ -1,5 +1,49 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Sửa 7 Vấn đề Kiểm toán Phase 7 & Triển khai Nền tảng Nghiên cứu (`PQ-VCA`, `CM-GD`, `SE-Viterbi`)
+
+Thực thi đầy đủ theo [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md) qua Swarm:
+
+### 1. Khắc phục 7 Vấn đề Kỹ thuật
+- **Vấn đề 1 (Train–Inference Parity & Monotonic Sign Projection cho LTR):**
+  - [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py): Lưu `m_high`, `k_high`, `anchor_match`, `num_consist` ngay tại Stage 5; tính `top3_vis_mean`, `top5_vis_mean`, `local_vis_coherence` thuần từ cosine thị giác tại Stage 6 và xuất `self.last_diagnostics["candidate_ltr_features"]`.
+  - [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py): Đọc trực tiếp `candidate_ltr_features` và áp dụng Monotonic Sign Projection (`w >= 0` cho 16 đặc trưng thuận, `w <= 0` cho `delta_z_vis` và `spike_drop_ratio`). Huấn luyện lại trên `dev_full_859` (`41,573` rows, 5-fold GroupKFold): `cv_hit_at_1 = 0.4558`, `cv_mrr = 0.5763`, `cv_ndcg_at_10 = 0.6254` (tăng từ `0.3315 / 0.4880 / 0.5499`), toàn bộ trọng số trong `models/ranking/videntra_ltr_v1.json` đều đúng dấu vật lý (`s_late_interaction=+2.044897`, `spike_drop_ratio=-0.211009`, `rrf_ocr=+0.267528`, `rrf_asr=+0.588596`, `anchor_lexical_match=+0.091156`).
+- **Vấn đề 2 (`Moment nDCG@5` & `final_results.sort`):** Tính `s_max1` trong cửa sổ `[start_sec, end_sec]` và sắp xếp `final_results.sort(key=lambda m: float(m.ranking_score), reverse=True)` trước khi trả về ở Stage 7.
+- **Vấn đề 3 (Wire Dense E5 Index vào Stage 3):** Bổ sung lazy `_ensure_e5_encoder()` (`intfloat/multilingual-e5-small`, `local_files_only=True`, RAM + disk cache `data/cache/query_e5_embeddings_384d.npz`) và gọi `_search_e5_text_index(..., top_k=25)` với ngưỡng `sc >= 0.835` vào `ocr_candidates`/`asr_candidates` (`"is_dense_e5": True`).
+- **Vấn đề 4 (Wire `temporal_context_768` & `_score_late_interaction_window`):** Tính sẵn `self.temporal_context_768` trong `_initialize()` và nối `s_late_interaction` tại Stage 6 (`_score_late_interaction_window` khi có `spatial_patches_fp16.npy`, fallback `temporal_context_768` khi chưa có).
+- **Vấn đề 5 (Sửa Zombie Thread Leak & Tối ưu CPU trong [llm.py](../src/videntra/query/llm.py)):** Thêm `DeadlineStoppingCriteria`, thay per-call `ThreadPoolExecutor` bằng single reusable executor + `self._infer_lock`, thêm `torch.ao.quantization.quantize_dynamic(..., qint8)` trên CPU và `max_new_tokens=96`.
+- **Vấn đề 6 (Bảo toàn Phase 6 Fallback Parity):** Chỉ kích hoạt `_build_routed_fts5_queries`, điều tiết `lex_boost` và `seq_weight = 0.45` khi `routing_mode == "llm_compact"`.
+- **Vấn đề 7 (Provenance & Tài liệu):** Sửa [run_validation_benchmark.py](../scripts/run_validation_benchmark.py) lọc bỏ `__pycache__/`.pyc` và `metadata.db-wal` khỏi `input_paths`, đăng ký `faiss_text_e5_384.bin`, `e5_text_manifest.json`, `videntra_ltr_v1.json`; đồng bộ `PROJECT.md`.
+
+### 2. Nền tảng Nghiên cứu Mới (`PQ-VCA`, `CM-GD`, `SE-Viterbi`)
+- **[alignment.py](../src/videntra/retrieval/alignment.py):** Cài đặt `shot_aware_graph_diffusion`, `compute_query_adaptive_csls` (`CM-GD`) và `viterbi_subevent_localization` (`SE-Viterbi`).
+- **[build_e5_text_index.py](../scripts/build_e5_text_index.py) & [kaggle_multimodal_offline_worker.py](../scripts/kaggle_multimodal_offline_worker.py):** Cài đặt `build_structured_event_synopses` (`PQ-VCA` Mode A) và `extract_florence2_keyframe_captions` (`PQ-VCA` Mode B cho Kaggle T4 GPU).
+
+### 3. Kiểm thử & Benchmark sau sửa lỗi
+- **Full Test Suite:** `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`462 passed, 5 warnings in 226.09s`** (exit code `0`, gồm 14 test mới trong [test_research_upgrades.py](../tests/retrieval/test_research_upgrades.py)).
+- **`dev_150` Benchmark** (`.venv\Scripts\python.exe scripts/run_validation_benchmark.py --single-split-only --max-msrvtt 100 --out-dir work/tmp_bench_audit_fix`):
+  - **Exit code `0`** (`inputs_unchanged=True`, `outputs_verified=True`, snapshot `work/experiments/20261114_225135_all_splits_202c335`).
+  - `Video Hit@1`: **59.33%**, `MRR`: **0.6447**, `Video nDCG@10`: **0.6709**, `Moment Hit@1 (0.5)`: **68.18%**, `Moment nDCG@5`: **0.5026**, **`Pure-ASR FP Top-1 = 0`**, `Non-Neural Latency (p50/p95)`: `381.47 ms / 679.64 ms` (chạy trước khi có `spatial_patches_fp16.npy` và pre-warm `Qwen2.5-1.5B-Instruct` trên GPU).
+
+---
+
+## 14/11/2026 — Kiểm Toán Toàn Diện Code Phase 7 (Post-Hydrogen Audit), Chẩn Đoán 7 Lỗi Logic/LTR/Dead-Code & Lộ Trình Nghiên Cứu Mới
+
+- **Kiểm toán 3 commits mới (`8932eac`, `ae3dd4b`, `202c335` — 30 files, +6,050 lines):**
+  - **Phần đã ổn:** Sửa đúng 6 bugs nền tảng (`_resolve_moment_frame_indices`, `_compute_video_visual_curve` `0.70*768d + 0.30*864d`, không gian 2D `roles["reference"]`, suy diễn `event_intervals` cho `evaluate_temporal_order`, đồng nhất `_object_frame_key`, thực thi `filters` & `rerank_with_relations`), kiến trúc `AdaptiveQueryDecomposer` + `SemanticDecomposerValidator` (5 bước chống bịa từ OCR/ASR, DAG check, bảo toàn phủ định), `assert_no_heldout_leakage` + `GroupKFold` theo `source_video_id`, và `447 passed` unit/integration tests.
+  - **Phát hiện 7 vấn đề kỹ thuật khiến `Video Hit@1` trên `dev_150` giảm từ `62.00%` $\to$ `61.33%` $\to$ `60.67%` và `Moment nDCG@5` đứng yên ở `0.5127`:**
+    1. **Lệch đặc trưng giữa lúc Train (`train_ltr_ranker_cv.py`) và Inference (`unified_pipeline.py`) + Đa cộng tuyến làm đảo dấu trọng số trong [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json):** Cột 0 & 5 trùng nhau (`0.125506`), cột 12, 13 & 17 trùng nhau (`0.215687`), 4 cột bằng `0.0`, và `z_vis_max` bị học trọng số âm (`-0.242976`), `delta_z_vis` trọng số dương (`+0.243084`), `spike_drop_ratio` trọng số dương (`+0.145057`).
+    2. **Thiếu `final_results.sort(...)` sau khi thêm `_win2` ở Stage 6 ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Làm `_win2` luôn chiếm cứng vị trí thứ 2 bất kể điểm `win2_score`, khiến `Moment nDCG@5` bất động tại `0.5127`.
+    3. **Dense E5 Index (`faiss_text_e5_384.bin`) đang là Dead Code:** Đã nạp vào RAM và viết `_search_e5_text_index()` nhưng chưa hề được gọi trong `search()`.
+    4. **`QAT-LateInteraction` (`_score_late_interaction_window`) & `compute_multiscale_temporal_context` đang là Dead Code:** Chưa được gọi trong `search()`, đặc trưng `s_late_interaction` luôn gán cứng `0.0`.
+    5. **Rò rỉ luồng chạy ngầm (Zombie Thread Leak) trong `LocalSmallLLMBackend.generate()` ([llm.py](../src/videntra/query/llm.py)):** `executor.shutdown(wait=False, cancel_futures=True)` không dừng được thread PyTorch `model.generate()` đang chạy trên CPU (`>80s/câu`).
+    6. **Can thiệp FTS5 & `seq_weight=0.45` ngay cả khi ở chế độ `fallback`:** Làm `Video Hit@1` giảm từ `62.00%` xuống `61.33%` khi LLM chưa chạy.
+    7. **Chưa đồng bộ `PROJECT.md` và `provenance.json` (`inputs_unchanged=False`).**
+- **Tạo báo cáo kiểm toán & hướng phát triển nghiên cứu tại thư mục gốc:**
+  - Xuất bản [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md) gồm: (I) Phần đã ổn, (II) Chi tiết 7 vấn đề chưa ổn & hướng dẫn sửa từng dòng code, (III) 3 hướng phát triển nghiên cứu mới (`PQ-VCA`: Pseudo-Query Video Event Caption Augmentation, `CM-GD`: Cross-Modal Graph Diffusion & Query-Adaptive CSLS, `SE-Viterbi`: Sub-Event Viterbi Temporal Localization).
+
+---
+
 ## 14/11/2026 — Tải & Cấu hình `Qwen/Qwen2.5-1.5B-Instruct` cho `LocalSmallLLMBackend`
 
 - **Tải Weights (Gitignored):** Tải `Qwen/Qwen2.5-1.5B-Instruct` (Apache-2.0, commit SHA `989aa7980e4cf806f80c7fef2b1adb7bc71aa306`) vào `models/llm/qwen2.5-1.5b-instruct/` (xác nhận `.gitignore` chặn không đưa vào Git).

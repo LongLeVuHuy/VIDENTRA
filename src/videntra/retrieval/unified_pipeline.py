@@ -44,6 +44,7 @@ from videntra.indexing.augmented_vector import (
     build_augmented_864d_embeddings,
     build_query_864d_vector,
     compute_late_interaction_maxsim,
+    compute_multiscale_temporal_context,
 )
 from videntra.retrieval.alignment import align_sequential_keyframe_clauses
 from videntra.relations.entities import compute_object_verification_boost
@@ -181,7 +182,7 @@ def _build_routed_fts5_queries(
     routing_plan: ModalityRoutingPlan | None,
 ) -> tuple[str, str]:
     """Build channel-specific OCR and ASR FTS5 queries from ModalityRoutingPlan."""
-    if routing_plan is None or routing_plan.routing_mode == "tri_modal_broadcast":
+    if routing_plan is None or routing_plan.routing_mode != "llm_compact":
         return base_fts, base_fts
 
     orig_norm = routing_plan.original_query.strip().lower()
@@ -491,6 +492,7 @@ class UnifiedMultimodalSearchPipeline:
         use_disk_cache: bool = False,
         memory_cache_size: int = 512,
         cache_path: Path | str = Path("data/cache/query_text_embeddings_768d.npz"),
+        e5_cache_path: Path | str = Path("data/cache/query_e5_embeddings_384d.npz"),
         alpha_obj: float = 0.25,
         alpha_meta: float = 0.15,
         beta_hub: float = 0.08,
@@ -519,6 +521,8 @@ class UnifiedMultimodalSearchPipeline:
         self.memory_cache_size = memory_cache_size
         self._text_memory_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self.cache_path = Path(cache_path)
+        self._e5_memory_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self.e5_cache_path = Path(e5_cache_path)
         self.alpha_obj = alpha_obj
         self.alpha_meta = alpha_meta
         self.beta_hub = beta_hub
@@ -546,6 +550,7 @@ class UnifiedMultimodalSearchPipeline:
         if use_disk_cache:
             warnings.warn("Legacy text cache is not model-namespaced; do not use it for evaluation", RuntimeWarning)
         self.cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.cache_path) if use_disk_cache else None
+        self.e5_cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.e5_cache_path) if use_disk_cache else None
         self.last_timings: dict[str, float] = {}
         self.last_diagnostics: dict[str, Any] = {}
         self._search_lock = threading.RLock()
@@ -555,8 +560,11 @@ class UnifiedMultimodalSearchPipeline:
         self.ltr_blend_weight = float(ltr_blend_weight)
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
+        self.temporal_context_768: np.ndarray | None = None
         self.e5_text_index: faiss.Index | None = None
         self.e5_text_manifest: list[dict[str, Any]] = []
+        self.e5_tokenizer: Any | None = None
+        self.e5_model: Any | None = None
         self.last_routing_plan: ModalityRoutingPlan | None = None
         self._last_event_intervals: dict[str, dict[str, tuple[float, float]]] = {}
 
@@ -679,11 +687,18 @@ class UnifiedMultimodalSearchPipeline:
             self.all_embeddings = np.ascontiguousarray(self.all_embeddings, dtype=np.float32)
             self.aug_index = faiss.IndexFlatIP(864)
             self.aug_index.add(self.augmented_embeddings)
+            if self.keyframe_map:
+                self.temporal_context_768 = compute_multiscale_temporal_context(
+                    self.all_embeddings, self.keyframe_map
+                )
+            else:
+                self.temporal_context_768 = None
         else:
             self.all_embeddings = np.zeros((0, 768), dtype=np.float32)
             self.augmented_embeddings = np.zeros((0, 864), dtype=np.float32)
             self.aug_index = faiss.IndexFlatIP(864)
             self.mean_vec_768 = np.zeros(768, dtype=np.float32)
+            self.temporal_context_768 = None
 
         # Precompute per-video keyframe matrices and timestamp lists for fast O(1) lookup
         self.video_kf_pts: dict[str, list[float]] = {}
@@ -1244,6 +1259,84 @@ class UnifiedMultimodalSearchPipeline:
         except Exception:
             return 0.0
 
+    def _ensure_e5_encoder(self) -> bool:
+        """Lazy-load intfloat/multilingual-e5-small locally without network calls."""
+        if self.e5_tokenizer is not None and self.e5_model is not None:
+            return True
+        try:
+            from transformers import AutoModel, AutoTokenizer
+
+            e5_id = os.environ.get("VIDENTRA_E5_MODEL_ID", "intfloat/multilingual-e5-small")
+            e5_rev = os.environ.get("VIDENTRA_E5_REVISION", "c007d7ef6fd86656326059b28395a7a03a7c5846")
+            self.e5_tokenizer = AutoTokenizer.from_pretrained(e5_id, revision=e5_rev, local_files_only=True)
+            model = AutoModel.from_pretrained(e5_id, revision=e5_rev, local_files_only=True).to(self.device)
+            model.eval()
+            self.e5_model = model
+            return True
+        except Exception:
+            self.e5_tokenizer = None
+            self.e5_model = None
+            return False
+
+    def encode_e5_query(self, query: str) -> np.ndarray | None:
+        """Encode a query into an L2-normalized 384d float32 E5 vector with RAM LRU + disk cache."""
+        q_norm = unicodedata.normalize("NFC", query.strip())
+        if not q_norm:
+            return None
+        prefixed = q_norm if q_norm.startswith("query: ") else f"query: {q_norm}"
+
+        cached = self._e5_memory_cache.get(prefixed)
+        if cached is not None:
+            self._e5_memory_cache.move_to_end(prefixed)
+            return cached.copy()
+
+        if self.e5_cache is not None:
+            disk_vec = self.e5_cache.get(prefixed)
+            if disk_vec is not None and disk_vec.shape == (384,):
+                if self.memory_cache_size:
+                    self._e5_memory_cache[prefixed] = disk_vec.copy()
+                    self._e5_memory_cache.move_to_end(prefixed)
+                    while len(self._e5_memory_cache) > self.memory_cache_size:
+                        self._e5_memory_cache.popitem(last=False)
+                return disk_vec.copy()
+
+        if not self._ensure_e5_encoder():
+            return None
+
+        try:
+            enc = self.e5_tokenizer(
+                [prefixed],
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt",
+            )
+            enc = {k: v.to(self.device) for k, v in enc.items()}
+            with torch.inference_mode():
+                out = self.e5_model(**enc)
+                hidden = out.last_hidden_state.float()
+                mask = enc["attention_mask"].unsqueeze(-1).expand(hidden.size()).float()
+                summed = (hidden * mask).sum(dim=1)
+                counts = mask.sum(dim=1).clamp(min=1e-9)
+                emb = summed / counts
+                emb = emb / emb.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
+                vec = emb[0].detach().cpu().numpy().astype(np.float32)
+
+            if vec.shape != (384,) or not np.isfinite(vec).all():
+                return None
+
+            if self.memory_cache_size:
+                self._e5_memory_cache[prefixed] = vec.copy()
+                self._e5_memory_cache.move_to_end(prefixed)
+                while len(self._e5_memory_cache) > self.memory_cache_size:
+                    self._e5_memory_cache.popitem(last=False)
+            if self.e5_cache is not None:
+                self.e5_cache.set(prefixed, vec)
+                self.e5_cache.save()
+            return vec
+        except Exception:
+            return None
+
     def _search_e5_text_index(self, query_vec_384: np.ndarray | None, top_k: int = 20) -> list[dict[str, Any]]:
         """Optional Phase 7.4 dense E5 speech/OCR search hook (no-op when absent)."""
         if self.e5_text_index is None or not self.e5_text_manifest or query_vec_384 is None:
@@ -1600,7 +1693,11 @@ class UnifiedMultimodalSearchPipeline:
                                     action_preds[1]: (t_mid, anchor_win[1]),
                                 }
 
-            seq_weight = 0.45 if (routing_plan is not None and routing_plan.has_temporal_constraints) else 0.35
+            seq_weight = (
+                0.45
+                if (routing_plan is not None and routing_plan.routing_mode == "llm_compact" and routing_plan.has_temporal_constraints)
+                else 0.35
+            )
             scored_visual = []
             for fid in cand_faiss_ids:
                 if fid not in self.keyframe_map:
@@ -1695,6 +1792,7 @@ class UnifiedMultimodalSearchPipeline:
             vid = info["video_id"]
             t_sec = info["pts_time"]
             final_score = raw_score
+            obj_boost = 0.0
 
             if obj_reqs and ablation_config != "A0":
                 obj_summary = self.keyframe_obj_summary.get(fid)
@@ -1727,6 +1825,7 @@ class UnifiedMultimodalSearchPipeline:
                 "score": float(final_score),
                 "branch": "visual",
                 "faiss_id": fid,
+                "obj_boost": float(obj_boost),
             })
 
         t_faiss_end = time.perf_counter()
@@ -1736,7 +1835,10 @@ class UnifiedMultimodalSearchPipeline:
         # =========================================================================
         ocr_candidates: list[dict[str, Any]] = []
         asr_candidates: list[dict[str, Any]] = []
-        fts_ocr_query, fts_asr_query = _build_routed_fts5_queries(fts_query, routing_plan)
+        if routing_plan is not None and routing_plan.routing_mode == "llm_compact":
+            fts_ocr_query, fts_asr_query = _build_routed_fts5_queries(fts_query, routing_plan)
+        else:
+            fts_ocr_query, fts_asr_query = fts_query, fts_query
 
         if fts_query and self.db_conn is not None and ablation_config not in ("A0", "A1", "A2"):
             try:
@@ -1772,6 +1874,56 @@ class UnifiedMultimodalSearchPipeline:
                     })
             except sqlite3.Error as exc:
                 raise RuntimeError("Lexical retrieval failed") from exc
+
+        # Phase 7.4: Dense E5 Text Index recall for long/paraphrased queries or sparse FTS5 hits
+        if (
+            self.e5_text_index is not None
+            and ablation_config not in ("A0", "A1", "A2")
+            and (len(query.split()) >= 3 or (len(ocr_candidates) + len(asr_candidates)) < 5)
+        ):
+            q_e5_384 = self.encode_e5_query(query)
+            if q_e5_384 is not None:
+                existing_ocr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in ocr_candidates}
+                existing_asr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in asr_candidates}
+                for hit in self._search_e5_text_index(q_e5_384, top_k=25):
+                    sc = float(hit.get("score", 0.0))
+                    if sc < 0.835:
+                        continue
+                    src_type = str(hit.get("source_type", "")).lower()
+                    vid = str(hit.get("video_id", ""))
+                    if not vid:
+                        continue
+                    st_sec = float(hit.get("start_ms", 0.0)) / 1000.0
+                    et_sec = float(hit.get("end_ms", hit.get("start_ms", 0.0))) / 1000.0
+                    ts_sec = (st_sec + et_sec) / 2.0 if et_sec > st_sec else st_sec
+                    raw_text = str(hit.get("raw_text", ""))
+                    dense_sc = max(0.1, (sc - 0.80) * 10.0)
+                    if src_type == "ocr":
+                        key = (vid, round(ts_sec, 1))
+                        if key not in existing_ocr:
+                            existing_ocr.add(key)
+                            ocr_candidates.append({
+                                "video_id": vid,
+                                "timestamp_sec": ts_sec,
+                                "score": dense_sc,
+                                "branch": "ocr",
+                                "matched_text": raw_text,
+                                "is_dense_e5": True,
+                            })
+                    elif src_type == "asr":
+                        key = (vid, round(ts_sec, 1))
+                        if key not in existing_asr:
+                            existing_asr.add(key)
+                            asr_candidates.append({
+                                "video_id": vid,
+                                "start_sec": st_sec,
+                                "end_sec": et_sec,
+                                "timestamp_sec": ts_sec,
+                                "score": dense_sc,
+                                "branch": "asr",
+                                "matched_text": raw_text,
+                                "is_dense_e5": True,
+                            })
 
         t_fts5_end = time.perf_counter()
 
@@ -1811,6 +1963,8 @@ class UnifiedMultimodalSearchPipeline:
                 "video_id": c["video_id"],
                 "rep_timestamp": c["timestamp_sec"],
                 "visual_sim": c["score"],
+                "faiss_id": c.get("faiss_id"),
+                "obj_boost": float(c.get("obj_boost", 0.0)),
                 "rrf_vis": rrf_val,
                 "ocr_rrfs": [],
                 "asr_rrfs": [],
@@ -1928,6 +2082,7 @@ class UnifiedMultimodalSearchPipeline:
             rrf_asr = cl["rrf_asr"]
             base_lex = max(1.6 * rrf_ocr, 1.4 * rrf_asr) + 0.35 * min(1.6 * rrf_ocr, 1.4 * rrf_asr)
             is_visually_anchored = ("visual" in cl["branches"])
+            has_unmatched_query_number = False
 
             if base_lex <= 0.0:
                 lex_boost = 0.0
@@ -2038,18 +2193,17 @@ class UnifiedMultimodalSearchPipeline:
                     else:
                         lex_boost = 0.15 * gamma_vis * base_lex * 0.45  # Dampened suppression
 
+            is_llm_compact = routing_plan is not None and routing_plan.routing_mode == "llm_compact"
             has_explicit_intent = (
                 is_visually_anchored
-                and routing_plan is not None
-                and routing_plan.routing_mode != "tri_modal_broadcast"
+                and is_llm_compact
                 and (
                     (routing_plan.has_explicit_ocr_intent and "ocr" in cl["branches"])
                     or (routing_plan.has_explicit_asr_intent and "asr" in cl["branches"])
                 )
             )
             purely_visual_intent = (
-                routing_plan is not None
-                and routing_plan.routing_mode != "tri_modal_broadcast"
+                is_llm_compact
                 and not routing_plan.has_explicit_ocr_intent
                 and not routing_plan.has_explicit_asr_intent
             )
@@ -2057,6 +2211,11 @@ class UnifiedMultimodalSearchPipeline:
                 lex_boost *= 1.15
             elif base_lex > 0.0 and purely_visual_intent and single_common_only:
                 lex_boost *= 0.85
+
+            cl["m_high"] = m_high
+            cl["k_high"] = max(1, k_high_len)
+            cl["anchor_match"] = 1.0 if (has_quoted_match or has_proper_noun_match) else 0.0
+            cl["num_consist"] = -1.0 if (not is_visually_anchored and has_unmatched_query_number) else 1.0
 
             if is_visually_anchored or has_quoted_match or ((has_proper_noun_match or fts_sc >= 22.0) and can_enter_case_a):
                 if is_visually_anchored and not has_quoted_match and not has_proper_noun_match and ((m_high <= 1 and k_high_len >= 5) or single_common_only):
@@ -2190,31 +2349,83 @@ class UnifiedMultimodalSearchPipeline:
             branch_attribution = "+".join(sorted(all_branches_in_video)) if all_branches_in_video else "visual"
 
             best_cl = vid_best_cluster.get(vid, {})
-            cand_ltr_features[vid] = {
-                "s_vis_blend_max": float(best_cl.get("visual_sim", s_max)),
-                "s_vis_top3_mean": float(top3_mean),
-                "s_vis_top5_mean": float(top5_mean),
-                "s_vis_ctx_coherence": float(local_window_mean),
-                "s_late_interaction": 0.0,
+            vid_vis_sims = sorted(
+                (float(cl["visual_sim"]) for cl in clusters_by_video.get(vid, ())),
+                reverse=True,
+            )
+            if vid_vis_sims:
+                top3_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 3)]) / min(len(vid_vis_sims), 3)
+                top5_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 5)]) / min(len(vid_vis_sims), 5)
+            else:
+                top3_vis_mean = 0.0
+                top5_vis_mean = 0.0
+            best_vis_t = float(best_cl.get("rep_timestamp", best_rep_t))
+            local_vis_scores = sorted(
+                (
+                    float(cl["visual_sim"])
+                    for cl in clusters_by_video.get(vid, ())
+                    if abs(float(cl["rep_timestamp"]) - best_vis_t) <= 3.5
+                ),
+                reverse=True,
+            )[:2]
+            local_vis_coherence = (
+                (sum(local_vis_scores) / len(local_vis_scores))
+                if local_vis_scores
+                else float(best_cl.get("visual_sim", 0.0))
+            )
+
+            if self.spatial_patches is not None and len(self.spatial_patches) > 0:
+                late_int_sc = self._score_late_interaction_window(
+                    vid, best_st - 2.0, best_et + 2.0, primary_q_768
+                )
+            elif self.temporal_context_768 is not None and len(self.temporal_context_768) > 0:
+                rep_fid = best_cl.get("faiss_id")
+                if rep_fid is None:
+                    kf_list_v = self.video_keyframes.get(vid, [])
+                    if kf_list_v:
+                        nearest_kf = min(
+                            kf_list_v,
+                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_vis_t),
+                        )
+                        rep_fid = int(nearest_kf["faiss_id"])
+                if rep_fid is not None and 0 <= int(rep_fid) < len(self.temporal_context_768):
+                    late_int_sc = float(
+                        np.dot(self.temporal_context_768[int(rep_fid)], primary_q_768.reshape(-1))
+                    )
+                else:
+                    late_int_sc = 0.0
+            else:
+                late_int_sc = 0.0
+
+            raw_ltr_cand: dict[str, Any] = {
+                "s_vis_blend_max": float(best_cl.get("visual_sim", 0.0)),
+                "s_vis_top3_mean": float(top3_vis_mean),
+                "s_vis_top5_mean": float(top5_vis_mean),
+                "s_vis_ctx_coherence": float(local_vis_coherence),
+                "s_late_interaction": float(late_int_sc),
                 "spike_drop_ratio": float(spike_drop_val),
                 "rrf_vis": float(best_cl.get("rrf_vis", 0.0)),
                 "rrf_ocr": float(best_cl.get("rrf_ocr", 0.0)),
                 "rrf_asr": float(best_cl.get("rrf_asr", 0.0)),
                 "fts_score": float(best_cl.get("fts_score", 0.0)),
-                "m_high": float(k_high_len if best_cl.get("matched_texts") else 0.0),
-                "k_high": float(max(1, k_high_len)),
-                "anchor_lexical_match": 1.0 if best_cl.get("matched_texts") else 0.0,
-                "number_consistency": 1.0,
-                "yolo_object_verification_boost": 0.0,
+                "m_high": float(best_cl.get("m_high", 0.0)),
+                "k_high": float(best_cl.get("k_high", max(1, k_high_len))),
+                "anchor_lexical_match": float(best_cl.get("anchor_match", 0.0)),
+                "number_consistency": float(best_cl.get("num_consist", 1.0)),
+                "yolo_object_verification_boost": float(best_cl.get("obj_boost", 0.0)),
                 "graph_relation_score": 0.0,
                 "llm_modality_alignment": 1.0 if (
                     routing_plan is not None
+                    and routing_plan.routing_mode == "llm_compact"
                     and (
                         (routing_plan.has_explicit_ocr_intent and "ocr" in branch_attribution)
                         or (routing_plan.has_explicit_asr_intent and "asr" in branch_attribution)
                     )
                 ) else 0.0,
             }
+            ltr_18d_dict = extract_ltr_features_18d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
+            raw_ltr_cand.update(ltr_18d_dict)
+            cand_ltr_features[vid] = raw_ltr_cand
             cand_moments.append(RankedMoment(
                 moment_id=f"{vid}_{round(best_rep_t, 1)}",
                 video_id=vid,
@@ -2337,7 +2548,8 @@ class UnifiedMultimodalSearchPipeline:
 
             # Bimodal Valley Multi-Window Proposal for Top-1 Video (enabled in A5):
             if ablation_config == "A5" and rank_idx == 1 and len(kf_list) > 3 and exact_curve:
-                s_max1 = max(exact_curve)
+                win1_scores = [exact_curve[i] for i, t in enumerate(ts_array) if start_sec <= t <= end_sec]
+                s_max1 = max(win1_scores) if win1_scores else max(exact_curve)
                 s_min = min(exact_curve)
                 masked_curve = [
                     s if (ts_array[i] < start_sec - 4.0 or ts_array[i] > end_sec + 4.0) else (s_min - 0.05)
@@ -2383,6 +2595,7 @@ class UnifiedMultimodalSearchPipeline:
                             evidence_frame_indices=ev_indices2,
                         ))
 
+        final_results.sort(key=lambda m: float(m.ranking_score), reverse=True)
         t_boundary_end = time.perf_counter()
 
         t_parse_ms = (t_parse_end - t_start) * 1000.0
@@ -2414,6 +2627,7 @@ class UnifiedMultimodalSearchPipeline:
             "visual_candidates": visual_candidates[:30],
             "ocr_candidates": ocr_candidates[:15],
             "asr_candidates": asr_candidates[:15],
+            "candidate_ltr_features": cand_ltr_features,
         }
 
         # =========================================================================
@@ -2434,8 +2648,11 @@ class UnifiedMultimodalSearchPipeline:
     def close(self) -> None:
         """Close SQLite persistent connection and persist any dirty disk cache."""
         self._text_memory_cache.clear()
+        self._e5_memory_cache.clear()
         if self.cache is not None:
             self.cache.save()
+        if self.e5_cache is not None:
+            self.e5_cache.save()
         if self.db_conn is not None:
             try:
                 self.db_conn.close()

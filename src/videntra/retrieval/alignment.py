@@ -1,8 +1,20 @@
-"""Cross-Keyframe Sequential Temporal Alignment for multi-clause video retrieval."""
+"""Cross-Keyframe Sequential Temporal Alignment & Research Localization Modules."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 import numpy as np
+
+
+@dataclass(frozen=True)
+class ViterbiLocalizationResult:
+    """Output of Sub-Event Viterbi Chronological Localization (SE-Viterbi)."""
+
+    best_score: float
+    avg_score: float
+    selected_indices: tuple[int, ...]
+    start_sec: float
+    end_sec: float
 
 
 def align_sequential_keyframe_clauses(
@@ -127,3 +139,214 @@ def align_sequential_keyframe_clauses(
 
     best_avg_score = float(last_scores[best_last_idx]) / float(m_clauses)
     return best_avg_score, (t_start, t_end)
+
+
+def _l2_normalize_rows(mat: np.ndarray) -> np.ndarray:
+    """Safely L2-normalize a 2D array row-wise without NaN on zero rows."""
+    arr = np.asarray(mat, dtype=np.float32)
+    if arr.ndim == 1:
+        norm = float(np.linalg.norm(arr))
+        return arr / norm if norm > 1e-8 else arr
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    safe_norms = np.where(norms > 1e-8, norms, 1.0)
+    return arr / safe_norms
+
+
+def shot_aware_graph_diffusion(
+    embeddings_768: np.ndarray,
+    timestamps_sec: Sequence[float],
+    initial_scores: Sequence[float] | np.ndarray,
+    *,
+    ocr_scores: Sequence[float] | np.ndarray | None = None,
+    asr_scores: Sequence[float] | np.ndarray | None = None,
+    eta_ocr: float = 0.25,
+    eta_asr: float = 0.20,
+    sigma_t: float = 4.0,
+    shot_sim_threshold: float = 0.65,
+    alpha_d: float = 0.25,
+) -> np.ndarray:
+    """Shot-Aware Cross-Modal Graph Diffusion within a candidate video (CM-GD).
+
+    Propagates multimodal keyframe scores only across temporally close keyframes
+    that belong to the same visual shot (cosine similarity >= ``shot_sim_threshold``),
+    preventing score leakage across hard shot cuts.
+    """
+    s_0 = np.asarray(initial_scores, dtype=np.float32).ravel()
+    m_v = s_0.size
+    if m_v == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    if ocr_scores is not None:
+        s_0 = s_0 + float(eta_ocr) * np.asarray(ocr_scores, dtype=np.float32).ravel()
+    if asr_scores is not None:
+        s_0 = s_0 + float(eta_asr) * np.asarray(asr_scores, dtype=np.float32).ravel()
+
+    if m_v == 1:
+        return s_0.astype(np.float32)
+
+    emb = _l2_normalize_rows(embeddings_768)
+    ts = np.asarray(timestamps_sec, dtype=np.float32).ravel()
+    if emb.shape[0] != m_v or ts.size != m_v:
+        raise ValueError(
+            f"Shape mismatch in shot_aware_graph_diffusion: "
+            f"emb={emb.shape[0]}, ts={ts.size}, scores={m_v}"
+        )
+
+    sim_mat = emb @ emb.T
+    dt = ts[:, None] - ts[None, :]
+    sigma_sq = max(1e-6, float(sigma_t) ** 2)
+    temporal_kernel = np.exp(-(dt * dt) / (2.0 * sigma_sq)).astype(np.float32)
+    shot_mask = (sim_mat >= float(shot_sim_threshold)).astype(np.float32)
+
+    W = temporal_kernel * shot_mask
+    np.fill_diagonal(W, 1.0)
+    deg = np.sum(W, axis=1, keepdims=True)
+    P = W / np.maximum(deg, 1e-8)
+
+    alpha = float(np.clip(alpha_d, 0.0, 1.0))
+    s_diff = (1.0 - alpha) * s_0 + alpha * (P @ s_0)
+    return s_diff.astype(np.float32)
+
+
+def compute_query_adaptive_csls(
+    query_vec: np.ndarray,
+    candidate_vecs: np.ndarray,
+    *,
+    reference_query_vecs: np.ndarray | None = None,
+    k_neighbors: int = 15,
+) -> np.ndarray:
+    """Compute Query-Adaptive Cross-Domain Similarity Local Scaling (CSLS).
+
+    Suppresses query-specific local hubs among top candidate keyframes:
+        CSLS(q, v_i) = 2 * <q, v_i> - 0.5 * r_S(q) - 0.5 * r_T(v_i)
+    """
+    cands = np.asarray(candidate_vecs, dtype=np.float32)
+    if cands.size == 0 or cands.shape[0] == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    q = _l2_normalize_rows(np.asarray(query_vec, dtype=np.float32).ravel())
+    v = _l2_normalize_rows(cands)
+
+    q_sims = (v @ q).astype(np.float32)
+    k_s = max(1, min(int(k_neighbors), q_sims.size))
+    r_s = float(np.mean(np.partition(q_sims, q_sims.size - k_s)[-k_s:]))
+
+    if reference_query_vecs is not None and len(reference_query_vecs) > 0:
+        ref_q = _l2_normalize_rows(np.asarray(reference_query_vecs, dtype=np.float32))
+        cross = v @ ref_q.T
+        k_t = max(1, min(int(k_neighbors), cross.shape[1]))
+        top_cross = np.partition(cross, cross.shape[1] - k_t, axis=1)[:, -k_t:]
+        r_t = np.mean(top_cross, axis=1).astype(np.float32)
+    else:
+        # Local candidate-neighborhood hubness proxy when no reference query bank is passed
+        local_sim = v @ v.T
+        k_t = max(1, min(int(k_neighbors), local_sim.shape[1]))
+        top_local = np.partition(local_sim, local_sim.shape[1] - k_t, axis=1)[:, -k_t:]
+        r_t = np.mean(top_local, axis=1).astype(np.float32)
+
+    return (2.0 * q_sims - 0.5 * r_s - 0.5 * r_t).astype(np.float32)
+
+
+def viterbi_subevent_localization(
+    timestamps_sec: Sequence[float],
+    event_vis_curves: Sequence[Sequence[float] | np.ndarray],
+    *,
+    event_ocr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_asr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_weights: Sequence[tuple[float, float, float]] | None = None,
+    max_gap_sec: float = 35.0,
+    lambda_gap: float = 0.02,
+    lambda_same: float = 0.08,
+) -> ViterbiLocalizationResult | None:
+    """Multi-modal Sub-Event Viterbi Chronological Localization (SE-Viterbi).
+
+    Solves monotonic DP over K ordered sub-events across M_v keyframes using
+    fused per-event curves:
+        Phi_k(t_i) = w_vis * S_vis(e_k, t_i) + w_ocr * S_ocr(e_k, t_i) + w_asr * S_asr(e_k, t_i)
+    """
+    ts = [float(t) for t in timestamps_sec]
+    m_v = len(ts)
+    k_events = len(event_vis_curves)
+    if m_v == 0 or k_events == 0:
+        return None
+
+    vis_mat = np.asarray(event_vis_curves, dtype=np.float32)
+    if vis_mat.shape != (k_events, m_v):
+        raise ValueError(
+            f"event_vis_curves must have shape ({k_events}, {m_v}), got {vis_mat.shape}"
+        )
+
+    ocr_mat = (
+        np.asarray(event_ocr_curves, dtype=np.float32)
+        if event_ocr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    asr_mat = (
+        np.asarray(event_asr_curves, dtype=np.float32)
+        if event_asr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    if ocr_mat.shape != (k_events, m_v) or asr_mat.shape != (k_events, m_v):
+        raise ValueError("OCR/ASR event curve shapes must match event_vis_curves")
+
+    phi = np.empty((k_events, m_v), dtype=np.float32)
+    for k in range(k_events):
+        w_vis, w_ocr, w_asr = (
+            event_weights[k] if event_weights is not None else (1.0, 0.6, 0.5)
+        )
+        phi[k] = float(w_vis) * vis_mat[k] + float(w_ocr) * ocr_mat[k] + float(w_asr) * asr_mat[k]
+
+    if k_events == 1:
+        best_idx = int(np.argmax(phi[0]))
+        best_sc = float(phi[0, best_idx])
+        return ViterbiLocalizationResult(
+            best_score=best_sc,
+            avg_score=best_sc,
+            selected_indices=(best_idx,),
+            start_sec=ts[best_idx],
+            end_sec=ts[best_idx],
+        )
+
+    dp = np.full((k_events, m_v), -np.inf, dtype=np.float64)
+    parent = np.full((k_events, m_v), -1, dtype=np.int32)
+    dp[0] = phi[0].astype(np.float64)
+
+    for k in range(1, k_events):
+        for i in range(m_v):
+            t_curr = ts[i]
+            emit = float(phi[k, i])
+            best_val = -np.inf
+            best_prev = -1
+            for j in range(i + 1):
+                prev_val = dp[k - 1, j]
+                if prev_val == -np.inf:
+                    continue
+                dt = max(0.0, t_curr - ts[j])
+                excess_gap = max(0.0, dt - float(max_gap_sec))
+                same_pen = float(lambda_same) if (m_v >= 2 and j == i) else 0.0
+                cand = prev_val + emit - float(lambda_gap) * excess_gap - same_pen
+                if cand > best_val:
+                    best_val = cand
+                    best_prev = j
+            dp[k, i] = best_val
+            parent[k, i] = best_prev
+
+    best_last = int(np.argmax(dp[k_events - 1]))
+    best_total = float(dp[k_events - 1, best_last])
+    if not np.isfinite(best_total):
+        return None
+
+    path = [best_last]
+    curr = best_last
+    for k in range(k_events - 1, 0, -1):
+        curr = int(parent[k, curr])
+        path.append(curr)
+    path.reverse()
+
+    return ViterbiLocalizationResult(
+        best_score=best_total,
+        avg_score=best_total / float(k_events),
+        selected_indices=tuple(path),
+        start_sec=ts[path[0]],
+        end_sec=ts[path[-1]],
+    )

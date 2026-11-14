@@ -741,11 +741,24 @@ def run_benchmark(
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
-    input_paths = [Path("src/videntra"), Path("configs"), Path("scripts/run_validation_benchmark.py"),
-                   val_dir, test_dir, Path("data/processed/metadata.db"),
-                   Path("data/processed/metadata.db-wal"), Path("data/processed/faiss_index.bin"),
-                   Path("models/siglip2"),
-                   Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json")]
+    src_videntra_files = [
+        p for p in sorted(Path("src/videntra").rglob("*"))
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+    ]
+    input_paths = [
+        *src_videntra_files,
+        Path("configs"),
+        Path("scripts/run_validation_benchmark.py"),
+        val_dir,
+        test_dir,
+        Path("data/processed/metadata.db"),
+        Path("data/processed/faiss_index.bin"),
+        Path("data/processed/faiss_text_e5_384.bin"),
+        Path("data/processed/e5_text_manifest.json"),
+        Path("models/ranking/videntra_ltr_v1.json"),
+        Path("models/siglip2"),
+        Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
+    ]
     input_hashes = hash_paths(input_paths)
     runner = MultimodalBenchmarkRunner()
 
