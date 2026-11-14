@@ -416,3 +416,49 @@ def test_fallback_sanitizes_case_mismatched_entity_mentions(tmp_path: Path):
     assert plan.routing_mode == "fallback"
     assert plan.query_graph.parser.status == "fallback"
     validate("query_graph", plan.query_graph.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# 7. VIDENTRA_LLM_DEADLINE_MS & 1.5B Model Discovery
+# ---------------------------------------------------------------------------
+
+
+def test_deadline_ms_env_var_and_cuda_cpu_defaults(monkeypatch):
+    monkeypatch.delenv("VIDENTRA_LLM_DEADLINE_MS", raising=False)
+
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: False))
+    cpu_backend = LocalSmallLLMBackend(enabled=False)
+    assert cpu_backend.deadline_ms == 5000
+
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
+    cuda_backend = LocalSmallLLMBackend(enabled=False)
+    assert cuda_backend.deadline_ms == 250
+
+    monkeypatch.setenv("VIDENTRA_LLM_DEADLINE_MS", "1234")
+    env_backend = LocalSmallLLMBackend(enabled=False)
+    assert env_backend.deadline_ms == 1234
+
+    # Explicit deadline_ms always overrides env var and defaults
+    explicit_backend = LocalSmallLLMBackend(enabled=False, deadline_ms=42)
+    assert explicit_backend.deadline_ms == 42
+
+
+def test_discover_model_path_prefers_1_5b_and_reflects_model_revision(tmp_path: Path, monkeypatch):
+    models_dir = tmp_path / "models" / "llm"
+    models_dir.mkdir(parents=True)
+    (models_dir / ".gitkeep").write_text("", encoding="utf-8")
+    (models_dir / "qwen2.5-0.5b-instruct").mkdir()
+    (models_dir / "qwen2.5-1.5b-instruct").mkdir()
+
+    monkeypatch.delenv("VIDENTRA_LLM_MODEL_PATH", raising=False)
+    monkeypatch.setattr(LocalSmallLLMBackend, "DEFAULT_MODELS_DIR", models_dir)
+
+    backend = LocalSmallLLMBackend(enabled=False)
+    discovered = backend._discover_model_path()
+    assert discovered is not None
+    assert discovered.name == "qwen2.5-1.5b-instruct"
+    assert backend.model_revision == "qwen2.5-1.5b-instruct"
+
+    # Explicit model_revision is preserved
+    custom_backend = LocalSmallLLMBackend(enabled=False, model_revision="custom-rev")
+    assert custom_backend.model_revision == "custom-rev"

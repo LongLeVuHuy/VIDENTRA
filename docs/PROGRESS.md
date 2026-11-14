@@ -1,5 +1,18 @@
 # Tiến độ triển khai VIDENTRA
 
+## 14/11/2026 — Tải & Cấu hình `Qwen/Qwen2.5-1.5B-Instruct` cho `LocalSmallLLMBackend`
+
+- **Tải Weights (Gitignored):** Tải `Qwen/Qwen2.5-1.5B-Instruct` (Apache-2.0, commit SHA `989aa7980e4cf806f80c7fef2b1adb7bc71aa306`) vào `models/llm/qwen2.5-1.5b-instruct/` (xác nhận `.gitignore` chặn không đưa vào Git).
+- **Cập nhật [llm.py](../src/videntra/query/llm.py):**
+  - `_discover_model_path()` ưu tiên `*qwen2.5*1.5b*`, `*.gguf`, rồi `*qwen2.5*0.5b*` và cập nhật `model_revision` theo model được phát hiện.
+  - Hỗ trợ `VIDENTRA_LLM_DEADLINE_MS`; mặc định `5000 ms` trên CPU (`cuda=False`) và `250 ms` trên CUDA (luôn tôn trọng tham số `deadline_ms` truyền tường minh).
+  - Bổ sung [prewarm_llm_query_cache.py](../scripts/prewarm_llm_query_cache.py) để pre-warm `data/cache/query_decomposition_cache.jsonl` trên `dev_150` (`short=4, medium=142, long=4`).
+- **Giới hạn phần cứng máy hiện tại & Kiểm thử:**
+  - Môi trường hiện tại chạy CPU-only (`torch 2.15.0+cpu`, `cuda=False`, 4 cores, chưa cài `llama-cpp-python`); 1 câu `medium` với `transformers float32` mất `>80s` trên CPU nên chưa chạy pre-warm 146 câu trên CPU (dành cho RTX 3060 / Kaggle GPU hoặc GGUF `Q4_K_M`).
+  - Full Test Suite (gồm 2 unit tests mới trong [test_llm_decomposer.py](../tests/query/test_llm_decomposer.py)): `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`447 passed in 127.24s`** (0 failed, 0 skipped).
+
+---
+
 ## 14/11/2026 — Sinh Chỉ mục Ngữ nghĩa E5 (`faiss_text_e5_384.bin`), Huấn luyện LTR 5-Fold CV (`videntra_ltr_v1.json`) & Kiểm chứng Benchmark
 
 - **Xây dựng Dense Text Index (`multilingual-e5-small` 384d):**

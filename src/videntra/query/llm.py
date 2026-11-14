@@ -332,13 +332,25 @@ class LocalSmallLLMBackend:
     """Lazy-loading local Small-LLM adapter (llama_cpp GGUF or transformers) with hard deadline_ms guard."""
 
     DEFAULT_MODELS_DIR = Path("models/llm")
+    DEFAULT_MODEL_REVISION = "qwen2.5-1.5b-instruct"
+    DEFAULT_CUDA_DEADLINE_MS = 250
+    DEFAULT_CPU_DEADLINE_MS = 5000
+
+    @staticmethod
+    def _has_cuda() -> bool:
+        try:
+            import torch  # type: ignore
+
+            return bool(torch.cuda.is_available())
+        except Exception:
+            return False
 
     def __init__(
         self,
         model_path: str | Path | None = None,
         backend: str = "auto",
-        model_revision: str = "qwen2.5-0.5b-instruct",
-        deadline_ms: int = 250,
+        model_revision: str | None = None,
+        deadline_ms: int | None = None,
         enabled: bool = True,
         generate_fn: Callable[[str], str] | None = None,
         n_ctx: int = 1024,
@@ -348,8 +360,27 @@ class LocalSmallLLMBackend:
         resolved_path = model_path if model_path is not None else env_path
         self.model_path: Path | None = Path(resolved_path) if resolved_path else None
         self.backend = backend
-        self.model_revision = model_revision
-        self.deadline_ms = max(1, int(deadline_ms))
+        self._model_revision_is_default = model_revision is None
+        if model_revision is not None:
+            self.model_revision = model_revision
+        else:
+            discovered = self._discover_model_path()
+            if discovered is not None:
+                self.model_revision = discovered.stem if discovered.is_file() else discovered.name
+            else:
+                self.model_revision = self.DEFAULT_MODEL_REVISION
+
+        if deadline_ms is not None:
+            self.deadline_ms = max(1, int(deadline_ms))
+        else:
+            env_deadline = os.environ.get("VIDENTRA_LLM_DEADLINE_MS", "").strip()
+            if env_deadline:
+                self.deadline_ms = max(1, int(env_deadline))
+            else:
+                self.deadline_ms = (
+                    self.DEFAULT_CUDA_DEADLINE_MS if self._has_cuda() else self.DEFAULT_CPU_DEADLINE_MS
+                )
+
         self.enabled = enabled
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
@@ -367,8 +398,12 @@ class LocalSmallLLMBackend:
             return self.model_path if self.model_path.exists() else None
         if not self.DEFAULT_MODELS_DIR.exists():
             return None
-        for pattern in ("*.gguf", "*qwen2.5*0.5b*", "*qwen2.5*1.5b*", "*"):
-            matches = sorted(self.DEFAULT_MODELS_DIR.glob(pattern))
+        for pattern in ("*qwen2.5*1.5b*", "*.gguf", "*qwen2.5*0.5b*", "*"):
+            matches = [
+                m
+                for m in sorted(self.DEFAULT_MODELS_DIR.glob(pattern))
+                if not m.name.startswith(".")
+            ]
             if matches:
                 return matches[0]
         return None
@@ -386,6 +421,8 @@ class LocalSmallLLMBackend:
         if discovered is None:
             self._available = False
             return False
+        if self._model_revision_is_default:
+            self.model_revision = discovered.stem if discovered.is_file() else discovered.name
 
         # Try llama_cpp first for GGUF files
         if self.backend in ("auto", "llama_cpp") and discovered.is_file() and discovered.suffix.lower() == ".gguf":
@@ -453,8 +490,15 @@ class LocalSmallLLMBackend:
             ]
             text = self._hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self._hf_tokenizer([text], return_tensors="pt").to(self._hf_model.device)
+            gen_kwargs: dict[str, Any] = {
+                "max_new_tokens": 160,
+                "do_sample": False,
+            }
+            eos_id = getattr(self._hf_tokenizer, "eos_token_id", None)
+            if eos_id is not None:
+                gen_kwargs["pad_token_id"] = eos_id
             with torch.no_grad():
-                outputs = self._hf_model.generate(**inputs, max_new_tokens=160, do_sample=False)
+                outputs = self._hf_model.generate(**inputs, **gen_kwargs)
             gen_ids = outputs[0][inputs["input_ids"].shape[1] :]
             return self._hf_tokenizer.decode(gen_ids, skip_special_tokens=True)
 
@@ -928,7 +972,7 @@ class AdaptiveQueryDecomposer:
         validator: SemanticDecomposerValidator | None = None,
         rule_parser: RuleBasedQueryParser | None = None,
         cache_path: str | Path | None = None,
-        model_revision: str = "qwen2.5-0.5b-instruct",
+        model_revision: str | None = None,
         prompt_version: str = "compact-v1",
         enable_disk_cache: bool = True,
     ):
@@ -936,7 +980,7 @@ class AdaptiveQueryDecomposer:
         self.complexity_gate = complexity_gate or QueryComplexityGate()
         self.validator = validator or SemanticDecomposerValidator()
         self.rule_parser = rule_parser or RuleBasedQueryParser()
-        self.model_revision = model_revision
+        self.model_revision = model_revision if model_revision is not None else self.llm_backend.model_revision
         self.prompt_version = prompt_version
         self.enable_disk_cache = enable_disk_cache
         self.cache_path = Path(cache_path) if cache_path is not None else self.DEFAULT_CACHE_PATH
