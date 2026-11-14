@@ -340,3 +340,95 @@ class VisualRetrievalEngine:
         id_mapping = IDMappingStore.from_parquet(map_path)
         return cls(encoder=encoder, index_store=index_store, id_mapping=id_mapping)
 
+
+def compute_keyframe_hubness_radii(
+    vectors: np.ndarray,
+    video_ids: Sequence[str] | None = None,
+    k_neighbors: int = 16,
+    sample_anchors: int = 2048,
+) -> np.ndarray:
+    """Compute cross-video hubness radius r_K(v_i) for each keyframe vector (QAC-CSLS)."""
+    vecs = np.asarray(vectors, dtype=np.float32)
+    if vecs.ndim != 2 or vecs.shape[0] == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    n = vecs.shape[0]
+    if n == 1:
+        return np.zeros(1, dtype=np.float32)
+
+    rng = np.random.default_rng(42)
+    n_anchors = min(n, max(1, int(sample_anchors)))
+    anchor_idx = rng.choice(n, size=n_anchors, replace=False)
+    anchors = np.asarray(vecs[anchor_idx], dtype=np.float32)
+    anchor_norms = np.linalg.norm(anchors, axis=1, keepdims=True)
+    anchors = anchors / np.maximum(anchor_norms, 1e-8)
+
+    use_vid_mask = video_ids is not None and len(video_ids) == n
+    if use_vid_mask:
+        vid_arr = np.asarray(video_ids, dtype=object)
+        anchor_vids = vid_arr[anchor_idx]
+
+    k_eff = min(max(1, int(k_neighbors)), anchors.shape[0] - 1)
+    if k_eff <= 0:
+        return np.zeros(n, dtype=np.float32)
+
+    radii = np.zeros(n, dtype=np.float32)
+    for start in range(0, n, 4096):
+        end = min(n, start + 4096)
+        chunk = np.asarray(vecs[start:end], dtype=np.float32)
+        chunk_norms = np.linalg.norm(chunk, axis=1, keepdims=True)
+        chunk = chunk / np.maximum(chunk_norms, 1e-8)
+
+        sims = chunk @ anchors.T
+        if use_vid_mask:
+            same_vid = vid_arr[start:end, None] == anchor_vids[None, :]
+            sims = np.where(same_vid, -1.0, sims)
+
+        part = np.partition(sims, -k_eff, axis=1)[:, -k_eff:]
+        # Exclude masked -1.0 entries if a video had very few cross-video anchors
+        valid = part > -0.99
+        counts = np.sum(valid, axis=1)
+        sums = np.sum(np.where(valid, part, 0.0), axis=1)
+        radii[start:end] = np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
+
+    return np.nan_to_num(radii, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+def build_or_load_keyframe_hubness_radii(
+    vectors: np.ndarray,
+    video_ids: Sequence[str] | None = None,
+    cache_path: Path | str | None = None,
+    k_neighbors: int = 16,
+    sample_anchors: int = 2048,
+) -> tuple[np.ndarray, float]:
+    """Load cached keyframe hubness radii if length matches, else compute and cache."""
+    n = len(vectors) if vectors is not None else 0
+    if n == 0:
+        return np.zeros(0, dtype=np.float32), 0.0
+
+    cp = Path(cache_path) if cache_path is not None else None
+    if cp is not None and cp.is_file():
+        try:
+            loaded = np.load(str(cp))
+            if loaded.ndim == 1 and loaded.shape[0] == n and np.isfinite(loaded).all():
+                radii = loaded.astype(np.float32, copy=False)
+                return radii, float(np.median(radii))
+        except Exception:
+            pass
+
+    radii = compute_keyframe_hubness_radii(
+        vectors,
+        video_ids=video_ids,
+        k_neighbors=k_neighbors,
+        sample_anchors=sample_anchors,
+    )
+    if cp is not None and len(radii) == n:
+        try:
+            cp.parent.mkdir(parents=True, exist_ok=True)
+            np.save(str(cp), radii)
+        except Exception:
+            pass
+    median_r = float(np.median(radii)) if len(radii) > 0 else 0.0
+    return radii, median_r
+
+

@@ -38,13 +38,13 @@
 | `videntra.evidence` | `store.py` (đọc/ghi `OCRTrackRecord` và `ASRSegmentRecord` dạng Parquet) |
 | `videntra.indexing` | `augmented_vector.py` (864d subspace, Temporal Motion Delta, Multi-scale Context, QAT-LateInteraction `MaxSim`), `text_store.py` (SQLite FTS5), `visual_store.py`, `snapshot.py` |
 | `videntra.ingestion` | `probe.py`, `jobs.py` (`IngestionJobManager` với resume an toàn & atomic write) |
-| `videntra.localization` | `refine.py` (`refine_moment_boundaries`, `expand_boundary_contrast`) |
+| `videntra.localization` | `refine.py` (`refine_moment_boundaries`, `expand_boundary_contrast`, `snap_boundaries_to_shot_cuts`) |
 | `videntra.ocr` | `detection.py`, `recognition.py` (`GeneralOCRRecognizer`, `VietOCRRecognizer`), `routing.py`, `tracking.py` |
 | `videntra.query` | `schemas.py` (`QueryGraph v1`, `ModalityRoutingPlan`, `CompactDecomposedQuery`), `rules.py`, `canonicalize.py`, `llm.py` (`SmallLLMQueryDecomposer` với GGUF `llama-cpp-python` + HF backend, `AdaptiveQueryDecomposer`, `QueryComplexityGate`, `SemanticDecomposerValidator`, RAM+Disk cache & `<1ms` fallback) |
-| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `learned_ranker.py` (`LearnedRankerLTR` pure-NumPy), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` (18d LTR features & `compute_query_z_scores`) |
+| `videntra.ranking` | `ranker.py` (`RelationAwareRanker`), `learned_ranker.py` (`LearnedRankerLTR` pure-NumPy 22d), `calibration.py` (`calibrate_asr_confidence`, `calibrate_multimodal_scores`), `features.py` (22d `Synergistic-CrossLTR` features & `compute_query_z_scores`) |
 | `videntra.registry` | `store.py`, `access.py` (`MediaResolver` kiểm soát allowlist, denylist, SHA-256 & `rights_status`) |
 | `videntra.relations` | `matcher.py` (`GraphMatcher` logic tam trị), `predicates.py` (2D spatial cùng frame & `action_observation`), `entities.py`, `attributes.py`, `temporal.py` |
-| `videntra.retrieval` | `unified_pipeline.py` (SSOT, wire E5 + Temporal Context + LTR residual + `final_results.sort`), `visual.py`, `branches.py`, `fusion.py`, `alignment.py` (Sequential DP, `CM-GD` diffusion/CSLS, `SE-Viterbi`), `union.py` |
+| `videntra.retrieval` | `unified_pipeline.py` (SSOT, `QAC-CSLS` + `MV-SetSim`, E5 lexical intent gate, `NMS-MultiPeak` + `Shot-Snapped Boundary`, `Synergistic-CrossLTR` 22d, `SE-Viterbi`), `visual.py` (`compute_keyframe_hubness_radii`), `branches.py`, `fusion.py`, `alignment.py` (Sequential DP, `CM-GD` diffusion/CSLS, `SE-Viterbi`), `union.py` |
 | `videntra.runtime` | `AdmissionController`, `DeadlineBudget` bảo vệ bộ nhớ/SLA |
 | `videntra.sampling` | Hybrid Adaptive Sampling |
 | `videntra.storage` | Quản lý đọc/ghi snapshot và Parquet |

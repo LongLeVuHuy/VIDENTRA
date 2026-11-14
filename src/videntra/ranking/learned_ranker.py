@@ -41,11 +41,15 @@ _FALLBACK_LINEAR_WEIGHTS: dict[str, float] = {
     "yolo_object_verification_boost": 0.25,
     "graph_relation_score": 0.30,
     "llm_modality_alignment": 0.20,
+    "vis_lexical_synergy": 0.35,
+    "unverified_lexical_hazard": -0.45,
+    "subclause_weakest_link": 0.30,
+    "window_energy_concentration": 0.20,
 }
 
 
 class LearnedRankerLTR:
-    """Pure-NumPy LTR ranker over the 18 continuous multimodal features."""
+    """Pure-NumPy LTR ranker over the 22 continuous multimodal features."""
 
     def __init__(self, model_path: str | Path | None = DEFAULT_LTR_MODEL_PATH) -> None:
         self.model_path: Path | None = Path(model_path) if model_path is not None else None
@@ -73,11 +77,12 @@ class LearnedRankerLTR:
         payload = json.loads(src.read_text(encoding="utf-8"))
 
         names = tuple(payload.get("feature_names", LTR_FEATURE_NAMES))
-        if len(names) != self.n_features:
+        if len(names) not in (18, self.n_features):
             raise ValueError(
-                f"Expected {self.n_features} features in LTR model, got {len(names)}"
+                f"Expected {self.n_features} (or legacy 18) features in LTR model, got {len(names)}"
             )
-        self.feature_names = names
+        legacy_18d = len(names) == 18 and self.n_features == 22
+        self.feature_names = LTR_FEATURE_NAMES if legacy_18d else names
 
         model_type = str(payload.get("model_type", "pairwise_logistic")).lower()
         self.model_type = model_type
@@ -87,20 +92,30 @@ class LearnedRankerLTR:
         std_arr = payload.get("feature_std")
         if mean_arr is not None:
             raw_mean = np.asarray(mean_arr, dtype=np.float64)
-            if raw_mean.shape != (self.n_features,):
+            if raw_mean.shape != (len(names),):
                 raise ValueError(
-                    f"Expected {self.n_features} feature_mean entries, got {raw_mean.shape}"
+                    f"Expected {len(names)} feature_mean entries, got {raw_mean.shape}"
                 )
-            self.feature_mean = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
+            if legacy_18d:
+                padded_mean = np.zeros(self.n_features, dtype=np.float64)
+                padded_mean[:18] = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
+                self.feature_mean = padded_mean
+            else:
+                self.feature_mean = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
         else:
             self.feature_mean = np.zeros(self.n_features, dtype=np.float64)
         if std_arr is not None:
             raw_std = np.asarray(std_arr, dtype=np.float64)
-            if raw_std.shape != (self.n_features,):
+            if raw_std.shape != (len(names),):
                 raise ValueError(
-                    f"Expected {self.n_features} feature_std entries, got {raw_std.shape}"
+                    f"Expected {len(names)} feature_std entries, got {raw_std.shape}"
                 )
-            self.feature_std = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
+            if legacy_18d:
+                padded_std = np.ones(self.n_features, dtype=np.float64)
+                padded_std[:18] = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
+                self.feature_std = padded_std
+            else:
+                self.feature_std = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
         else:
             self.feature_std = np.ones(self.n_features, dtype=np.float64)
 
@@ -115,11 +130,16 @@ class LearnedRankerLTR:
             self.weights = np.zeros(self.n_features, dtype=np.float64)
         else:
             raw_weights = payload.get("weights")
-            if raw_weights is None or len(raw_weights) != self.n_features:
+            if raw_weights is None or len(raw_weights) != len(names):
                 raise ValueError(
-                    f"Linear/logistic LTR model must provide {self.n_features} weights"
+                    f"Linear/logistic LTR model must provide {len(names)} weights"
                 )
-            self.weights = np.asarray(raw_weights, dtype=np.float64)
+            if legacy_18d:
+                padded_w = np.zeros(self.n_features, dtype=np.float64)
+                padded_w[:18] = np.asarray(raw_weights, dtype=np.float64)
+                self.weights = padded_w
+            else:
+                self.weights = np.asarray(raw_weights, dtype=np.float64)
             self.trees = []
 
         self.model_path = src

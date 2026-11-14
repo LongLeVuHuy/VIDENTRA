@@ -445,3 +445,45 @@ def expand_boundary_contrast(
 
     return round(float(st), 2), round(float(et), 2)
 
+
+def snap_boundaries_to_shot_cuts(
+    timestamps: Sequence[float] | np.ndarray,
+    frame_vectors_768: np.ndarray,
+    start_sec: float,
+    end_sec: float,
+    cut_threshold: float = 0.28,
+    max_snap_sec: float = 3.0,
+) -> tuple[float, float]:
+    """Snap predicted [start_sec, end_sec] to nearest natural shot cuts if within max_snap_sec."""
+    ts_arr = np.asarray(timestamps, dtype=np.float32).ravel()
+    vecs = np.asarray(frame_vectors_768, dtype=np.float32)
+    if ts_arr.size < 3 or vecs.ndim != 2 or vecs.shape[0] != ts_arr.size:
+        return float(start_sec), float(end_sec)
+
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    vecs_norm = vecs / np.maximum(norms, 1e-8)
+    adj_cos = np.sum(vecs_norm[:-1] * vecs_norm[1:], axis=1)
+    adj_dist = 1.0 - adj_cos
+    cut_indices = np.where(adj_dist >= float(cut_threshold))[0]
+    if cut_indices.size == 0:
+        return float(start_sec), float(end_sec)
+
+    cut_times_start = ts_arr[cut_indices + 1]
+    cut_times_end = ts_arr[cut_indices]
+    new_start, new_end = float(start_sec), float(end_sec)
+
+    diffs_s = np.abs(cut_times_start - new_start)
+    if float(np.min(diffs_s)) <= float(max_snap_sec):
+        cand_s = float(cut_times_start[int(np.argmin(diffs_s))])
+        if cand_s < new_end - 2.0:
+            new_start = max(0.0, cand_s)
+
+    diffs_e = np.abs(cut_times_end - new_end)
+    if float(np.min(diffs_e)) <= float(max_snap_sec):
+        cand_e = float(cut_times_end[int(np.argmin(diffs_e))])
+        if cand_e > new_start + 2.0:
+            new_end = cand_e
+
+    return round(float(new_start), 2), round(float(new_end), 2)
+
+

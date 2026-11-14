@@ -33,7 +33,12 @@ import torch
 from videntra.query.rules import COCO_SYNONYM_MAP, decompose_query_clauses, extract_object_requirements
 from videntra.query.llm import AdaptiveQueryDecomposer
 from videntra.query.schemas import ModalityRoutingPlan
-from videntra.retrieval.visual import ensemble_clause_scores, RankedMoment
+from videntra.retrieval.visual import (
+    RankedMoment,
+    build_or_load_keyframe_hubness_radii,
+    ensemble_clause_scores,
+    temporal_iou,
+)
 from videntra.indexing.text_store import (
     build_fts5_query,
     GENERIC_VISUAL_WORDS,
@@ -52,9 +57,9 @@ from videntra.retrieval.alignment import (
     viterbi_subevent_localization,
 )
 from videntra.relations.entities import compute_object_verification_boost
-from videntra.localization.refine import expand_boundary_contrast
+from videntra.localization.refine import expand_boundary_contrast, snap_boundaries_to_shot_cuts
 from videntra.ranking.calibration import calibrate_asr_confidence
-from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_18d
+from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_22d
 from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
 
 
@@ -565,6 +570,8 @@ class UnifiedMultimodalSearchPipeline:
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
         self.temporal_context_768: np.ndarray | None = None
+        self.keyframe_hubness_radii: np.ndarray | None = None
+        self.hubness_median_radius: float = 0.0
         self.e5_text_index: faiss.Index | None = None
         self.e5_text_manifest: list[dict[str, Any]] = []
         self.e5_tokenizer: Any | None = None
@@ -697,12 +704,30 @@ class UnifiedMultimodalSearchPipeline:
                 )
             else:
                 self.temporal_context_768 = None
+            kf_vids = [
+                self.keyframe_map.get(i, {}).get("video_id", f"__kf_{i}")
+                for i in range(len(self.augmented_embeddings))
+            ]
+            hub_cache = (
+                Path("data/cache/keyframe_hubness_radii.npy")
+                if len(self.augmented_embeddings) >= 100
+                else None
+            )
+            self.keyframe_hubness_radii, self.hubness_median_radius = build_or_load_keyframe_hubness_radii(
+                self.augmented_embeddings,
+                video_ids=kf_vids,
+                cache_path=hub_cache,
+                k_neighbors=16,
+                sample_anchors=2048,
+            )
         else:
             self.all_embeddings = np.zeros((0, 768), dtype=np.float32)
             self.augmented_embeddings = np.zeros((0, 864), dtype=np.float32)
             self.aug_index = faiss.IndexFlatIP(864)
             self.mean_vec_768 = np.zeros(768, dtype=np.float32)
             self.temporal_context_768 = None
+            self.keyframe_hubness_radii = None
+            self.hubness_median_radius = 0.0
 
         # Precompute per-video keyframe matrices and timestamp lists for fast O(1) lookup
         self.video_kf_pts: dict[str, list[float]] = {}
@@ -1016,6 +1041,8 @@ class UnifiedMultimodalSearchPipeline:
                 return 0.0
             if curve_cache is not None:
                 curve_cache[vid] = (kf_pts, sims)
+
+        kf_fids = self.video_kf_fids.get(vid)
 
         w_start = (start_sec - 3.5) if start_sec is not None else (ts - 3.5)
         w_end = (end_sec + 3.5) if end_sec is not None else (ts + 3.5)
@@ -1594,6 +1621,7 @@ class UnifiedMultimodalSearchPipeline:
         search_depth = min(self.search_depth, self.aug_index.ntotal)
         visual_candidates: list[dict[str, Any]] = []
         video_anchor_windows: dict[str, tuple[float, float]] = {}
+        video_min_clause_sim: dict[str, float] = {}
 
         if sub_clauses and ablation_config not in ("A0", "A1"):
             sub_vecs_768 = batch_vecs[2:]
@@ -1601,7 +1629,8 @@ class UnifiedMultimodalSearchPipeline:
                 build_query_864d_vector(sv, sc, self.coco_idf_map)
                 for sv, sc in zip(sub_vecs_768, sub_clauses)
             ]
-            all_864_vecs = np.vstack([primary_q_864_mat] + [sv.reshape(1, -1) for sv in sub_q_864])
+            sub_q_864_mat = np.vstack([np.asarray(sv, dtype=np.float32).reshape(1, -1) for sv in sub_q_864])
+            all_864_vecs = np.vstack([primary_q_864_mat, sub_q_864_mat])
             has_matched_768 = (
                 len(self.all_embeddings) == len(self.augmented_embeddings)
                 and len(self.augmented_embeddings) > 0
@@ -1678,19 +1707,31 @@ class UnifiedMultimodalSearchPipeline:
 
                     use_se_viterbi = (
                         routing_plan is not None
-                        and routing_plan.routing_mode == "llm_compact"
-                        and sub_q_864.shape[0] >= 2
+                        and (
+                            routing_plan.routing_mode == "llm_compact"
+                            or routing_plan.has_temporal_constraints
+                        )
+                        and len(sub_q_864) >= 2
+                        and cand_mat.shape[0] >= 2
                         and (
                             routing_plan.has_temporal_constraints
                             or (len(routing_plan.ocr_phrases) + len(routing_plan.asr_phrases)) >= 1
                         )
                     )
+                    clause_frame_sims = sub_q_864_mat @ cand_mat.T
+                    per_clause_max = np.max(clause_frame_sims, axis=1)
+                    mv_set_sim = 0.65 * float(np.mean(per_clause_max)) + 0.35 * float(np.min(per_clause_max))
+                    video_min_clause_sim[cvid] = float(np.min(per_clause_max))
+
                     seq_score = 0.0
                     anchor_win: tuple[float, float] | None = None
                     if use_se_viterbi:
+                        w_ocr_v = 0.7 if routing_plan.has_explicit_ocr_intent else 0.4
+                        w_asr_v = 0.7 if routing_plan.has_explicit_asr_intent else 0.4
                         vit_res = viterbi_subevent_localization(
                             timestamps_sec=cand_ts,
-                            event_vis_curves=(sub_q_864 @ cand_mat.T),
+                            event_vis_curves=clause_frame_sims,
+                            event_weights=[(1.0, w_ocr_v, w_asr_v)] * len(sub_q_864),
                             max_gap_sec=35.0,
                         )
                         if vit_res is not None:
@@ -1900,12 +1941,32 @@ class UnifiedMultimodalSearchPipeline:
             except sqlite3.Error as exc:
                 raise RuntimeError("Lexical retrieval failed") from exc
 
-        # Phase 7.4: Dense E5 Text Index recall only as FTS5 miss/sparse fallback
+        # Phase 7.4: Dense E5 Text Index recall only when lexical modality intent exists and FTS5 is sparse
         t_e5_encode_ms = 0.0
+        sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5
+        _lexical_intent_cues = (
+            "board", "sign", "screen", "text", "title", "slide", "label", "logo",
+            "banner", "poster", "menu", "paper", "explaining", "lecture", "speech",
+            "says", "said", "saying", "speaking", "talking", "interview", "written",
+        )
+        has_lexical_modality_intent = (
+            bool(quoted_phrases)
+            or any(re.search(rf"\b{w}\b", q_low) for w in _lexical_intent_cues)
+            or (
+                routing_plan is not None
+                and (
+                    routing_plan.has_explicit_ocr_intent
+                    or routing_plan.has_explicit_asr_intent
+                    or bool(routing_plan.ocr_phrases)
+                    or bool(routing_plan.asr_phrases)
+                )
+            )
+        )
         if (
             self.e5_text_index is not None
             and ablation_config not in ("A0", "A1", "A2")
-            and (len(ocr_candidates) + len(asr_candidates)) < 5
+            and sparse_lexical_yield
+            and has_lexical_modality_intent
         ):
             t_e5_start = time.perf_counter()
             q_e5_384 = self.encode_e5_query(query)
@@ -2425,8 +2486,16 @@ class UnifiedMultimodalSearchPipeline:
             else:
                 late_int_sc = 0.0
 
+            s_vis_blend_val = float(best_cl.get("visual_sim", 0.0))
+            subclause_weak_val = float(video_min_clause_sim.get(vid, s_vis_blend_val))
+            inside_scores = [x[0] for x in vid_items if best_st <= x[3] <= best_et]
+            outside_scores = [x[0] for x in vid_items if not (best_st <= x[3] <= best_et)]
+            mean_in = (sum(inside_scores) / len(inside_scores)) if inside_scores else s_max
+            mean_out = (sum(outside_scores) / len(outside_scores)) if outside_scores else 0.0
+            win_energy_conc = max(0.0, mean_in) / (max(0.0, mean_out) + 0.05)
+
             raw_ltr_cand: dict[str, Any] = {
-                "s_vis_blend_max": float(best_cl.get("visual_sim", 0.0)),
+                "s_vis_blend_max": s_vis_blend_val,
                 "s_vis_top3_mean": float(top3_vis_mean),
                 "s_vis_top5_mean": float(top5_vis_mean),
                 "s_vis_ctx_coherence": float(vis_ctx_coherence),
@@ -2450,9 +2519,11 @@ class UnifiedMultimodalSearchPipeline:
                         or (routing_plan.has_explicit_asr_intent and "asr" in branch_attribution)
                     )
                 ) else 0.0,
+                "subclause_weakest_link": subclause_weak_val,
+                "window_energy_concentration": float(win_energy_conc),
             }
-            ltr_18d_dict = extract_ltr_features_18d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
-            raw_ltr_cand.update(ltr_18d_dict)
+            ltr_22d_dict = extract_ltr_features_22d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
+            raw_ltr_cand.update(ltr_22d_dict)
             cand_ltr_features[vid] = raw_ltr_cand
             cand_moments.append(RankedMoment(
                 moment_id=f"{vid}_{round(best_rep_t, 1)}",
@@ -2469,7 +2540,7 @@ class UnifiedMultimodalSearchPipeline:
 
         if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
             ltr_matrix = np.vstack([
-                extract_ltr_features_18d(cand_ltr_features[m.video_id], z_stats=z_stats)
+                extract_ltr_features_22d(cand_ltr_features[m.video_id], z_stats=z_stats)
                 for m in cand_moments
             ])
             ltr_scores = self.ltr_ranker.score_matrix(ltr_matrix)
@@ -2533,25 +2604,7 @@ class UnifiedMultimodalSearchPipeline:
                     video_curve_cache[vid] = (ts_array, sims)
                     exact_curve = sims.tolist()
 
-                # CM-GD: conservative shot-aware graph diffusion for smoother Stage 6 boundary curves
                 boundary_curve = exact_curve
-                if (
-                    len(ts_array) > 2
-                    and len(exact_curve) == len(ts_array)
-                    and self.all_embeddings is not None
-                    and len(self.all_embeddings) > 0
-                ):
-                    kf_fids = self.video_kf_fids.get(vid) or [int(kf["faiss_id"]) for kf in kf_list]
-                    if len(kf_fids) == len(ts_array) and max(kf_fids) < len(self.all_embeddings):
-                        boundary_curve = shot_aware_graph_diffusion(
-                            self.all_embeddings[kf_fids],
-                            ts_array,
-                            exact_curve,
-                            alpha_d=0.12,
-                            shot_sim_threshold=0.70,
-                            sigma_t=4.0,
-                        ).tolist()
-
                 # B10: Anchor index and anchor window calculation
                 anchor_win = video_anchor_windows.get(vid)
                 if anchor_win is not None:
@@ -2593,55 +2646,85 @@ class UnifiedMultimodalSearchPipeline:
                 evidence_frame_indices=ev_indices,
             ))
 
-            # Bimodal Valley Multi-Window Proposal for Top-1 Video (enabled in A5):
+            # NMS-MultiPeak Proposal for Top-1 Video (enabled in A5):
             if ablation_config == "A5" and rank_idx == 1 and len(kf_list) > 3 and exact_curve:
                 win1_scores = [exact_curve[i] for i, t in enumerate(ts_array) if start_sec <= t <= end_sec]
                 s_max1 = max(win1_scores) if win1_scores else max(exact_curve)
                 s_min = min(exact_curve)
-                masked_curve = [
-                    s if (ts_array[i] < start_sec - 4.0 or ts_array[i] > end_sec + 4.0) else (s_min - 0.05)
-                    for i, s in enumerate(exact_curve)
-                ]
-                peak2_idx = max(range(len(masked_curve)), key=lambda i: masked_curve[i])
-                s_max2 = masked_curve[peak2_idx]
-                t_peak2 = ts_array[peak2_idx]
-                valley_scores = [
-                    exact_curve[i]
-                    for i, t in enumerate(ts_array)
-                    if (end_sec < t < t_peak2) or (t_peak2 < t < start_sec)
-                ]
-                has_valley = bool(valley_scores) and min(valley_scores) <= s_min + 0.60 * (s_max2 - s_min)
-                if s_max2 >= 0.88 * s_max1 and has_valley:
-                    st2, et2 = expand_boundary_contrast(
+                existing_windows: list[tuple[float, float]] = [(start_sec, end_sec)]
+                max_extra = 2 if len(ts_array) >= 20 else 1
+                prev_win_score = float(moment.ranking_score)
+                min_peak_ratio = 0.80 if len(ts_array) >= 20 else 0.88
+
+                for p_offset in range(max_extra):
+                    p_num = p_offset + 2  # 2 for _win2, 3 for _win3
+                    masked_curve = [
+                        (
+                            s_min - 0.05
+                            if any((ws - 4.0) <= ts_array[i] <= (we + 4.0) for ws, we in existing_windows)
+                            else s
+                        )
+                        for i, s in enumerate(exact_curve)
+                    ]
+                    peak_p_idx = max(range(len(masked_curve)), key=lambda i: masked_curve[i])
+                    s_max_p = masked_curve[peak_p_idx]
+                    if s_max_p < min_peak_ratio * s_max1:
+                        break
+                    t_peak_p = ts_array[peak_p_idx]
+
+                    # Require a genuine valley between the new peak and existing windows
+                    valley_scores = [
+                        exact_curve[i]
+                        for i, t in enumerate(ts_array)
+                        if any((we < t < t_peak_p) or (t_peak_p < t < ws) for ws, we in existing_windows)
+                    ]
+                    has_valley = bool(valley_scores) and min(valley_scores) <= s_min + 0.65 * (s_max_p - s_min)
+                    if not has_valley:
+                        break
+
+                    st_p, et_p = expand_boundary_contrast(
                         ts=ts_array,
                         curve=masked_curve,
                         v_dur=v_dur,
+                        anchor_idx=peak_p_idx,
                         decay_lambda=0.015,
                         c_thresh=0.45,
                         max_gap_sec=4.0,
                         max_dur_ratio=0.45,
                     )
-                    if et2 > st2 and (et2 - st2) >= 1.0 and (et2 <= start_sec or st2 >= end_sec):
-                        rep_t2 = (st2 + et2) / 2.0
-                        best_idx2 = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - rep_t2))
-                        s_orig2, e_orig2, rep_orig2, ev_indices2 = _resolve_moment_frame_indices(
-                            kf_list, st2, et2, best_idx2
-                        )
-                        peak_ratio = min(1.0, float(s_max2) / max(float(s_max1), 1e-8))
-                        win2_score = float(moment.ranking_score) * 0.85 * (peak_ratio ** 2)
-                        final_results.append(RankedMoment(
-                            moment_id=f"{vid}_{round(st2, 1)}_{round(et2, 1)}_win2",
-                            video_id=vid,
-                            moment_start_seconds=round(st2, 2),
-                            moment_end_seconds=round(et2, 2),
-                            start_original_frame_index=s_orig2,
-                            end_original_frame_index=e_orig2,
-                            representative_original_frame_index=rep_orig2,
-                            representative_timestamp_seconds=round(rep_t2, 2),
-                            ranking_score=round(win2_score, 5),
-                            match_status=f"{moment.match_status}+multi_window",
-                            evidence_frame_indices=ev_indices2,
-                        ))
+                    if et_p <= st_p or (et_p - st_p) < 1.0:
+                        break
+                    max_tiou = max(temporal_iou(st_p, et_p, ws, we) for ws, we in existing_windows)
+                    if max_tiou >= 0.30:
+                        break
+
+                    rep_t_p = (st_p + et_p) / 2.0
+                    best_idx_p = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - rep_t_p))
+                    s_orig_p, e_orig_p, rep_orig_p, ev_indices_p = _resolve_moment_frame_indices(
+                        kf_list, st_p, et_p, best_idx_p
+                    )
+                    peak_ratio = min(1.0, float(s_max_p) / max(float(s_max1), 1e-8))
+                    if len(ts_array) >= 20:
+                        cap = 0.96 - 0.03 * (p_num - 2)
+                        win_p_score = float(moment.ranking_score) * min(cap, max(0.78, 0.92 * peak_ratio))
+                    else:
+                        win_p_score = float(moment.ranking_score) * 0.85 * (peak_ratio ** 2)
+                    win_p_score = min(win_p_score, prev_win_score - 1e-4)
+                    prev_win_score = win_p_score
+                    existing_windows.append((st_p, et_p))
+                    final_results.append(RankedMoment(
+                        moment_id=f"{vid}_{round(st_p, 1)}_{round(et_p, 1)}_win{p_num}",
+                        video_id=vid,
+                        moment_start_seconds=round(st_p, 2),
+                        moment_end_seconds=round(et_p, 2),
+                        start_original_frame_index=s_orig_p,
+                        end_original_frame_index=e_orig_p,
+                        representative_original_frame_index=rep_orig_p,
+                        representative_timestamp_seconds=round(rep_t_p, 2),
+                        ranking_score=round(win_p_score, 5),
+                        match_status=f"{moment.match_status}+multi_window",
+                        evidence_frame_indices=ev_indices_p,
+                    ))
 
         final_results.sort(key=lambda m: float(m.ranking_score), reverse=True)
         t_boundary_end = time.perf_counter()

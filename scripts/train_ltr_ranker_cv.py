@@ -22,7 +22,7 @@ import numpy as np
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
     compute_query_z_scores,
-    extract_ltr_features_18d,
+    extract_ltr_features_22d,
 )
 
 DEFAULT_DATASET_PATH = Path("work/ltr_dev859_features.jsonl")
@@ -48,11 +48,15 @@ POSITIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "yolo_object_verification_boost",
     "graph_relation_score",
     "llm_modality_alignment",
+    "vis_lexical_synergy",
+    "subclause_weakest_link",
+    "window_energy_concentration",
 })
 
 NEGATIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "delta_z_vis",
     "spike_drop_ratio",
+    "unverified_lexical_hazard",
 })
 
 
@@ -433,10 +437,10 @@ def load_ltr_jsonl_dataset(
             if not line.strip():
                 continue
             item = json.loads(line)
-            if "features" in item and isinstance(item["features"], list):
+            if "features" in item and isinstance(item["features"], list) and len(item["features"]) == len(LTR_FEATURE_NAMES):
                 vec = np.asarray(item["features"], dtype=np.float32)
             else:
-                vec = extract_ltr_features_18d(item, return_dict=False)
+                vec = extract_ltr_features_22d(item, return_dict=False)
             rows.append(vec)
             labels.append(float(item.get("label", item.get("is_relevant", 0))))
             query_ids.append(str(item["query_id"]))
@@ -592,7 +596,7 @@ def extract_dev859_ltr_dataset(
                         "graph_relation_score": 0.0,
                         "llm_modality_alignment": 1.0 if has_lex else 0.0,
                     }
-                vec = extract_ltr_features_18d(cand_dict, z_stats=z_stats, return_dict=False)
+                vec = extract_ltr_features_22d(cand_dict, z_stats=z_stats, return_dict=False)
                 lbl = 1.0 if vid in target_set else 0.0
 
                 rows.append(vec)

@@ -251,7 +251,7 @@ def test_ltr_monotonic_sign_projection_enforced():
     # Adversarial dataset where delta_z_vis (idx 2) and spike_drop_ratio (idx 7) are positively
     # correlated with label, and z_vis_max (idx 1) is negatively correlated with label.
     rng = np.random.default_rng(123)
-    X = rng.normal(0.0, 0.3, size=(40, 18))
+    X = rng.normal(0.0, 0.3, size=(40, len(LTR_FEATURE_NAMES)))
     y = np.array([1.0 if i % 4 == 0 else 0.0 for i in range(40)], dtype=np.float64)
     qids = [f"q_{i // 4}" for i in range(40)]
 
@@ -268,3 +268,118 @@ def test_ltr_monotonic_sign_projection_enforced():
             assert weights[idx] >= 0.0, f"{name} violated >= 0 constraint: {weights[idx]}"
         elif name in NEGATIVE_MONOTONIC_FEATURES:
             assert weights[idx] <= 0.0, f"{name} violated <= 0 constraint: {weights[idx]}"
+
+
+def test_compute_keyframe_hubness_radii_cross_video(tmp_path: Path):
+    from videntra.retrieval.visual import build_or_load_keyframe_hubness_radii, compute_keyframe_hubness_radii
+
+    rng = np.random.default_rng(7)
+    vecs = rng.normal(0.0, 1.0, size=(30, 16)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    # Make index 0 a universal hub close to the mean direction of all other vectors
+    mean_dir = np.mean(vecs[1:], axis=0)
+    mean_dir /= np.linalg.norm(mean_dir)
+    vecs[0] = mean_dir
+    vids = [f"v{i // 3}" for i in range(30)]
+
+    radii = compute_keyframe_hubness_radii(vecs, video_ids=vids, k_neighbors=5, sample_anchors=30)
+    assert radii.shape == (30,)
+    assert np.isfinite(radii).all()
+    assert radii[0] > float(np.median(radii))
+
+    cache_file = tmp_path / "hub_radii.npy"
+    loaded_r, med_r = build_or_load_keyframe_hubness_radii(
+        vecs, video_ids=vids, cache_path=cache_file, k_neighbors=5, sample_anchors=30
+    )
+    assert cache_file.is_file()
+    assert np.allclose(loaded_r, radii)
+    assert med_r == pytest.approx(float(np.median(radii)), abs=1e-6)
+
+    # Empty edge case
+    assert compute_keyframe_hubness_radii(np.zeros((0, 16), dtype=np.float32)).size == 0
+
+
+def test_snap_boundaries_to_shot_cuts():
+    from videntra.localization.refine import snap_boundaries_to_shot_cuts
+
+    ts = np.array([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0], dtype=np.float32)
+    # Shot 1: idx 0..1; Shot 2: idx 2..4; Shot 3: idx 5..6
+    vecs = np.array([
+        [1.0, 0.0, 0.0],
+        [0.99, 0.1, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.1, 0.99, 0.0],
+        [0.0, 0.98, 0.1],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.1, 0.99],
+    ], dtype=np.float32)
+    # Predicted window [2.8, 9.2] should snap start -> 4.0 (cut between 1 and 2) and end -> 8.0 (cut between 4 and 5)
+    s_new, e_new = snap_boundaries_to_shot_cuts(ts, vecs, start_sec=2.8, end_sec=9.2, cut_threshold=0.28, max_snap_sec=3.0)
+    assert s_new == pytest.approx(4.0, abs=1e-4)
+    assert e_new == pytest.approx(8.0, abs=1e-4)
+
+
+def test_se_viterbi_llm_compact_no_crash_and_e5_pure_visual_gate():
+    import faiss
+    from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
+    from videntra.query.schemas import ModalityRoutingPlan, QueryGraph
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    n = 24
+    pts = [float(i * 2.0) for i in range(n)]
+    raw_768 = np.zeros((n, 768), dtype=np.float32)
+    aug_864 = np.zeros((n, 864), dtype=np.float32)
+    # Create 3 distinct peaks at t=4, t=22, t=40 for NMS-MultiPeak
+    for i in range(n):
+        val = 0.2
+        if i in (2, 11, 20):
+            val = 0.95 - 0.02 * (i // 10)
+        raw_768[i, 0] = val
+        aug_864[i, 0] = val
+
+    kf_map = {i: {"video_id": "v_long", "pts_time": pts[i], "source_frame_index": i * 60} for i in range(n)}
+    vid_kfs = {"v_long": [{"faiss_id": i, "pts_time": pts[i], "source_frame_index": i * 60} for i in range(n)]}
+
+    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipeline.all_embeddings = raw_768
+    pipeline.augmented_embeddings = aug_864
+    pipeline.keyframe_map = kf_map
+    pipeline.video_keyframes = vid_kfs
+    pipeline.video_durations = {"v_long": 50.0}
+    pipeline.aug_index = faiss.IndexFlatIP(864)
+    pipeline.aug_index.add(aug_864)
+    pipeline.index = faiss.IndexFlatIP(768)
+    pipeline.index.add(raw_768)
+    pipeline.encode_texts = lambda texts: np.tile(np.array([[1.0] + [0.0] * 767], dtype=np.float32), (len(texts), 1))  # type: ignore[method-assign]
+
+    # Mock E5 index + spy on encode_e5_query to verify pure-visual query does NOT call E5
+    e5_calls: list[str] = []
+    pipeline.e5_text_index = faiss.IndexFlatIP(384)
+    pipeline.encode_e5_query = lambda q: e5_calls.append(q) or None  # type: ignore[method-assign]
+
+    from videntra.query.rules import RuleBasedQueryParser
+    parsed_graph = RuleBasedQueryParser().parse("a boy jumps then runs away")
+    plan = ModalityRoutingPlan(
+        original_query="a boy jumps then runs away",
+        query_length_tier="medium",
+        visual_clauses=["a boy jumps", "runs away"],
+        ocr_phrases=[],
+        asr_phrases=[],
+        object_requirements=[],
+        has_explicit_ocr_intent=False,
+        has_explicit_asr_intent=False,
+        has_spatial_constraints=False,
+        has_temporal_constraints=True,
+        query_graph=parsed_graph,
+        routing_mode="llm_compact",
+        cache_hit=True,
+        decomposer_latency_ms=0.1,
+    )
+    pipeline.query_decomposer = AdaptiveQueryDecomposer(llm_backend=LocalSmallLLMBackend(enabled=False), enable_disk_cache=False)
+    pipeline.query_decomposer.decompose = lambda q, mode="accurate": plan  # type: ignore[method-assign]
+
+    res = pipeline.search("a boy jumps then runs away", top_k=5, ablation_config="A5")
+    assert len(res) >= 2
+    assert res[0].ranking_score > res[1].ranking_score
+    assert e5_calls == []  # Pure-visual query must NOT invoke E5 encoder!
+

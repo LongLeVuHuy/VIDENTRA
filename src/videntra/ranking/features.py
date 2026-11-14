@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from videntra.retrieval.visual import RankedMoment
 
 
-LTR_FEATURE_NAMES: tuple[str, ...] = (
+LTR_FEATURE_NAMES_18D: tuple[str, ...] = (
     "s_vis_blend_max",
     "z_vis_max",
     "delta_z_vis",
@@ -31,6 +31,13 @@ LTR_FEATURE_NAMES: tuple[str, ...] = (
     "yolo_object_verification_boost",
     "graph_relation_score",
     "llm_modality_alignment",
+)
+
+LTR_FEATURE_NAMES: tuple[str, ...] = LTR_FEATURE_NAMES_18D + (
+    "vis_lexical_synergy",
+    "unverified_lexical_hazard",
+    "subclause_weakest_link",
+    "window_energy_concentration",
 )
 
 
@@ -182,6 +189,48 @@ def extract_ltr_features_18d(
 
     if return_dict:
         return values
+    return np.array([values[name] for name in LTR_FEATURE_NAMES_18D], dtype=np.float32)
+
+
+def extract_ltr_features_22d(
+    candidate: Mapping[str, Any],
+    z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+    *,
+    return_dict: bool = False,
+) -> np.ndarray | dict[str, float]:
+    """Extract the 22 continuous Synergistic-CrossLTR features (Phase 8 P8-3)."""
+    values = dict(extract_ltr_features_18d(candidate, z_stats=z_stats, return_dict=True))
+    s_vis = values["s_vis_blend_max"]
+    z_vis = values["z_vis_max"]
+    lex_rrf_sum = values["rrf_ocr"] + values["rrf_asr"]
+
+    if "vis_lexical_synergy" in candidate and candidate["vis_lexical_synergy"] is not None:
+        vis_lexical_synergy = _safe_float(candidate["vis_lexical_synergy"])
+    else:
+        vis_lexical_synergy = max(0.0, s_vis - 0.16) * lex_rrf_sum
+
+    if "unverified_lexical_hazard" in candidate and candidate["unverified_lexical_hazard"] is not None:
+        unverified_lexical_hazard = _safe_float(candidate["unverified_lexical_hazard"])
+    else:
+        unverified_lexical_hazard = max(0.0, 0.50 - z_vis) * lex_rrf_sum
+
+    if "subclause_weakest_link" in candidate and candidate["subclause_weakest_link"] is not None:
+        subclause_weakest_link = _safe_float(candidate["subclause_weakest_link"])
+    else:
+        subclause_weakest_link = s_vis
+
+    if "window_energy_concentration" in candidate and candidate["window_energy_concentration"] is not None:
+        window_energy_concentration = _safe_float(candidate["window_energy_concentration"])
+    else:
+        window_energy_concentration = 1.0
+
+    values["vis_lexical_synergy"] = vis_lexical_synergy
+    values["unverified_lexical_hazard"] = unverified_lexical_hazard
+    values["subclause_weakest_link"] = subclause_weakest_link
+    values["window_energy_concentration"] = window_energy_concentration
+
+    if return_dict:
+        return values
     return np.array([values[name] for name in LTR_FEATURE_NAMES], dtype=np.float32)
 
 
@@ -189,10 +238,10 @@ def extract_ltr_features_batch(
     candidates: Sequence[Mapping[str, Any]],
     z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
 ) -> np.ndarray:
-    """Extract an (N, 18) float32 feature matrix for a batch of candidates."""
+    """Extract an (N, 22) float32 feature matrix for a batch of candidates."""
     if not candidates:
         return np.zeros((0, len(LTR_FEATURE_NAMES)), dtype=np.float32)
-    rows = [extract_ltr_features_18d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
+    rows = [extract_ltr_features_22d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
     return np.vstack(rows).astype(np.float32, copy=False)
 
 

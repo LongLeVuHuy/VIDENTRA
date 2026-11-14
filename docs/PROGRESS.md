@@ -1,5 +1,23 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Triển khai Phase 8 (Vá 3 điểm kiểm toán Phần II, `Synergistic-CrossLTR` 22d, `QAC-CSLS`, `NMS-MultiPeak` & `Shot-Snapped Boundary`)
+
+- **Vá 3 điểm kỹ thuật từ [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md):**
+  1. **Sửa lỗi crash `SE-Viterbi` (`AttributeError` / `TypeError`):** Chuyển `sub_q_864` (`list[np.ndarray]`) thành ma trận `sub_q_864_mat` (`np.vstack`) trước vòng lặp Stage 2 trong [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py), truyền `event_weights` từ `ModalityRoutingPlan` và cho phép kích hoạt khi `routing_mode == "llm_compact"` hoặc `has_temporal_constraints`.
+  2. **Siết cổng `Dense E5` ở Stage 3:** Bổ sung `has_lexical_modality_intent` (kiểm tra `quoted_phrases`, `ocr_phrases`/`asr_phrases`, `has_explicit_ocr_intent`/`has_explicit_asr_intent` và các từ khóa ngữ cảnh chữ/thoại) để tránh chạy E5 dư thừa trên truy vấn thuần thị giác.
+  3. **Bảo toàn biên thời gian Stage 6:** Gỡ bỏ khuếch tán làm mờ trên đường cong biên ngắn ở Stage 6 (giữ `Moment Hit@1 (0.5) = 72.73%`).
+- **Triển khai các module nâng cấp CPU-ready (`P8-1`, `P8-2`, `P8-3`):**
+  - **P8-1 ([visual.py](../src/videntra/retrieval/visual.py)):** Bổ sung `compute_keyframe_hubness_radii()` & `build_or_load_keyframe_hubness_radii()` (tính bán kính hubness liên-video và cache tại `data/cache/keyframe_hubness_radii.npy`), đồng thời tính `MV-SetSim` & `subclause_weakest_link` ở Stage 2. (Ghi nhận thực nghiệm: trừ hubness thô `-0.35*excess` hoặc `-0.05*excess` trên không gian 864d đã mean-center làm giảm `Video Hit@1` trên `dev_150` từ `61.33%` xuống `58.00%`/`60.00%` nên giữ ở chế độ trích xuất tín hiệu cho LTR).
+  - **P8-2 ([refine.py](../src/videntra/localization/refine.py) & [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Bổ sung `snap_boundaries_to_shot_cuts()` và nâng cấp Stage 6 sang `NMS-MultiPeak` (hỗ trợ tối đa `_win2`, `_win3` cho video dài `len(ts_array) >= 20` với `tIoU < 0.30` và kẹp trần điểm giảm dần nghiêm ngặt `< win1`). (Ghi nhận thực nghiệm: `snap_boundaries_to_shot_cuts` với `cut_threshold=0.28` làm giảm `Moment Hit@1 (0.5)` từ `72.73%` xuống `63.64%` nên không bật mặc định trên `expand_boundary_contrast`).
+  - **P8-3 ([features.py](../src/videntra/ranking/features.py), [learned_ranker.py](../src/videntra/ranking/learned_ranker.py), [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py)):** Mở rộng `LTR_FEATURE_NAMES` từ 18d lên **22d (`Synergistic-CrossLTR`)** với `vis_lexical_synergy (+1)`, `unverified_lexical_hazard (-1)`, `subclause_weakest_link (+1)`, `window_energy_concentration (+1)` (tương thích ngược với model 18d). Huấn luyện lại 5-Fold GroupKFold CV trên `dev_full_859` (`40,773` rows $\to$ [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json): `cv_hit_at_1 = 0.4480`, `cv_mrr = 0.5660`, `cv_ndcg_at_10 = 0.6139`, `vis_lexical_synergy = +0.011279`, `subclause_weakest_link = +0.006209`).
+- **Kết quả đo `dev_150` (`run_validation_benchmark.py --single-split-only --max-msrvtt 100`):**
+  - `Video Hit@1`: **61.33%**, `MRR`: **0.6517**, `Video nDCG@10`: **0.6729**.
+  - `Moment Hit@1 (0.5)`: **72.73%**, `Moment nDCG@5`: **0.5121** (tăng từ `0.5119`), `Pure-ASR FP Top-1`: **0**.
+  - **`Non-Neural Latency (p50 / p95)`:** giảm mạnh từ `72.68 ms / 378.60 ms` xuống **`36.10 ms / 81.42 ms`** (nhanh hơn **2.0x p50** và **4.65x p95**).
+- **Kiểm thử toàn diện:** `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`466 passed, 3 warnings in 78.31s`** (exit code `0`).
+
+---
+
 ## 15/11/2026 — Kiểm định sau bản vá Hydrogen (`8fe684a`–`9beb770`), Dọn dẹp dự án & Viết lại `README.md`
 
 - **Kiểm định kỹ thuật sau các commits `8fe684a`, `7c1cd53`, `9beb770` ([VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md)):**
