@@ -1,0 +1,1313 @@
+{
+  "date": "2026-11-05",
+  "scope": "planning documentation, schemas, SQL constraints, arithmetic, local links and existing backup receipt",
+  "retrieval_engine_tests_run": false,
+  "model_benchmarks_run": false,
+  "documents": 13,
+  "master_subsections": 18,
+  "json_files_parsed": 19,
+  "checks_passed": 256,
+  "checks_failed": 0,
+  "errors": [],
+  "checks": [
+    {
+      "check": "substantive_document:00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:03_RESEARCH_AND_MODEL_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "substantive_document:12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "all_18_master_subsections",
+      "passed": true,
+      "detail": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18"
+      ]
+    },
+    {
+      "check": "offline_stage_O00",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O01",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O02",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O03",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O04",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O05",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O06",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O07",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O08",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O09",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O10",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "offline_stage_O11",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q00",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q01",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q02",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q03",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q04",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q05",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q06",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q07",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q08",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "online_step_Q09",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:AGENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:AGENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/03_RESEARCH_AND_MODEL_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/blueprint/12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/legacy_inventory.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/legacy_workbook.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/deletion_manifest.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/backup_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/restore_supplement.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/model_revision_snapshot.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/research_release_snapshot.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/paddle_v6_charset_probe.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/query_graph.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/media_asset.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/frame_record.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/result.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/query_vi.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/query_en.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/schemas/result.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/PROGRESS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/m0_code_01_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/COMPLETION_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:README.md->docs/audit/blueprint_validation.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:.pytest_cache/README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/PROGRESS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/PROGRESS.md->audit/m0_code_01_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:PROGRESS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/audit/COMPLETION_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../../README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->../blueprint/11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->blueprint_validation.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->backup_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/audit/COMPLETION_REVIEW.md->restore_supplement.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:COMPLETION_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/00_EXECUTIVE_DECISION.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/00_EXECUTIVE_DECISION.md->02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/00_EXECUTIVE_DECISION.md->07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/00_EXECUTIVE_DECISION.md->01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/00_EXECUTIVE_DECISION.md->10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md->../audit/legacy_inventory.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md->../audit/legacy_workbook.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md->../audit/restore_supplement.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md->../audit/backup_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/01_OLD_PROJECT_RETIREMENT.md->../audit/deletion_manifest.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/02_PROJECT_REQUIREMENTS.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/03_RESEARCH_AND_MODEL_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/03_RESEARCH_AND_MODEL_REVIEW.md->../audit/research_release_snapshot.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/03_RESEARCH_AND_MODEL_REVIEW.md->../audit/model_revision_snapshot.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/03_RESEARCH_AND_MODEL_REVIEW.md->../audit/paddle_v6_charset_probe.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:03_RESEARCH_AND_MODEL_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/04_ARCHITECTURE_COMPARISON.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->../audit/model_revision_snapshot.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->../audit/paddle_v6_charset_probe.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->../schemas/query_graph.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/05_VIDENTRA_DETAILED_PIPELINE.md->10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:05_VIDENTRA_DETAILED_PIPELINE.md:0",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:05_VIDENTRA_DETAILED_PIPELINE.md:1",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:05_VIDENTRA_DETAILED_PIPELINE.md:2",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:05_VIDENTRA_DETAILED_PIPELINE.md:3",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/media_asset.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/frame_record.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/query_graph.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/result.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/result.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/query_vi.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/06_DATA_SCHEMAS_AND_TIMESTAMPS.md->../schemas/query_en.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/07_GROUND_TRUTH_AND_DATASETS.md->01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/09_COMPETITION_UI_SPEC.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/09_COMPETITION_UI_SPEC.md->06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/09_COMPETITION_UI_SPEC.md->../schemas/result.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:09_COMPETITION_UI_SPEC.md:0",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "inline_json:09_COMPETITION_UI_SPEC.md:1",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/10_IMPLEMENTATION_ROADMAP.md->../PROGRESS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/10_IMPLEMENTATION_ROADMAP.md->12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/10_IMPLEMENTATION_ROADMAP.md->06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/11_RISKS_AND_DECISION_LOG.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/11_RISKS_AND_DECISION_LOG.md->08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/12_NEW_REPOSITORY_STRUCTURE.md->../../AGENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/12_NEW_REPOSITORY_STRUCTURE.md->10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fences:docs/blueprint/README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->00_EXECUTIVE_DECISION.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->01_OLD_PROJECT_RETIREMENT.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->02_PROJECT_REQUIREMENTS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->03_RESEARCH_AND_MODEL_REVIEW.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->04_ARCHITECTURE_COMPARISON.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->05_VIDENTRA_DETAILED_PIPELINE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->06_DATA_SCHEMAS_AND_TIMESTAMPS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->07_GROUND_TRUTH_AND_DATASETS.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->08_BENCHMARK_AND_LATENCY_PLAN.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->09_COMPETITION_UI_SPEC.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->10_IMPLEMENTATION_ROADMAP.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->11_RISKS_AND_DECISION_LOG.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->12_NEW_REPOSITORY_STRUCTURE.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->../../README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->../schemas/query_graph.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->../audit/backup_verification.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "link:docs/blueprint/README.md->../audit/restore_supplement.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_replacement_character:README.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_documented_ddl_and_fts5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:valid_instant",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:valid_interval",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:missing_end",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:missing_start",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:empty_interval",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:reversed_interval",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:mixed_point_interval",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "sqlite_time_constraint:missing_all_time",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "relation_objective_nonnegative_penalties_documented",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "schema_valid:dataset.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "schema_valid:frame_record.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "schema_valid:media_asset.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "schema_valid:query_graph.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "schema_valid:result.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_unique_ids:query_vi.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_root:query_vi.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_vi.synthetic.json:give",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:give:subject",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:give:object",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:give:recipient",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_vi.synthetic.json:speak",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:speak:speaker",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_vi.synthetic.json:order",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:order:event_a",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:order:event_b",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_vi.synthetic.json:sale",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:sale:text_entity",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_vi.synthetic.json:behind",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:behind:subject",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_vi.synthetic.json:behind:reference",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_logic_ref:query_vi.synthetic.json:all",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_schema_example:query_vi.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_unique_ids:query_en.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_root:query_en.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_en.synthetic.json:give",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:give:subject",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:give:object",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:give:recipient",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_en.synthetic.json:speak",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:speak:speaker",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_source_span:query_en.synthetic.json:order",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:order:event_a",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_role_ref:query_en.synthetic.json:order:event_b",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_logic_ref:query_en.synthetic.json:all",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "query_schema_example:query_en.synthetic.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "result_schema_example",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "synthetic_pts_conversion",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "synthetic_source_offset",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "synthetic_frame_end_exclusive",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "no_deletion_approved",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "deletion_inventory_coverage",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "archive_receipt_all_inventory_files",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "backup_exists_size",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "scale_arithmetic:0.1",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "scale_arithmetic:0.25",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "scale_arithmetic:0.5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "scale_arithmetic:1",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "scale_arithmetic:2",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "fast_budget_sum_ms",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "check": "accurate_budget_sum_ms",
+      "passed": true,
+      "detail": null
+    }
+  ]
+}

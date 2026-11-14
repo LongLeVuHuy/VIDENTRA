@@ -1,0 +1,175 @@
+{
+  "video_id": "syn_clip_001",
+  "source_video_id": "syn_source_001",
+  "moment_start_seconds": 12,
+  "moment_end_seconds": 17.2,
+  "start_original_frame_index": 300,
+  "end_original_frame_index": 429,
+  "representative_keyframe_id": "syn_kf_42",
+  "representative_original_frame_index": 360,
+  "representative_timestamp_seconds": 14.4,
+  "ranking_score": 0.73,
+  "score_type": "uncalibrated_ranking",
+  "match_status": "partial",
+  "unresolved_predicates": [
+    "behind"
+  ],
+  "evidence": [
+    {
+      "evidence_id": "syn_event_give",
+      "kind": "event",
+      "start_us": 12000000,
+      "end_us": 14800000,
+      "roles": {
+        "subject_track": "track_red",
+        "object_track": "track_bag",
+        "recipient_track": "track_blue"
+      },
+      "predicate": "give",
+      "state": "supported",
+      "basis": "synthetic multi-frame event annotation, not real model output",
+      "frame_refs": [
+        300,
+        330,
+        360,
+        369
+      ]
+    },
+    {
+      "evidence_id": "syn_asr_7",
+      "kind": "asr_segment",
+      "start_us": 15200000,
+      "end_us": 17200000,
+      "text_original": "cảm ơn",
+      "language": "vi",
+      "speaker_cluster": "spk_1",
+      "model_revision": "synthetic",
+      "raw_confidence": null,
+      "timestamp_method": "synthetic_manual"
+    },
+    {
+      "evidence_id": "syn_bind_1",
+      "kind": "speaker_binding",
+      "start_us": 15200000,
+      "end_us": 17200000,
+      "speaker_cluster": "spk_1",
+      "actor_track": "track_blue",
+      "state": "supported",
+      "basis": "synthetic audio-visual active-speaker evidence"
+    },
+    {
+      "evidence_id": "syn_ocr_1",
+      "kind": "ocr_observation",
+      "timestamp_us": 14000000,
+      "text_original": "SALE",
+      "polygon": [
+        [
+          800,
+          100
+        ],
+        [
+          1000,
+          100
+        ],
+        [
+          1000,
+          170
+        ],
+        [
+          800,
+          170
+        ]
+      ],
+      "original_decoded_frame_index": 350,
+      "model_revision": "synthetic",
+      "raw_confidence": null
+    },
+    {
+      "evidence_id": "syn_ocr_2",
+      "kind": "ocr_observation",
+      "timestamp_us": 14800000,
+      "text_original": "SALE",
+      "polygon": [
+        [
+          802,
+          100
+        ],
+        [
+          1002,
+          100
+        ],
+        [
+          1002,
+          170
+        ],
+        [
+          802,
+          170
+        ]
+      ],
+      "original_decoded_frame_index": 370,
+      "model_revision": "synthetic",
+      "raw_confidence": null
+    },
+    {
+      "evidence_id": "syn_ocr_track",
+      "kind": "ocr_track",
+      "first_observed_us": 14000000,
+      "last_observed_us": 14800000,
+      "observation_ids": [
+        "syn_ocr_1",
+        "syn_ocr_2"
+      ],
+      "persistence_kind": "tracked_with_gaps",
+      "holes": [],
+      "boundary_uncertainty_us": 800000
+    },
+    {
+      "evidence_id": "syn_order",
+      "kind": "relation",
+      "predicate": "before",
+      "left": "syn_event_give",
+      "right": "syn_asr_7",
+      "state": "supported",
+      "gap_us": 400000
+    },
+    {
+      "evidence_id": "syn_behind",
+      "kind": "relation",
+      "predicate": "behind",
+      "state": "unknown",
+      "reason": "2D background location does not establish 3D depth"
+    }
+  ],
+  "media_uri": "/v1/media/syn_clip_001",
+  "thumbnail_uri": "/v1/thumbnails/syn_kf_42",
+  "timing_metadata": {
+    "frame_index_base": 0,
+    "frame_index_scope": "ingested_video_presentation_order",
+    "end_frame_inclusive": true,
+    "interval_convention": "[start,end)",
+    "coordinate_system": "clip_relative",
+    "time_base": {
+      "num": 1,
+      "den": 1000
+    },
+    "first_video_pts": 1200,
+    "representative_pts": 15600,
+    "source_offset_seconds": 210,
+    "source_start_seconds": 222,
+    "source_end_seconds": 227.2,
+    "untrimmed_source_frame_index": null,
+    "proxy_to_clip_offset_seconds": 0,
+    "timeline_revision": "syn_timeline_v1",
+    "boundary_method": "synthetic_example",
+    "boundary_uncertainty_seconds": 0.2
+  },
+  "provenance": {
+    "synthetic": true,
+    "index_snapshot": "syn_snapshot_v1",
+    "model_manifest": "synthetic-only",
+    "query_graph_version": "1.0",
+    "media_sha256": null,
+    "run_id": "illustration-not-experiment"
+  }
+}

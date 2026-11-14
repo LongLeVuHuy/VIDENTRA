@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videntra"
+version = "0.1.0"
+description = "VIDENTRA media contracts and immutable registry"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jsonschema==4.25.1",
+    "av==19.0.2",
+    "pyarrow==26.0.1",
+    "numpy==2.5.4",
+    "torch>=2.15.0",
+    "transformers>=5.22.1",
+    "safetensors>=0.8.0",
+    "pillow>=13.0.0",
+    "faiss-cpu>=1.15.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2"]
+
+[project.scripts]
+videntra = "videntra.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"videntra.contracts" = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+

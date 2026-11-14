@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "original_query": "Find a red-shirted man giving a bag to a blue-shirted man before the receiver says \"thank you\".",
+  "language": "en",
+  "entities": [
+    {
+      "id": "a",
+      "type": "person",
+      "mention": "a red-shirted man",
+      "attributes": [
+        {
+          "name": "clothing_color",
+          "value": "red",
+          "source_span": "red-shirted"
+        }
+      ],
+      "coreference_of": null,
+      "uncertainty": []
+    },
+    {
+      "id": "b",
+      "type": "person",
+      "mention": "a blue-shirted man",
+      "attributes": [
+        {
+          "name": "clothing_color",
+          "value": "blue",
+          "source_span": "blue-shirted"
+        }
+      ],
+      "coreference_of": null,
+      "uncertainty": []
+    },
+    {
+      "id": "bag",
+      "type": "object",
+      "mention": "a bag",
+      "attributes": [],
+      "coreference_of": null,
+      "uncertainty": []
+    }
+  ],
+  "predicates": [
+    {
+      "id": "give",
+      "kind": "action",
+      "operator": "give",
+      "roles": {
+        "subject": "a",
+        "object": "bag",
+        "recipient": "b"
+      },
+      "value": null,
+      "source_span": "a red-shirted man giving a bag to a blue-shirted man",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "visual"
+        ]
+      ],
+      "scope": null,
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "speak",
+      "kind": "asr",
+      "operator": "exact_phrase",
+      "roles": {
+        "speaker": "b"
+      },
+      "value": "thank you",
+      "source_span": "the receiver says \"thank you\"",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "asr",
+          "audio_visual"
+        ]
+      ],
+      "scope": null,
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "order",
+      "kind": "temporal",
+      "operator": "before",
+      "roles": {
+        "event_a": "give",
+        "event_b": "speak"
+      },
+      "value": null,
+      "source_span": "before",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "visual",
+          "asr"
+        ]
+      ],
+      "scope": null,
+      "confidence": null,
+      "uncertainty": []
+    }
+  ],
+  "logic": [
+    {
+      "id": "all",
+      "op": "AND",
+      "children": [
+        "give",
+        "speak",
+        "order"
+      ]
+    }
+  ],
+  "root_id": "all",
+  "ambiguities": [],
+  "residual_constraints": [],
+  "parser": {
+    "status": "validated",
+    "model_revision": "synthetic-example-not-model-output",
+    "prompt_version": "qg-v1",
+    "confidence_kind": "uncalibrated"
+  }
+}

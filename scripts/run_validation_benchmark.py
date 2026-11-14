@@ -1,0 +1,1169 @@
+"""VIDENTRA Multimodal Search Benchmark & Evaluation Protocol (P0-P4).
+
+Evaluates:
+- Video Hit@1, Hit@5, Hit@10, MRR, Video nDCG@1, nDCG@5, nDCG@10
+- Moment Hit@1 @ tIoU 0.3, 0.5, 0.7; Moment mAP@0.5, mAP@0.75, mAP@[0.5:0.95:0.05]
+- Graded Moment nDCG@5, nDCG@10; Temporal Boundary MAE (seconds)
+- Dual Candidate Pool Reporting (Global 1,324 Videos vs Global-then-dataset-filter) (E3)
+- Branch Recall@K (Visual Recall@30/120, Lexical Recall@30, Fused Recall@10) (E8)
+- Bootstrap 95% Confidence Intervals & Paired Sign/Permutation Test p-values (E4)
+- Automated Failure Taxonomy (F1..F5) & Modality Attribution (E10)
+- 6-Step Ablation Matrix (A0 -> A5) on dev_150
+- Multi-split evaluation: dev_150, dev_full_859, heldout_test_201 (E1, E2)
+- Cold vs Warm / Non-Neural Latency & Peak RAM Footprint (C3)
+- Immutable Experiment Provenance Logging in work/experiments/ (E9)
+
+Outputs:
+- benchmark/per_query_evaluation.csv
+- benchmark/per_query_evaluation.jsonl
+- benchmark/benchmark_summary.json
+- benchmark/benchmark_report.md
+"""
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import csv
+import json
+import os
+from pathlib import Path
+import random
+import shutil
+import subprocess
+import sys
+import time
+import platform
+import uuid
+from typing import Any
+
+import numpy as np
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+from videntra.retrieval.unified_pipeline import (
+    UnifiedMultimodalSearchPipeline,
+    analyze_query_lexical_tokens,
+)
+from videntra.evaluation.evaluator import (
+    classify_query_failure,
+    compute_binary_ndcg_at_k,
+    compute_bootstrap_ci,
+    compute_graded_moment_ndcg_at_k,
+    compute_moment_ap_at_iou,
+    compute_moment_map_range,
+    compute_paired_sign_test_pvalue,
+)
+from videntra.evaluation.provenance import hash_paths, verify_hashes
+
+# Force UTF-8 on Windows console
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def temporal_iou(s1: float, e1: float, s2: float, e2: float) -> float:
+    inter = max(0.0, min(e1, e2) - max(s1, s2))
+    union = max(e1, e2) - min(s1, s2)
+    return inter / union if union > 0 else 0.0
+
+
+def get_git_sha() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out or "nogit"
+    except Exception:
+        return "nogit"
+
+
+def get_process_memory_mb() -> tuple[float | None, float | None]:
+    """Returns (rss_mb, peak_mb) using psutil or Windows ctypes GetProcessMemoryInfo fallback."""
+    if psutil is not None:
+        try:
+            proc = psutil.Process(os.getpid())
+            mem_info = proc.memory_info()
+            rss_mb = round(mem_info.rss / (1024.0 * 1024.0), 1)
+            peak_mb = round(mem_info.peak_wset / (1024.0 * 1024.0), 1) if hasattr(mem_info, "peak_wset") else None
+            return rss_mb, peak_mb
+        except Exception:
+            pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            pmc = PROCESS_MEMORY_COUNTERS()
+            pmc.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                rss_mb = round(pmc.WorkingSetSize / (1024.0 * 1024.0), 1)
+                peak_mb = round(pmc.PeakWorkingSetSize / (1024.0 * 1024.0), 1)
+                return rss_mb, peak_mb
+        except Exception:
+            pass
+    return None, None
+
+
+def print_progress(current: int, total: int, split_label: str, hit1: float, mrr: float, lat: float) -> None:
+    bar_len = 22
+    pct = (current / total) * 100.0 if total > 0 else 100.0
+    filled = int(bar_len * (pct / 100.0))
+    bar = "█" * filled + "░" * (bar_len - filled)
+    sys.stdout.write(
+        f"\r[{split_label:<16}] [{bar}] {pct:5.1f}% | {current:3d}/{total} | Hit@1: {hit1*100:5.1f}% | MRR: {mrr:5.3f} | {lat:4.1f}ms"
+    )
+    sys.stdout.flush()
+    if current >= total:
+        sys.stdout.write("\n")
+
+
+class MultimodalBenchmarkRunner:
+    """Benchmark runner delegating 100% of retrieval logic to UnifiedMultimodalSearchPipeline (SSOT)."""
+
+    def __init__(
+        self,
+        db_path: Path = Path("data/processed/metadata.db"),
+        faiss_path: Path = Path("data/processed/faiss_index.bin"),
+        model_dir: Path = Path("models/siglip2"),
+        device: str = "cpu",
+        use_disk_cache: bool = False,
+    ):
+        self.db_path = db_path
+        self.faiss_path = faiss_path
+        self.model_dir = model_dir
+        self.device = device
+
+        print("1. Đang nạp UnifiedMultimodalSearchPipeline (SSOT)...")
+        t0 = time.time()
+        self.pipeline = UnifiedMultimodalSearchPipeline(
+            db_path=db_path,
+            faiss_path=faiss_path,
+            model_dir=model_dir,
+            device=device,
+            use_disk_cache=use_disk_cache,
+            memory_cache_size=0,
+        )
+        self.indexed_videos = set(self.pipeline.video_durations.keys()) if self.pipeline.video_durations else set()
+        if not self.indexed_videos and self.pipeline.keyframe_map:
+            self.indexed_videos = {k["video_id"] for k in self.pipeline.keyframe_map.values()}
+
+        # Partition indexed videos by dataset for Within-Dataset Candidate Pool reporting (E3)
+        self.dataset_videos: dict[str, set[str]] = {
+            "msrvtt": {v for v in self.indexed_videos if v.startswith("video")},
+            "avc": {v for v in self.indexed_videos if "__s" in v},
+            "qvhighlights": {v for v in self.indexed_videos if not v.startswith("video") and "__s" not in v},
+        }
+        print(
+            f"   UnifiedMultimodalSearchPipeline sẵn sàng sau {time.time() - t0:.2f}s "
+            f"(Tổng: {len(self.indexed_videos)} videos | QVH: {len(self.dataset_videos['qvhighlights'])}, "
+            f"AVC: {len(self.dataset_videos['avc'])}, MSR-VTT: {len(self.dataset_videos['msrvtt'])})."
+        )
+
+    def search_multimodal(
+        self,
+        query: str,
+        top_k: int = 10,
+        ablation_config: str = "A5",
+    ) -> list[dict[str, Any]]:
+        response = self.pipeline.search_with_metadata(
+            snapshot_id="unverified_local_snapshot",
+            query=query,
+            top_k=top_k,
+            mode="accurate",
+            ranking_mode="diverse_video",
+            ablation_config=ablation_config,
+        )
+        self.timings = response["timings"]
+        self.diagnostics = response["diagnostics"]
+        moments = response["moments"]
+        return [
+            {
+                "video_id": m.video_id,
+                "start_sec": round(m.moment_start_seconds, 2),
+                "end_sec": round(m.moment_end_seconds, 2),
+                "ranking_score": round(m.ranking_score, 5),
+                "modality_attribution": m.match_status,
+            }
+            for m in moments
+        ]
+
+
+def load_validation_queries(
+    val_dir: Path,
+    indexed_videos: set[str],
+    max_msrvtt: int | None = 100,
+) -> list[dict[str, Any]]:
+    """Loads queries from validation/ directory (max_msrvtt=100 -> dev_150; max_msrvtt=None -> dev_full_859)."""
+    queries: list[dict[str, Any]] = []
+
+    # 1. QVHighlights
+    qvh_file = val_dir / "qvhighlights" / "highlight_val_release.jsonl"
+    if qvh_file.exists():
+        with open(qvh_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    item = json.loads(line)
+                    if item.get("vid") in indexed_videos:
+                        windows = item.get("relevant_windows", [])
+                        queries.append({
+                            "dataset": "qvhighlights",
+                            "query_id": f"qvh_{item['qid']}",
+                            "query_text": item["query"],
+                            "target_videos": [item["vid"]],
+                            "target_windows": windows,
+                        })
+
+    # 2. AVC (Normalized with pilot_queries ground-truth target)
+    avc_file = val_dir / "avc" / "candidate_plan_inference.json"
+    pilot_file = Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json")
+    pilot_targets: dict[str, str] = {}
+    if pilot_file.exists():
+        with open(pilot_file, "r", encoding="utf-8") as pf:
+            pilot_data = json.load(pf)
+            for p_item in pilot_data:
+                pilot_targets[p_item["query_id"]] = p_item["known_target_window_id"]
+
+    if avc_file.exists():
+        with open(avc_file, "r", encoding="utf-8") as f:
+            avc_data = json.load(f)
+            unlabeled = 0
+            for item in avc_data.get("queries", []):
+                target_vid = pilot_targets.get(item["query_id"])
+                if not target_vid:
+                    unlabeled += 1
+                    continue
+                valid_cands = [c for c in item.get("candidate_ids", []) if c in indexed_videos]
+                if valid_cands and target_vid in indexed_videos:
+                    tgt_vids = [target_vid]
+                    queries.append({
+                        "dataset": "avc",
+                        "query_id": f"avc_{item['query_id']}",
+                        "query_text": item["query_text"],
+                        "target_videos": tgt_vids,
+                        "target_windows": [],
+                    })
+            print(f"AVC unlabeled queries excluded: {unlabeled}")
+
+    # 3. MSR-VTT
+    msr_file = val_dir / "msrvtt" / "test_videodatainfo.json"
+    if msr_file.exists():
+        with open(msr_file, "r", encoding="utf-8") as f:
+            msr_data = json.load(f)
+            sentences = msr_data.get("sentences", [])
+            valid_sentences = [s for s in sentences if s.get("video_id") in indexed_videos]
+
+            by_vid: dict[str, dict[str, Any]] = {}
+            for s in valid_sentences:
+                vid = s["video_id"]
+                if vid not in by_vid:
+                    by_vid[vid] = s
+
+            sample_sentences = list(by_vid.values())
+            rng = random.Random(42)
+            rng.shuffle(sample_sentences)
+            if max_msrvtt is not None and max_msrvtt > 0:
+                sample_sentences = sample_sentences[:max_msrvtt]
+
+            for s in sample_sentences:
+                queries.append({
+                    "dataset": "msrvtt",
+                    "query_id": f"msr_{s.get('sen_id', s['video_id'])}",
+                    "query_text": s["caption"],
+                    "target_videos": [s["video_id"]],
+                    "target_windows": [],
+                })
+
+    return queries
+
+
+def evaluate_query_set(
+    runner: MultimodalBenchmarkRunner,
+    queries: list[dict[str, Any]],
+    split_label: str = "dev_150",
+    ablation_config: str = "A5",
+    show_progress: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Runs evaluation on a query list and returns (summary_dict, per_query_records)."""
+    if not queries:
+        raise ValueError("Cannot evaluate an empty query set")
+    for query in queries:
+        targets = query.get("target_videos")
+        if not isinstance(targets, (list, tuple)) or not targets or any(not isinstance(v, str) or not v for v in targets):
+            raise ValueError("Every evaluated query requires known target videos")
+        if query.get("target_windows") and len(set(targets)) != 1:
+            raise ValueError("Moment windows require an unambiguous target video")
+    total_queries = len(queries)
+    per_query_results: list[dict[str, Any]] = []
+
+    hits1: list[int] = []
+    hits5: list[int] = []
+    hits10: list[int] = []
+    mrrs: list[float] = []
+    ndcgs1: list[float] = []
+    ndcgs5: list[float] = []
+    ndcgs10: list[float] = []
+
+    # Within-dataset candidate pool metrics (E3)
+    in_ds_hits1: list[int] = []
+    in_ds_hits5: list[int] = []
+    in_ds_hits10: list[int] = []
+    in_ds_mrrs: list[float] = []
+    in_ds_ndcgs10: list[float] = []
+
+    # Moment metrics (E7)
+    mom_hits03: list[int] = []
+    mom_hits05: list[int] = []
+    mom_hits07: list[int] = []
+    mom_ndcgs5: list[float] = []
+    mom_ndcgs10: list[float] = []
+    mom_ap05: list[float] = []
+    mom_ap075: list[float] = []
+    mom_map_range: list[float] = []
+    boundary_errors: list[float] = []
+
+    # Branch Recall@K (E8)
+    vis_rec30: list[int] = []
+    vis_rec120: list[int] = []
+    lex_rec30: list[int] = []
+    fused_rec10: list[int] = []
+
+    # Timings (C3)
+    latencies_total: list[float] = []
+    latencies_non_neural: list[float] = []
+    latencies_faiss: list[float] = []
+    latencies_fts5: list[float] = []
+    latencies_fusion: list[float] = []
+    latencies_boundary: list[float] = []
+
+    pure_asr_fp_top1_count = 0
+    taxonomy_counts: dict[str, int] = defaultdict(int)
+
+    ds_stats: dict[str, dict[str, list[Any]]] = defaultdict(
+        lambda: {
+            "hits1": [], "hits5": [], "hits10": [], "mrrs": [],
+            "ndcgs1": [], "ndcgs5": [], "ndcgs10": [],
+            "in_ds_hits1": [], "in_ds_hits5": [], "in_ds_hits10": [], "in_ds_mrrs": [], "in_ds_ndcgs10": [],
+            "mom_hits03": [], "mom_hits05": [], "mom_hits07": [],
+            "mom_ndcgs5": [], "mom_ndcgs10": [],
+            "mom_ap05": [], "mom_ap075": [], "mom_map_range": [],
+            "vis_rec30": [], "vis_rec120": [], "lex_rec30": [], "fused_rec10": [],
+            "latencies": [], "latencies_non_neural": [],
+        }
+    )
+
+    for idx, q in enumerate(queries, 1):
+        ds = q["dataset"]
+        q_text = q["query_text"]
+        target_vids = set(q["target_videos"])
+        target_wins = q.get("target_windows", [])
+
+        preds = runner.search_multimodal(q_text, top_k=10, ablation_config=ablation_config)
+        timings = runner.timings
+        diag = runner.diagnostics
+
+        required_timings = {"t_total_ms", "t_non_neural_ms", "t_faiss_ms", "t_fts5_ms",
+                            "t_fusion_ms", "t_boundary_ms"}
+        if required_timings - timings.keys():
+            raise RuntimeError(f"Missing timing telemetry: {sorted(required_timings - timings.keys())}")
+
+        t_total = float(timings["t_total_ms"])
+        t_non_neural = float(timings["t_non_neural_ms"])
+
+        latencies_total.append(t_total)
+        latencies_non_neural.append(t_non_neural)
+        latencies_faiss.append(float(timings["t_faiss_ms"]))
+        latencies_fts5.append(float(timings["t_fts5_ms"]))
+        latencies_fusion.append(float(timings["t_fusion_ms"]))
+        latencies_boundary.append(float(timings["t_boundary_ms"]))
+
+        ds_stats[ds]["latencies"].append(t_total)
+        ds_stats[ds]["latencies_non_neural"].append(t_non_neural)
+
+        # Deduplicate video IDs preserving order for Global Pool evaluation
+        seen_vids: set[str] = set()
+        dedup_pred_vids: list[str] = []
+        for p in preds:
+            v = p["video_id"]
+            if v not in seen_vids:
+                seen_vids.add(v)
+                dedup_pred_vids.append(v)
+
+        h1 = 1 if any(v in target_vids for v in dedup_pred_vids[:1]) else 0
+        h5 = 1 if any(v in target_vids for v in dedup_pred_vids[:5]) else 0
+        h10 = 1 if any(v in target_vids for v in dedup_pred_vids[:10]) else 0
+
+        hits1.append(h1)
+        hits5.append(h5)
+        hits10.append(h10)
+        ds_stats[ds]["hits1"].append(h1)
+        ds_stats[ds]["hits5"].append(h5)
+        ds_stats[ds]["hits10"].append(h10)
+
+        rr = 0.0
+        matched_rank = None
+        for rank, v in enumerate(dedup_pred_vids[:10], 1):
+            if v in target_vids:
+                rr = 1.0 / rank
+                matched_rank = rank
+                break
+        mrrs.append(rr)
+        ds_stats[ds]["mrrs"].append(rr)
+
+        ndcg1 = compute_binary_ndcg_at_k(dedup_pred_vids, target_vids, 1, runner.indexed_videos)
+        ndcg5 = compute_binary_ndcg_at_k(dedup_pred_vids, target_vids, 5, runner.indexed_videos)
+        ndcg10 = compute_binary_ndcg_at_k(dedup_pred_vids, target_vids, 10, runner.indexed_videos)
+
+        ndcgs1.append(ndcg1)
+        ndcgs5.append(ndcg5)
+        ndcgs10.append(ndcg10)
+        ds_stats[ds]["ndcgs1"].append(ndcg1)
+        ds_stats[ds]["ndcgs5"].append(ndcg5)
+        ds_stats[ds]["ndcgs10"].append(ndcg10)
+
+        # Within-Dataset Candidate Pool Evaluation (E3)
+        ds_pool = runner.dataset_videos.get(ds, runner.indexed_videos)
+        all_cand_moments = diag.get("all_candidate_moments", [])
+        in_ds_vids: list[str] = []
+        seen_in_ds: set[str] = set()
+        for m in all_cand_moments:
+            if m.video_id in ds_pool and m.video_id not in seen_in_ds:
+                seen_in_ds.add(m.video_id)
+                in_ds_vids.append(m.video_id)
+        if not in_ds_vids:
+            in_ds_vids = [v for v in dedup_pred_vids if v in ds_pool]
+
+        ih1 = 1 if any(v in target_vids for v in in_ds_vids[:1]) else 0
+        ih5 = 1 if any(v in target_vids for v in in_ds_vids[:5]) else 0
+        ih10 = 1 if any(v in target_vids for v in in_ds_vids[:10]) else 0
+        irr = 0.0
+        for r_idx, v in enumerate(in_ds_vids[:10], 1):
+            if v in target_vids:
+                irr = 1.0 / r_idx
+                break
+        indcg10 = compute_binary_ndcg_at_k(in_ds_vids[:10], target_vids, 10, ds_pool)
+
+        in_ds_hits1.append(ih1)
+        in_ds_hits5.append(ih5)
+        in_ds_hits10.append(ih10)
+        in_ds_mrrs.append(irr)
+        in_ds_ndcgs10.append(indcg10)
+        ds_stats[ds]["in_ds_hits1"].append(ih1)
+        ds_stats[ds]["in_ds_hits5"].append(ih5)
+        ds_stats[ds]["in_ds_hits10"].append(ih10)
+        ds_stats[ds]["in_ds_mrrs"].append(irr)
+        ds_stats[ds]["in_ds_ndcgs10"].append(indcg10)
+
+        # Branch Recall@K (E8)
+        v30 = 1 if (target_vids & diag.get("visual_top30_vids", set())) else 0
+        v120 = 1 if (target_vids & diag.get("visual_top120_vids", set())) else 0
+        l30 = 1 if (target_vids & diag.get("lexical_top30_vids", set())) else 0
+        f10 = 1 if (target_vids & diag.get("fused_top10_vids", set())) else 0
+
+        vis_rec30.append(v30)
+        vis_rec120.append(v120)
+        lex_rec30.append(l30)
+        fused_rec10.append(f10)
+        ds_stats[ds]["vis_rec30"].append(v30)
+        ds_stats[ds]["vis_rec120"].append(v120)
+        ds_stats[ds]["lex_rec30"].append(l30)
+        ds_stats[ds]["fused_rec10"].append(f10)
+
+        # Moment Localization Metrics (E7)
+        m_hit03: int | str = ""
+        m_hit05: int | str = ""
+        m_hit07: int | str = ""
+        mom_ndcg5_val: float | str = ""
+        mom_ndcg10_val: float | str = ""
+        mom_ap05_val: float | str = ""
+        mom_map_val: float | str = ""
+        b_err: float | None = None
+
+        if target_wins:
+            m_hit03 = 0
+            m_hit05 = 0
+            m_hit07 = 0
+            for p in preds[:1]:
+                if p["video_id"] in target_vids:
+                    p_s, p_e = p["start_sec"], p["end_sec"]
+                    best_iou = -1.0
+                    best_window = None
+                    for gt_s, gt_e in target_wins:
+                        iou = temporal_iou(p_s, p_e, gt_s, gt_e)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_window = (gt_s, gt_e)
+                        if iou >= 0.3:
+                            m_hit03 = 1
+                        if iou >= 0.5:
+                            m_hit05 = 1
+                        if iou >= 0.7:
+                            m_hit07 = 1
+                    if m_hit05 and best_window is not None:
+                        gt_s, gt_e = best_window
+                        b_err = round((abs(p_s - gt_s) + abs(p_e - gt_e)) / 2, 2)
+                        boundary_errors.append(b_err)
+
+            mom_hits03.append(int(m_hit03))
+            mom_hits05.append(int(m_hit05))
+            mom_hits07.append(int(m_hit07))
+            ds_stats[ds]["mom_hits03"].append(int(m_hit03))
+            ds_stats[ds]["mom_hits05"].append(int(m_hit05))
+            ds_stats[ds]["mom_hits07"].append(int(m_hit07))
+
+            gt_windows_formatted = [(q["target_videos"][0], float(w[0]), float(w[1])) for w in target_wins]
+            m_ndcg5 = compute_graded_moment_ndcg_at_k(preds, gt_windows_formatted, 5)
+            m_ndcg10 = compute_graded_moment_ndcg_at_k(preds, gt_windows_formatted, 10)
+            ap05 = compute_moment_ap_at_iou(preds, gt_windows_formatted, 0.50)
+            ap075 = compute_moment_ap_at_iou(preds, gt_windows_formatted, 0.75)
+            map_rng = compute_moment_map_range(preds, gt_windows_formatted)
+
+            mom_ndcgs5.append(m_ndcg5)
+            mom_ndcgs10.append(m_ndcg10)
+            mom_ap05.append(ap05)
+            mom_ap075.append(ap075)
+            mom_map_range.append(map_rng)
+
+            ds_stats[ds]["mom_ndcgs5"].append(m_ndcg5)
+            ds_stats[ds]["mom_ndcgs10"].append(m_ndcg10)
+            ds_stats[ds]["mom_ap05"].append(ap05)
+            ds_stats[ds]["mom_ap075"].append(ap075)
+            ds_stats[ds]["mom_map_range"].append(map_rng)
+
+            mom_ndcg5_val = round(m_ndcg5, 4)
+            mom_ndcg10_val = round(m_ndcg10, 4)
+            mom_ap05_val = round(ap05, 4)
+            mom_map_val = round(map_rng, 4)
+
+        top1 = preds[0] if preds else {"video_id": "NONE", "start_sec": 0, "end_sec": 0, "modality_attribution": "none"}
+        if h1 == 0 and top1["modality_attribution"] == "asr":
+            pure_asr_fp_top1_count += 1
+
+        failure_tag = classify_query_failure(
+            hit_at_1=h1,
+            target_videos=target_vids,
+            predicted_top1_video=top1["video_id"],
+            predicted_top1_attribution=top1["modality_attribution"],
+            visual_top120_vids=diag.get("visual_top120_vids", set()),
+            moment_hit_iou05=m_hit05,
+        )
+        taxonomy_counts[failure_tag] += 1
+
+        res_record = {
+            "query_id": q["query_id"],
+            "dataset": ds,
+            "query_text": q_text,
+            "ranked_predictions": json.dumps(preds, ensure_ascii=False),
+            "target_videos": "|".join(target_vids),
+            "target_windows": json.dumps(target_wins),
+            "predicted_top1_video": top1["video_id"],
+            "predicted_top1_moment": f"[{top1['start_sec']}-{top1['end_sec']}]",
+            "hit_at_1": h1,
+            "hit_at_5": h5,
+            "hit_at_10": h10,
+            "reciprocal_rank": round(rr, 4),
+            "matched_rank": matched_rank if matched_rank else 0,
+            "ndcg_at_1": round(ndcg1, 4),
+            "ndcg_at_5": round(ndcg5, 4),
+            "ndcg_at_10": round(ndcg10, 4),
+            "in_ds_hit_at_1": ih1,
+            "in_ds_mrr": round(irr, 4),
+            "moment_hit_iou03": m_hit03,
+            "moment_hit_iou05": m_hit05,
+            "moment_hit_iou07": m_hit07,
+            "moment_ndcg_at_5": mom_ndcg5_val,
+            "moment_ndcg_at_10": mom_ndcg10_val,
+            "moment_ap_iou05": mom_ap05_val,
+            "moment_map_range": mom_map_val,
+            "boundary_error_sec": b_err if b_err is not None else "",
+            "modality_attribution": top1["modality_attribution"],
+            "failure_taxonomy": failure_tag,
+            "latency_ms": round(t_total, 2),
+            "latency_non_neural_ms": round(t_non_neural, 2),
+        }
+        per_query_results.append(res_record)
+
+        if show_progress:
+            print_progress(idx, total_queries, f"{split_label}:{ablation_config}", sum(hits1) / len(hits1), sum(mrrs) / len(mrrs), t_non_neural)
+
+    total_n = max(1, len(queries))
+    h1_mean, h1_ci_l, h1_ci_h = compute_bootstrap_ci(hits1)
+    mrr_mean, mrr_ci_l, mrr_ci_h = compute_bootstrap_ci(mrrs)
+    ndcg10_mean, ndcg10_ci_l, ndcg10_ci_h = compute_bootstrap_ci(ndcgs10)
+    m05_mean, m05_ci_l, m05_ci_h = compute_bootstrap_ci(mom_hits05) if mom_hits05 else (0.0, 0.0, 0.0)
+    mndcg5_mean, mndcg5_ci_l, mndcg5_ci_h = compute_bootstrap_ci(mom_ndcgs5) if mom_ndcgs5 else (0.0, 0.0, 0.0)
+
+    summary: dict[str, Any] = {
+        "split_name": split_label,
+        "ablation_config": ablation_config,
+        "total_queries_evaluated": len(queries),
+        "metrics_overall": {
+            "video_hit_at_1": round(sum(hits1) / total_n, 4),
+            "video_hit_at_1_ci95": [round(h1_ci_l, 4), round(h1_ci_h, 4)],
+            "video_hit_at_5": round(sum(hits5) / total_n, 4),
+            "video_hit_at_10": round(sum(hits10) / total_n, 4),
+            "mean_reciprocal_rank_mrr": round(sum(mrrs) / total_n, 4),
+            "mrr_ci95": [round(mrr_ci_l, 4), round(mrr_ci_h, 4)],
+            "video_ndcg_at_1": round(sum(ndcgs1) / total_n, 4),
+            "video_ndcg_at_5": round(sum(ndcgs5) / total_n, 4),
+            "video_ndcg_at_10": round(sum(ndcgs10) / total_n, 4),
+            "video_ndcg_at_10_ci95": [round(ndcg10_ci_l, 4), round(ndcg10_ci_h, 4)],
+            "within_dataset_hit_at_1": round(sum(in_ds_hits1) / total_n, 4),
+            "within_dataset_hit_at_5": round(sum(in_ds_hits5) / total_n, 4),
+            "within_dataset_hit_at_10": round(sum(in_ds_hits10) / total_n, 4),
+            "within_dataset_mrr": round(sum(in_ds_mrrs) / total_n, 4),
+            "within_dataset_ndcg_at_10": round(sum(in_ds_ndcgs10) / total_n, 4),
+            "moment_hit_at_1_iou03": round(sum(mom_hits03) / max(1, len(mom_hits03)), 4),
+            "moment_hit_at_1_iou05": round(sum(mom_hits05) / max(1, len(mom_hits05)), 4),
+            "moment_hit_at_1_iou05_ci95": [round(m05_ci_l, 4), round(m05_ci_h, 4)],
+            "moment_hit_at_1_iou07": round(sum(mom_hits07) / max(1, len(mom_hits07)), 4),
+            "moment_ndcg_at_5": round(sum(mom_ndcgs5) / max(1, len(mom_ndcgs5)), 4),
+            "moment_ndcg_at_5_ci95": [round(mndcg5_ci_l, 4), round(mndcg5_ci_h, 4)],
+            "moment_ndcg_at_10": round(sum(mom_ndcgs10) / max(1, len(mom_ndcgs10)), 4),
+            "moment_map_at_05": round(sum(mom_ap05) / max(1, len(mom_ap05)), 4),
+            "moment_map_at_075": round(sum(mom_ap075) / max(1, len(mom_ap075)), 4),
+            "moment_map_range_05_095": round(sum(mom_map_range) / max(1, len(mom_map_range)), 4),
+            "mean_boundary_mae_sec": round(sum(boundary_errors) / len(boundary_errors), 2) if boundary_errors else None,
+            "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
+            "boundary_mae_n": len(boundary_errors),
+            "pure_asr_fp_top1_count": pure_asr_fp_top1_count,
+            "branch_recall": {
+                "visual_recall_at_30": round(sum(vis_rec30) / total_n, 4),
+                "visual_recall_at_120": round(sum(vis_rec120) / total_n, 4),
+                "lexical_recall_at_30": round(sum(lex_rec30) / total_n, 4),
+                "fused_recall_at_10": round(sum(fused_rec10) / total_n, 4),
+            },
+            "failure_taxonomy": dict(taxonomy_counts),
+            "latency_mean_ms": round(float(np.mean(latencies_total)), 2),
+            "latency_p50_ms": round(float(np.median(latencies_total)), 2),
+            "latency_p95_ms": round(float(np.percentile(latencies_total, 95)), 2),
+            "non_neural_latency_mean_ms": round(float(np.mean(latencies_non_neural)), 2),
+            "non_neural_latency_p50_ms": round(float(np.median(latencies_non_neural)), 2),
+            "non_neural_latency_p95_ms": round(float(np.percentile(latencies_non_neural, 95)), 2),
+            "stage_latencies_p50_ms": {
+                "faiss_ms": round(float(np.median(latencies_faiss)), 2),
+                "fts5_ms": round(float(np.median(latencies_fts5)), 2),
+                "fusion_ms": round(float(np.median(latencies_fusion)), 2),
+                "boundary_ms": round(float(np.median(latencies_boundary)), 2),
+            },
+        },
+        "per_dataset_metrics": {},
+        "_raw_arrays": {
+            "hits1": hits1,
+            "mrrs": mrrs,
+            "ndcgs10": ndcgs10,
+        },
+    }
+
+    for ds, st in ds_stats.items():
+        n_ds = max(1, len(st["hits1"]))
+        ds_h1_m, ds_h1_l, ds_h1_h = compute_bootstrap_ci(st["hits1"])
+        ds_mrr_m, ds_mrr_l, ds_mrr_h = compute_bootstrap_ci(st["mrrs"])
+        summary["per_dataset_metrics"][ds] = {
+            "queries": len(st["hits1"]),
+            "hit_at_1": round(sum(st["hits1"]) / n_ds, 4),
+            "hit_at_1_ci95": [round(ds_h1_l, 4), round(ds_h1_h, 4)],
+            "hit_at_5": round(sum(st["hits5"]) / n_ds, 4),
+            "hit_at_10": round(sum(st["hits10"]) / n_ds, 4),
+            "mrr": round(sum(st["mrrs"]) / n_ds, 4),
+            "mrr_ci95": [round(ds_mrr_l, 4), round(ds_mrr_h, 4)],
+            "video_ndcg_at_1": round(sum(st["ndcgs1"]) / n_ds, 4),
+            "video_ndcg_at_5": round(sum(st["ndcgs5"]) / n_ds, 4),
+            "video_ndcg_at_10": round(sum(st["ndcgs10"]) / n_ds, 4),
+            "within_dataset_hit_at_1": round(sum(st["in_ds_hits1"]) / n_ds, 4),
+            "within_dataset_hit_at_5": round(sum(st["in_ds_hits5"]) / n_ds, 4),
+            "within_dataset_hit_at_10": round(sum(st["in_ds_hits10"]) / n_ds, 4),
+            "within_dataset_mrr": round(sum(st["in_ds_mrrs"]) / n_ds, 4),
+            "within_dataset_ndcg_at_10": round(sum(st["in_ds_ndcgs10"]) / n_ds, 4),
+            "moment_hit_at_1_iou03": round(sum(st["mom_hits03"]) / len(st["mom_hits03"]), 4) if st["mom_hits03"] else 0.0,
+            "moment_hit_at_1_iou05": round(sum(st["mom_hits05"]) / len(st["mom_hits05"]), 4) if st["mom_hits05"] else 0.0,
+            "moment_hit_at_1_iou07": round(sum(st["mom_hits07"]) / len(st["mom_hits07"]), 4) if st["mom_hits07"] else 0.0,
+            "moment_ndcg_at_5": round(sum(st["mom_ndcgs5"]) / len(st["mom_ndcgs5"]), 4) if st["mom_ndcgs5"] else 0.0,
+            "moment_ndcg_at_10": round(sum(st["mom_ndcgs10"]) / len(st["mom_ndcgs10"]), 4) if st["mom_ndcgs10"] else 0.0,
+            "moment_map_at_05": round(sum(st["mom_ap05"]) / len(st["mom_ap05"]), 4) if st["mom_ap05"] else 0.0,
+            "moment_map_at_075": round(sum(st["mom_ap075"]) / len(st["mom_ap075"]), 4) if st["mom_ap075"] else 0.0,
+            "moment_map_range_05_095": round(sum(st["mom_map_range"]) / len(st["mom_map_range"]), 4) if st["mom_map_range"] else 0.0,
+            "visual_recall_at_30": round(sum(st["vis_rec30"]) / n_ds, 4),
+            "visual_recall_at_120": round(sum(st["vis_rec120"]) / n_ds, 4),
+            "lexical_recall_at_30": round(sum(st["lex_rec30"]) / n_ds, 4),
+            "fused_recall_at_10": round(sum(st["fused_rec10"]) / n_ds, 4),
+            "latency_p50_ms": round(float(np.median(st["latencies"])), 2),
+            "non_neural_latency_p50_ms": round(float(np.median(st["latencies_non_neural"])), 2),
+        }
+
+    return summary, per_query_results
+
+
+def measure_cold_query_latency(runner: MultimodalBenchmarkRunner, sample_queries: list[dict[str, Any]]) -> dict[str, float | None]:
+    """Legacy synthetic cold measurement is invalid; no cold profile has been measured."""
+    return {"cold_mean_ms": None, "cold_p50_ms": None, "cold_p95_ms": None}
+
+
+def acceptance_metric(metric: str, value: float | None, threshold: float, direction: str, source: str, n: int | None) -> dict[str, Any]:
+    import math
+    valid = value is not None and math.isfinite(value)
+    if direction not in {"max", "min", "lt"}:
+        raise ValueError(f"Unsupported threshold direction: {direction}")
+    passed = valid and (value <= threshold if direction == "max" else value < threshold if direction == "lt" else value >= threshold)
+    return {"metric": metric, "value": value, "threshold": threshold, "source": source, "n": n,
+            "verdict": "PASS" if passed else "FAIL" if valid else "NOT_MEASURED"}
+
+
+def run_benchmark(
+    val_dir: Path = Path("validation"),
+    test_dir: Path = Path("test_queries"),
+    out_dir: Path = Path("benchmark"),
+    max_msrvtt: int = 100,
+    run_all_splits: bool = True,
+) -> None:
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise FileExistsError(f"Output directory must be empty: {out_dir}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
+    input_paths = [Path("src/videntra"), Path("configs"), Path("scripts/run_validation_benchmark.py"),
+                   val_dir, test_dir, Path("data/processed/metadata.db"),
+                   Path("data/processed/metadata.db-wal"), Path("data/processed/faiss_index.bin"),
+                   Path("models/siglip2"),
+                   Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json")]
+    input_hashes = hash_paths(input_paths)
+    runner = MultimodalBenchmarkRunner()
+
+    print("\n2. Đang thu thập câu truy vấn cho các tập đánh giá (dev_150, dev_full_859, heldout_test_201)...")
+    queries_dev150 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=max_msrvtt)
+    print(f"   - dev_150          : {len(queries_dev150)} queries")
+
+    print("\n3. BẮT ĐẦU CHẠY ĐÁNH GIÁ CHÍNH TRÊN TẬP DEV_150 (A5 FULL PIPELINE)...")
+    print("=" * 95)
+    dev150_summary, dev150_records = evaluate_query_set(
+        runner, queries_dev150, split_label="dev_150", ablation_config="A5", show_progress=True
+    )
+
+    ablation_summaries: dict[str, dict[str, Any]] = {}
+    multi_split_summaries: dict[str, dict[str, Any]] = {
+        "dev_150": {k: v for k, v in dev150_summary.items() if k != "_raw_arrays"},
+    }
+
+    if run_all_splits:
+        print("\n4. ĐANG CHẠY MA TRẬN ABLATION 6 BƯỚC (A0 -> A5) TRÊN TẬP DEV_150...")
+        for cfg in ["A0", "A1", "A2", "A3", "A4"]:
+            s_cfg, cfg_records = evaluate_query_set(
+                runner, queries_dev150, split_label="ablation", ablation_config=cfg, show_progress=True
+            )
+            ablation_summaries[cfg] = s_cfg
+            with (out_dir / f"ablation_{cfg}_evaluation.jsonl").open("w", encoding="utf-8") as stream:
+                for record in cfg_records:
+                    stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        ablation_summaries["A5"] = dev150_summary
+
+        # Compute paired sign-test p-values against A0 and between consecutive steps
+        a0_h1 = ablation_summaries["A0"]["_raw_arrays"]["hits1"]
+        a0_mrr = ablation_summaries["A0"]["_raw_arrays"]["mrrs"]
+        a5_h1 = ablation_summaries["A5"]["_raw_arrays"]["hits1"]
+        a5_mrr = ablation_summaries["A5"]["_raw_arrays"]["mrrs"]
+        dev150_summary["metrics_overall"]["pvalue_vs_a0_hit1"] = round(
+            compute_paired_sign_test_pvalue(a0_h1, a5_h1), 6
+        )
+        dev150_summary["metrics_overall"]["pvalue_vs_a0_mrr"] = round(
+            compute_paired_sign_test_pvalue(a0_mrr, a5_mrr), 6
+        )
+
+        # Evaluate dev_full_859
+        queries_dev859 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=None)
+        print(f"\n5. ĐANG CHẠY TRÊN TOÀN BỘ TẬP VALIDATION (dev_full_859: {len(queries_dev859)} queries)...")
+        dev859_summary, dev859_records = evaluate_query_set(
+            runner, queries_dev859, split_label="dev_full_859", ablation_config="A5", show_progress=True
+        )
+        multi_split_summaries["dev_full_859"] = {k: v for k, v in dev859_summary.items() if k != "_raw_arrays"}
+        with (out_dir / "dev_full_evaluation.jsonl").open("w", encoding="utf-8") as stream:
+            for record in dev859_records:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        # Evaluate heldout_test_201 (Zero-Tuning Evaluation)
+        if test_dir.exists():
+            queries_test201 = load_validation_queries(test_dir, runner.indexed_videos, max_msrvtt=None)
+            print(f"\n6. ĐANG CHẠY TRÊN TẬP HELDOUT TEST (heldout_test_201: {len(queries_test201)} queries)...")
+            test201_summary, test201_records = evaluate_query_set(
+                runner, queries_test201, split_label="heldout_test_201", ablation_config="A5", show_progress=True
+            )
+            multi_split_summaries["heldout_test_201"] = {k: v for k, v in test201_summary.items() if k != "_raw_arrays"}
+            with open(out_dir / "heldout_test_201_evaluation.jsonl", "w", encoding="utf-8") as f:
+                for r in test201_records:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print("\n7. ĐANG ĐO COLD QUERY LATENCY & PEAK RAM FOOTPRINT (C3)...")
+    cold_stats = measure_cold_query_latency(runner, queries_dev150[:15])
+    rss_ram_mb, peak_ram_mb = get_process_memory_mb()
+
+    dev150_summary["metrics_overall"]["cold_latency_mean_ms"] = cold_stats["cold_mean_ms"]
+    dev150_summary["metrics_overall"]["cold_latency_p50_ms"] = cold_stats["cold_p50_ms"]
+    dev150_summary["metrics_overall"]["cold_latency_p95_ms"] = cold_stats["cold_p95_ms"]
+    dev150_summary["metrics_overall"]["ram_rss_mb"] = rss_ram_mb
+    dev150_summary["metrics_overall"]["ram_peak_mb"] = peak_ram_mb
+
+    # Export Per-Query Results for dev_150
+    csv_file = out_dir / "per_query_evaluation.csv"
+    with open(csv_file, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(dev150_records[0].keys()))
+        writer.writeheader()
+        writer.writerows(dev150_records)
+
+    jsonl_file = out_dir / "per_query_evaluation.jsonl"
+    with open(jsonl_file, "w", encoding="utf-8") as f:
+        for r in dev150_records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    ablation_clean = {}
+    for cfg, s_cfg in ablation_summaries.items():
+        ov_c = s_cfg["metrics_overall"]
+        ablation_clean[cfg] = {
+            "video_hit_at_1": ov_c["video_hit_at_1"],
+            "video_hit_at_5": ov_c["video_hit_at_5"],
+            "video_hit_at_10": ov_c["video_hit_at_10"],
+            "mrr": ov_c["mean_reciprocal_rank_mrr"],
+            "video_ndcg_at_10": ov_c["video_ndcg_at_10"],
+            "moment_hit_at_1_iou03": ov_c["moment_hit_at_1_iou03"],
+            "moment_hit_at_1_iou05": ov_c["moment_hit_at_1_iou05"],
+            "moment_ndcg_at_5": ov_c["moment_ndcg_at_5"],
+            "moment_map_range_05_095": ov_c["moment_map_range_05_095"],
+            "non_neural_latency_p50_ms": ov_c["non_neural_latency_p50_ms"],
+        }
+
+    git_sha = get_git_sha()
+    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    final_summary = {
+        "status": "provisional_pending_provenance_verification",
+        "run_id": run_id,
+        "benchmark_timestamp": ts_str,
+        "git_sha": git_sha,
+        "total_queries_evaluated": len(queries_dev150),
+        "metrics_overall": dev150_summary["metrics_overall"],
+        "per_dataset_metrics": dev150_summary["per_dataset_metrics"],
+        "multi_split_evaluation": multi_split_summaries,
+        "ablation_matrix_dev150": ablation_clean,
+    }
+
+    ov = final_summary["metrics_overall"]
+    specs = [("video_hit_at_1", 89/150, "min"), ("mean_reciprocal_rank_mrr", .645, "min"),
+             ("video_ndcg_at_10", .675, "min"), ("moment_hit_at_1_iou05", 16/22, "min"),
+             ("moment_ndcg_at_5", .53, "min"), ("pure_asr_fp_top1_count", 1, "max"),
+             ("non_neural_latency_p50_ms", 20, "max"), ("non_neural_latency_p95_ms", 45, "max"),
+             ("cold_latency_p50_ms", 220, "max"), ("cold_latency_p95_ms", 420, "max"),
+             ("ram_peak_mb", 4000, "lt")]
+    acceptance = []
+    for k, threshold, direction in specs:
+        n = (None if k.startswith(("cold_", "ram_")) else
+             sum(bool(q.get("target_windows")) for q in queries_dev150) if k.startswith("moment_") else
+             sum(r["modality_attribution"] == "asr" for r in dev150_records) if k == "pure_asr_fp_top1_count" else len(queries_dev150))
+        value = None if n == 0 or (k.endswith("p95_ms") and n is not None and n < 100) else ov.get(k)
+        acceptance.append(acceptance_metric(k, value, threshold, direction,
+            "process_memory" if k.startswith("ram_") else "dev_150", n))
+    final_summary["acceptance_metrics"] = acceptance
+    summary_file = out_dir / "benchmark_summary.json"
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(final_summary, f, indent=2, ensure_ascii=False)
+
+    report_md = out_dir / "benchmark_report.md"
+    generate_markdown_report(report_md, final_summary, dev150_records)
+
+    inputs_unchanged = verify_hashes(input_hashes) and hash_paths(input_paths) == input_hashes
+    output_hashes = hash_paths([p for p in out_dir.iterdir() if p.is_file()])
+    provenance = {"run_id": run_id, "input_sha256": input_hashes, "output_sha256": output_hashes,
+                  "inputs_unchanged": inputs_unchanged, "outputs_verified": verify_hashes(output_hashes),
+                  "runtime": {"python": sys.version, "platform": platform.platform(),
+                              "numpy": np.__version__, "device": runner.device, "argv": sys.argv,
+                              "disk_cache": False},
+                  "config": {"max_msrvtt": max_msrvtt, "run_all_splits": run_all_splits},
+                  "limitations": ["Hashes identify local files, not media rights or independently verified model license.",
+                                  "No source-video duplicate grouping or pinned snapshot ID is established."]}
+    (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
+    if not inputs_unchanged or not verify_hashes(output_hashes):
+        raise RuntimeError("Benchmark provenance verification failed; retain output for inspection")
+
+    # E9: Save immutable provenance snapshot in work/experiments/<timestamp>_<split>_<git_sha>/
+    exp_stamp = time.strftime("%Y%m%d_%H%M%S")
+    exp_dir = Path("work") / "experiments" / f"{exp_stamp}_all_splits_{git_sha}"
+    exp_dir.mkdir(parents=True, exist_ok=False)
+    for src_f in out_dir.iterdir():
+        if src_f.is_file():
+            shutil.copy2(src_f, exp_dir / src_f.name)
+
+    runner.pipeline.close()
+
+    ov = final_summary["metrics_overall"]
+    print(f"\n{'='*95}")
+    print("HOÀN TẤT BENCHMARK & KIỂM TOÁN TOÀN DIỆN HỆ THỐNG VIDENTRA (P0 -> P4)!")
+    print(f"{'='*95}")
+    print(f"- dev_150 Video Hit@1          : {ov['video_hit_at_1']*100:.2f}% (95% CI: [{ov['video_hit_at_1_ci95'][0]*100:.2f}%, {ov['video_hit_at_1_ci95'][1]*100:.2f}%])")
+    print(f"- dev_150 MRR                  : {ov['mean_reciprocal_rank_mrr']:.4f} (95% CI: [{ov['mrr_ci95'][0]:.4f}, {ov['mrr_ci95'][1]:.4f}])")
+    print(f"- dev_150 Video nDCG@10        : {ov['video_ndcg_at_10']:.4f}")
+    print(f"- dev_150 Moment Hit@1 (0.5)   : {ov['moment_hit_at_1_iou05']*100:.2f}% | Moment nDCG@5: {ov['moment_ndcg_at_5']:.4f}")
+    print(f"- Pure-ASR FP Top-1            : {ov['pure_asr_fp_top1_count']} ca")
+    if "dev_full_859" in multi_split_summaries:
+        ov859 = multi_split_summaries["dev_full_859"]["metrics_overall"]
+        print(f"- dev_full_859 (859 queries)   : Hit@1 = {ov859['video_hit_at_1']*100:.2f}% | MRR = {ov859['mean_reciprocal_rank_mrr']:.4f} | nDCG@10 = {ov859['video_ndcg_at_10']:.4f}")
+    if "heldout_test_201" in multi_split_summaries:
+        ov201 = multi_split_summaries["heldout_test_201"]["metrics_overall"]
+        print(f"- heldout_test_201 (201 q)     : Hit@1 = {ov201['video_hit_at_1']*100:.2f}% | MRR = {ov201['mean_reciprocal_rank_mrr']:.4f} | nDCG@10 = {ov201['video_ndcg_at_10']:.4f}")
+    print(f"- Non-Neural Latency (p50/p95) : {ov['non_neural_latency_p50_ms']} ms / {ov['non_neural_latency_p95_ms']} ms")
+    print(f"- Cold Query Latency (p50/p95) : {ov['cold_latency_p50_ms']} ms / {ov['cold_latency_p95_ms']} ms")
+    print(f"- RAM Footprint (RSS / Peak)   : {ov['ram_rss_mb']} MB / {ov['ram_peak_mb']} MB")
+    print(f"- Immutable Provenance Dir     : {exp_dir}")
+    print(f"{'='*95}\n")
+
+
+def generate_markdown_report(report_path: Path, summary: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    ov = summary["metrics_overall"]
+    verdicts = {m["metric"]: m["verdict"] for m in summary.get("acceptance_metrics", [])}
+    pds = summary["per_dataset_metrics"]
+    msplits = summary.get("multi_split_evaluation", {})
+    ablation = summary.get("ablation_matrix_dev150", {})
+
+    baseline_p3 = {
+        "video_hit_at_1": 0.5133,
+        "video_hit_at_5": 0.6867,
+        "video_hit_at_10": 0.7533,
+        "mean_reciprocal_rank_mrr": 0.5936,
+        "video_ndcg_at_1": 0.5133,
+        "video_ndcg_at_5": 0.5279,
+        "video_ndcg_at_10": 0.5320,
+        "moment_hit_at_1_iou03": 0.5909,
+        "moment_hit_at_1_iou05": 0.4091,
+        "moment_ndcg_at_5": 0.3620,
+        "moment_ndcg_at_10": 0.3750,
+    }
+
+    baseline_pre_audit = {
+        "video_hit_at_1": 0.5733,
+        "video_hit_at_5": 0.6667,
+        "video_hit_at_10": 0.7200,
+        "mean_reciprocal_rank_mrr": 0.6251,
+        "video_ndcg_at_1": 0.5733,
+        "video_ndcg_at_5": 0.6259,
+        "video_ndcg_at_10": 0.6423,
+        "moment_hit_at_1_iou03": 0.7273,
+        "moment_hit_at_1_iou05": 0.6818,
+        "moment_ndcg_at_5": 0.5021,
+        "moment_ndcg_at_10": 0.5021,
+    }
+
+    def fmt_delta_pct(cur: float, base: float) -> str:
+        d = (cur - base) * 100.0
+        sign = "+" if d >= 0 else ""
+        return f"**{sign}{d:.2f}%**"
+
+    def fmt_delta_val(cur: float, base: float) -> str:
+        d = cur - base
+        sign = "+" if d >= 0 else ""
+        return f"**{sign}{d:.4f}**"
+
+    attr_counts: dict[str, int] = defaultdict(int)
+    for r in records:
+        attr_counts[r["modality_attribution"]] += 1
+
+    tax = ov.get("failure_taxonomy", {})
+    br = ov.get("branch_recall", {})
+
+    content = f"""# Báo Cáo Kiểm Toán & Đánh Giá Toàn Diện Hệ Thống Tìm Kiếm Đa Phương Thức VIDENTRA (P0–P4)
+
+**Thời điểm thực thi:** {summary['benchmark_timestamp']} | **Git SHA:** `{summary.get('git_sha', 'HEAD')}`  
+**Kiến trúc:** `UnifiedMultimodalSearchPipeline` (Single Source of Truth — SSOT 7-Stage Pipeline)  
+**Cơ sở dữ liệu và phần cứng:** chưa được thu thập tự động cho báo cáo này.  
+**Giới hạn:** các số lịch sử bên dưới chưa được xác minh lại và không dùng để nghiệm thu.  
+
+---
+
+## 1. Bảng Nghiệm Thu Toàn Diện Các Chỉ Tiêu Kế Hoạch Kiểm Toán (P0 $\\to$ P4)
+
+| Hạng Mục Nghiệm Thu (Acceptance Criterion) | Ngưỡng Mục Tiêu (Target) | Kết Quả Đạt Được (`dev_150`) | Khoảng Tin Cậy 95% CI | Trạng Thái |
+| :--- | :---: | :---: | :---: | :---: |
+| **Video Hit@1 (`dev_150`)** | $\\ge 59.33\\%$ ($\\ge 89/150$) | **{ov['video_hit_at_1']*100:.2f}%** ({int(round(ov['video_hit_at_1']*summary['total_queries_evaluated']))}/{summary['total_queries_evaluated']}) | `[{ov['video_hit_at_1_ci95'][0]*100:.2f}%, {ov['video_hit_at_1_ci95'][1]*100:.2f}%]` | **{verdicts.get('video_hit_at_1', 'NOT_MEASURED')}** |
+| **Mean Reciprocal Rank (MRR)** | $\\ge 0.6450$ | **{ov['mean_reciprocal_rank_mrr']:.4f}** | `[{ov['mrr_ci95'][0]:.4f}, {ov['mrr_ci95'][1]:.4f}]` | **{verdicts.get('mean_reciprocal_rank_mrr', 'NOT_MEASURED')}** |
+| **Video nDCG@10** | $\\ge 0.6750$ | **{ov['video_ndcg_at_10']:.4f}** | `[{ov['video_ndcg_at_10_ci95'][0]:.4f}, {ov['video_ndcg_at_10_ci95'][1]:.4f}]` | **{verdicts.get('video_ndcg_at_10', 'NOT_MEASURED')}** |
+| **Moment Hit@1 (tIoU $\\ge 0.5$)** | $\\ge 72.73\\%$ ($\\ge 16/22$) | **{ov['moment_hit_at_1_iou05']*100:.2f}%** (số nhãn moment xem dữ liệu run) | `[{ov['moment_hit_at_1_iou05_ci95'][0]*100:.2f}%, {ov['moment_hit_at_1_iou05_ci95'][1]*100:.2f}%]` | **{verdicts.get('moment_hit_at_1_iou05', 'NOT_MEASURED')}** |
+| **Moment nDCG@5 (Graded 4-Level)** | $\\ge 0.5300$ | **{ov['moment_ndcg_at_5']:.4f}** | `[{ov['moment_ndcg_at_5_ci95'][0]:.4f}, {ov['moment_ndcg_at_5_ci95'][1]:.4f}]` | **{verdicts.get('moment_ndcg_at_5', 'NOT_MEASURED')}** |
+| **Pure-ASR False Positive Top-1** | $\\le 1$ ca sai | **{ov['pure_asr_fp_top1_count']} ca sai** | — | **{verdicts.get('pure_asr_fp_top1_count', 'NOT_MEASURED')}** |
+| **Non-Neural Latency ($p_{{50}} / p_{{95}}$)** | $\\le 20\\text{{ ms}} / \\le 45\\text{{ ms}}$ | **{ov['non_neural_latency_p50_ms']} ms / {ov['non_neural_latency_p95_ms']} ms** | — | **{verdicts.get('non_neural_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('non_neural_latency_p95_ms', 'NOT_MEASURED')}** |
+| **Cold Query Latency ($p_{{50}} / p_{{95}}$)** | $\\le 220\\text{{ ms}} / \\le 420\\text{{ ms}}$ | **{ov['cold_latency_p50_ms']} ms / {ov['cold_latency_p95_ms']} ms** | — | **{verdicts.get('cold_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('cold_latency_p95_ms', 'NOT_MEASURED')}** |
+| **Peak RAM Footprint** | $< 4,000\\text{{ MB}}$ ($4.0\\text{{ GB}}$) | **{ov['ram_peak_mb']} MB** (RSS: {ov['ram_rss_mb']} MB) | — | **{verdicts.get('ram_peak_mb', 'NOT_MEASURED')}** |
+| **Ý nghĩa thống kê ($p$-value vs `A0`)** | $p < 0.05$ | **$p(\\text{{Hit@1}}) = {ov.get('pvalue_vs_a0_hit1', float('nan')):.5f}$, $p(\\text{{MRR}}) = {ov.get('pvalue_vs_a0_mrr', float('nan')):.5f}$** | Paired Sign Test | **{'NOT_MEASURED'}** |
+
+---
+
+## 2. Đối Chiếu Tiến Trình Nâng Cấp: Phase 3 Baseline vs Pre-Audit Phase 4 vs Post-Audit VIDENTRA (Hiện Tại)
+
+| Chỉ số Đánh giá (Metric) | Baseline Phase 3 (`02:31:14`) | Pre-Audit Phase 4 (`04:01:36`) | Post-Audit VIDENTRA (`Hiện tại`) | $\\Delta$ vs Phase 3 | $\\Delta$ vs Pre-Audit |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Video Hit@1** | 51.33% (77/150) | 57.33% (86/150) | **{ov['video_hit_at_1']*100:.2f}%** ({int(round(ov['video_hit_at_1']*summary['total_queries_evaluated']))}/{summary['total_queries_evaluated']}) | {fmt_delta_pct(ov['video_hit_at_1'], baseline_p3['video_hit_at_1'])} | {fmt_delta_pct(ov['video_hit_at_1'], baseline_pre_audit['video_hit_at_1'])} |
+| **Video Hit@5** | 68.67% (103/150) | 66.67% (100/150) | **{ov['video_hit_at_5']*100:.2f}%** ({int(round(ov['video_hit_at_5']*summary['total_queries_evaluated']))}/{summary['total_queries_evaluated']}) | {fmt_delta_pct(ov['video_hit_at_5'], baseline_p3['video_hit_at_5'])} | {fmt_delta_pct(ov['video_hit_at_5'], baseline_pre_audit['video_hit_at_5'])} |
+| **Video Hit@10** | 75.33% (113/150) | 72.00% (108/150) | **{ov['video_hit_at_10']*100:.2f}%** ({int(round(ov['video_hit_at_10']*summary['total_queries_evaluated']))}/{summary['total_queries_evaluated']}) | {fmt_delta_pct(ov['video_hit_at_10'], baseline_p3['video_hit_at_10'])} | {fmt_delta_pct(ov['video_hit_at_10'], baseline_pre_audit['video_hit_at_10'])} |
+| **MRR** | 0.5936 | 0.6251 | **{ov['mean_reciprocal_rank_mrr']:.4f}** | {fmt_delta_val(ov['mean_reciprocal_rank_mrr'], baseline_p3['mean_reciprocal_rank_mrr'])} | {fmt_delta_val(ov['mean_reciprocal_rank_mrr'], baseline_pre_audit['mean_reciprocal_rank_mrr'])} |
+| **Video nDCG@1** | 0.5133 | 0.5733 | **{ov['video_ndcg_at_1']:.4f}** | {fmt_delta_val(ov['video_ndcg_at_1'], baseline_p3['video_ndcg_at_1'])} | {fmt_delta_val(ov['video_ndcg_at_1'], baseline_pre_audit['video_ndcg_at_1'])} |
+| **Video nDCG@5** | 0.5279 | 0.6259 | **{ov['video_ndcg_at_5']:.4f}** | {fmt_delta_val(ov['video_ndcg_at_5'], baseline_p3['video_ndcg_at_5'])} | {fmt_delta_val(ov['video_ndcg_at_5'], baseline_pre_audit['video_ndcg_at_5'])} |
+| **Video nDCG@10** | 0.5320 | 0.6423 | **{ov['video_ndcg_at_10']:.4f}** | {fmt_delta_val(ov['video_ndcg_at_10'], baseline_p3['video_ndcg_at_10'])} | {fmt_delta_val(ov['video_ndcg_at_10'], baseline_pre_audit['video_ndcg_at_10'])} |
+| **Moment Hit@1 (tIoU $\\ge 0.3$)** | 59.09% (13/22) | 72.73% (16/22) | **{ov['moment_hit_at_1_iou03']*100:.2f}%** | {fmt_delta_pct(ov['moment_hit_at_1_iou03'], baseline_p3['moment_hit_at_1_iou03'])} | {fmt_delta_pct(ov['moment_hit_at_1_iou03'], baseline_pre_audit['moment_hit_at_1_iou03'])} |
+| **Moment Hit@1 (tIoU $\\ge 0.5$)** | 40.91% (9/22) | 68.18% (15/22) | **{ov['moment_hit_at_1_iou05']*100:.2f}%** | {fmt_delta_pct(ov['moment_hit_at_1_iou05'], baseline_p3['moment_hit_at_1_iou05'])} | {fmt_delta_pct(ov['moment_hit_at_1_iou05'], baseline_pre_audit['moment_hit_at_1_iou05'])} |
+| **Moment Hit@1 (tIoU $\\ge 0.7$)** | — | — | **{ov['moment_hit_at_1_iou07']*100:.2f}%** | — | — |
+| **Moment nDCG@5** | 0.3620 | 0.5021 | **{ov['moment_ndcg_at_5']:.4f}** | {fmt_delta_val(ov['moment_ndcg_at_5'], baseline_p3['moment_ndcg_at_5'])} | {fmt_delta_val(ov['moment_ndcg_at_5'], baseline_pre_audit['moment_ndcg_at_5'])} |
+| **Moment mAP@0.5 / mAP@0.75** | — | — | **{ov['moment_map_at_05']:.4f} / {ov['moment_map_at_075']:.4f}** | — | — |
+| **Moment mAP@[0.5:0.95:0.05]** | — | — | **{ov['moment_map_range_05_095']:.4f}** | — | — |
+
+---
+
+## 3. Đánh Giá Đa Tập Dữ Liệu (Multi-Split Protocol: `dev_150`, `dev_full_859`, `heldout_test_201`)
+
+| Tập Đánh Giá (Split Name) | Số Queries | Global Hit@1 (95% CI) | Global Hit@5 | Global Hit@10 | Global MRR (95% CI) | Global nDCG@10 | Global-then-dataset-filter Hit@1 | Global-then-dataset-filter MRR |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+    for s_name, s_data in msplits.items():
+        m_ov = s_data["metrics_overall"]
+        c_h1 = m_ov.get("video_hit_at_1_ci95", [0.0, 0.0])
+        c_mrr = m_ov.get("mrr_ci95", [0.0, 0.0])
+        content += (
+            f"| **`{s_name}`** | {s_data['total_queries_evaluated']} | "
+            f"**{m_ov['video_hit_at_1']*100:.2f}%** (`[{c_h1[0]*100:.1f}%, {c_h1[1]*100:.1f}%]`) | "
+            f"{m_ov['video_hit_at_5']*100:.2f}% | {m_ov['video_hit_at_10']*100:.2f}% | "
+            f"**{m_ov['mean_reciprocal_rank_mrr']:.4f}** (`[{c_mrr[0]:.3f}, {c_mrr[1]:.3f}]`) | "
+            f"**{m_ov['video_ndcg_at_10']:.4f}** | "
+            f"{m_ov.get('within_dataset_hit_at_1', 0.0)*100:.2f}% | "
+            f"{m_ov.get('within_dataset_mrr', 0.0):.4f} |\n"
+        )
+
+    content += """
+---
+
+## 4. Phân Rã Theo Từng Dataset & Báo Cáo Kép (Global Pool vs Global-then-dataset-filter — `E3`)
+
+| Dataset | Số Queries | Cỡ Pool Nội Bộ | Global Hit@1 | Within-DS Hit@1 | Global Hit@5 | Global Hit@10 | Global MRR | Within-DS MRR | Video nDCG@10 | Visual Recall@120 | Lexical Recall@30 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+    pool_sizes = {"qvhighlights": 24, "avc": 300, "msrvtt": 1000}
+    for ds, m in pds.items():
+        p_sz = pool_sizes.get(ds, 1324)
+        content += (
+            f"| **{ds.upper()}** | {m['queries']} | {p_sz} videos | "
+            f"**{m['hit_at_1']*100:.2f}%** | **{m['within_dataset_hit_at_1']*100:.2f}%** | "
+            f"{m['hit_at_5']*100:.2f}% | {m['hit_at_10']*100:.2f}% | "
+            f"**{m['mrr']:.4f}** | **{m['within_dataset_mrr']:.4f}** | "
+            f"{m['video_ndcg_at_10']:.4f} | {m['visual_recall_at_120']*100:.1f}% | {m['lexical_recall_at_30']*100:.1f}% |\n"
+        )
+
+    if ablation:
+        content += """
+---
+
+## 5. Ma Trận Thực Nghiệm Ablation 6 Bước (`A0` $\\to$ `A5` trên `dev_150`)
+
+| Cấu Hình Ablation | Mô Tả Thành Phần Kỹ Thuật | Video Hit@1 | Video Hit@5 | Video Hit@10 | MRR | Video nDCG@10 | Moment Hit@1 (0.5) | Moment nDCG@5 | Moment mAP@[.5:.95] |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+        ab_labels = {
+            "A0": "Raw 768d SigLIP 2 Visual Baseline",
+            "A1": "+ Decoupled 864d Subspace (B5, B6, B8)",
+            "A2": "+ Multi-Clause & Sequential Alignment (B4, B11)",
+            "A3": "+ Specificity FTS5 & Local-Gated Fusion (B1, B2, B3, B7, B9)",
+            "A4": "+ Anchor-Aware Contrast Boundary Expansion (B10)",
+            "A5": "Full VIDENTRA Pipeline (+ Multi-Window Proposal)",
+        }
+        for cfg_k in ["A0", "A1", "A2", "A3", "A4", "A5"]:
+            if cfg_k in ablation:
+                a_m = ablation[cfg_k]
+                content += (
+                    f"| **`{cfg_k}`** | {ab_labels.get(cfg_k, cfg_k)} | "
+                    f"**{a_m['video_hit_at_1']*100:.2f}%** | {a_m['video_hit_at_5']*100:.2f}% | {a_m['video_hit_at_10']*100:.2f}% | "
+                    f"**{a_m['mrr']:.4f}** | **{a_m['video_ndcg_at_10']:.4f}** | "
+                    f"**{a_m['moment_hit_at_1_iou05']*100:.2f}%** | **{a_m['moment_ndcg_at_5']:.4f}** | "
+                    f"{a_m['moment_map_range_05_095']:.4f} |\n"
+                )
+
+    content += f"""
+---
+
+## 6. Phân Rã Branch Recall@K (`E8`), Modality Attribution & Automated Failure Taxonomy (`E10`)
+
+### 6.1. Độ Phủ Nhánh Truy Xuất Trước Hợp Nhất (Branch Recall@K trên `dev_150`)
+- **`Visual Recall@30`**: **{br.get('visual_recall_at_30', 0.0)*100:.2f}%**
+- **`Visual Recall@120`**: **{br.get('visual_recall_at_120', 0.0)*100:.2f}%**
+- **`Lexical Recall@30 (OCR + ASR)`**: **{br.get('lexical_recall_at_30', 0.0)*100:.2f}%**
+- **`Fused Recall@10`**: **{br.get('fused_recall_at_10', 0.0)*100:.2f}%**
+
+### 6.2. Phân Bổ Đóng Góp Phương Thức Top-1 (Modality Attribution)
+
+| Sự Kết Hợp Phương Thức | Số Lượng Queries Top-1 | Tỷ Lệ Đóng Góp |
+| :--- | :---: | :---: |
+"""
+    for att, c in sorted(attr_counts.items(), key=lambda x: x[1], reverse=True):
+        content += f"| `{att}` | {c} queries | {(c / max(1, len(records)))*100:.1f}% |\n"
+
+    content += """
+### 6.3. Phân Loại Lỗi Tự Động (Automated Failure Taxonomy `F1..F5` trên `dev_150`)
+
+| Mã Phân Loại (Taxonomy Code) | Số Lượng | Tỷ Lệ (%) | Ý Nghĩa Kỹ Thuật |
+| :--- | :---: | :---: | :--- |
+"""
+    tax_desc = {
+        "PASS": "Dự đoán chính xác Top-1 Video (và đạt ngưỡng định vị khoảnh khắc nếu có GT windows)",
+        "F1_VISUAL_CANDIDATE_MISS": "Target video nằm ngoài Top-120 ứng viên thị giác FAISS và không có khớp từ vựng",
+        "F2_LEXICAL_DISTRACTOR_OVERTHROW": "Ứng viên có khớp OCR/ASR từ nhiễu vượt mặt ứng viên thị giác",
+        "F3_SAME_SOURCE_CLIP_CONFUSION": "Dự đoán trúng cùng video YouTube gốc nhưng lệch đoạn cắt 10s (AVC sibling clip)",
+        "F4_FINE_GRAINED_VISUAL_CONFUSION": "Target video nằm trong Top-120 FAISS nhưng xếp sau một cảnh thị giác tương tự",
+        "F5_BOUNDARY_LOCALIZATION_DRIFT": "Đúng Top-1 Video nhưng biên thời gian dự đoán có tIoU < 0.5",
+    }
+    for code, desc in tax_desc.items():
+        cnt = tax.get(code, 0)
+        content += f"| `{code}` | {cnt} | {(cnt / max(1, len(records)))*100:.2f}% | {desc} |\n"
+
+    st_lat = ov.get("stage_latencies_p50_ms", {})
+    content += f"""
+---
+
+## 7. Hồ Sơ Hiệu Năng Hệ Thống Trên CPU (`C1`, `C2`, `C3`)
+
+- **Cold query latency: NOT_MEASURED** (phép đo cũ không đại diện end-to-end):
+  - Trung bình (`Mean`): **{ov.get('cold_latency_mean_ms', 0.0)} ms** | Trung vị (`p50`): **{ov.get('cold_latency_p50_ms', 0.0)} ms** | Ngưỡng `p95`: **{ov.get('cold_latency_p95_ms', 0.0)} ms**
+- **Độ trễ truy xuất phi nơ-ron (Non-Neural Retrieval Latency = FAISS + FTS5 + Clustering + Fusion + Boundary):**
+  - Trung bình (`Mean`): **{ov.get('non_neural_latency_mean_ms', 0.0)} ms** | Trung vị (`p50`): **{ov.get('non_neural_latency_p50_ms', 0.0)} ms** | Ngưỡng `p95`: **{ov.get('non_neural_latency_p95_ms', 0.0)} ms**
+  - Phân rã trung vị từng chặng (`p50`): FAISS 864d IP: `{st_lat.get('faiss_ms', 0.0)} ms`, SQLite FTS5: `{st_lat.get('fts5_ms', 0.0)} ms`, Multimodal Fusion: `{st_lat.get('fusion_ms', 0.0)} ms`, Boundary Expansion: `{st_lat.get('boundary_ms', 0.0)} ms`.
+- **Bộ nhớ tiêu thụ (Memory Footprint):** RSS = **{ov.get('ram_rss_mb', 0.0)} MB**, Peak Working Set = **{ov.get('ram_peak_mb', 0.0)} MB** (xem verdict ở bảng nghiệm thu).
+"""
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--val-dir", type=Path, default=Path("validation"))
+    parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))
+    parser.add_argument("--out-dir", type=Path, default=Path("work/experiments") / ("run_" + time.strftime("%Y%m%d_%H%M%S")))
+    parser.add_argument("--max-msrvtt", type=int, default=100)
+    parser.add_argument("--single-split-only", action="store_true")
+    args = parser.parse_args()
+
+    run_benchmark(
+        val_dir=args.val_dir,
+        test_dir=args.test_dir,
+        out_dir=args.out_dir,
+        max_msrvtt=args.max_msrvtt,
+        run_all_splits=not args.single_split_only,
+    )

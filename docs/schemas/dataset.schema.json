@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "official_split": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selection_method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "annotation_license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "media_license_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "media_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "exposure": {
+      "enum": [
+        "train",
+        "development_previously_used",
+        "sealed_evaluation",
+        "unknown"
+      ]
+    },
+    "rights_status": {
+      "enum": [
+        "allowed",
+        "restricted",
+        "unknown"
+      ]
+    },
+    "rights_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "annotation_access": {
+      "const": "evaluation_only"
+    },
+    "parent_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "source_url",
+    "source_revision",
+    "official_split",
+    "selection_method",
+    "annotation_license",
+    "media_license_status",
+    "media_ids",
+    "exposure",
+    "rights_status",
+    "rights_reference",
+    "annotation_access",
+    "parent_manifest_sha256"
+  ],
+  "additionalProperties": false
+}

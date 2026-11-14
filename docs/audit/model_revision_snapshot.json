@@ -1,0 +1,148 @@
+[
+  {
+    "model": "google/siglip2-base-patch16-224",
+    "revision": "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model.safetensors"
+    ],
+    "checked_on": "2026-11-04",
+    "config": {
+      "text_config": {
+        "model_type": "siglip_text_model",
+        "vocab_size": 256000
+      },
+      "vision_config": {
+        "model_type": "siglip_vision_model"
+      }
+    }
+  },
+  {
+    "model": "google/siglip2-base-patch16-384",
+    "revision": "f775b65a79762255128c981547af89addcfe0f88",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model.safetensors"
+    ],
+    "checked_on": "2026-11-04",
+    "config": {
+      "text_config": {
+        "model_type": "siglip_text_model",
+        "vocab_size": 256000
+      },
+      "vision_config": {
+        "image_size": 384,
+        "model_type": "siglip_vision_model"
+      }
+    }
+  },
+  {
+    "model": "google/siglip2-large-patch16-256",
+    "revision": "787800c8990e6f058423089178e718139608408c",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model.safetensors"
+    ],
+    "checked_on": "2026-11-04",
+    "config": {
+      "text_config": {
+        "hidden_size": 1024,
+        "intermediate_size": 4096,
+        "model_type": "siglip_text_model",
+        "num_attention_heads": 16,
+        "num_hidden_layers": 24,
+        "projection_size": 1024,
+        "vocab_size": 256000
+      },
+      "vision_config": {
+        "hidden_size": 1024,
+        "image_size": 256,
+        "intermediate_size": 4096,
+        "model_type": "siglip_vision_model",
+        "num_attention_heads": 16,
+        "num_hidden_layers": 24
+      }
+    }
+  },
+  {
+    "model": "google/siglip2-so400m-patch14-384",
+    "revision": "e8e487298228002f3d8a82e0cd5c8ea9c567f57f",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model.safetensors"
+    ],
+    "checked_on": "2026-11-04",
+    "config": {
+      "text_config": {
+        "hidden_size": 1152,
+        "intermediate_size": 4304,
+        "model_type": "siglip_text_model",
+        "num_attention_heads": 16,
+        "num_hidden_layers": 27,
+        "projection_size": 1152,
+        "vocab_size": 256000
+      },
+      "vision_config": {
+        "hidden_size": 1152,
+        "image_size": 384,
+        "intermediate_size": 4304,
+        "model_type": "siglip_vision_model",
+        "num_attention_heads": 16,
+        "num_hidden_layers": 27,
+        "patch_size": 14
+      }
+    }
+  },
+  {
+    "model": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model.safetensors"
+    ],
+    "checked_on": "2026-11-04"
+  },
+  {
+    "model": "Qwen/Qwen3-1.7B",
+    "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "license": "apache-2.0",
+    "weights_files": [
+      "model-00001-of-00002.safetensors",
+      "model-00002-of-00002.safetensors"
+    ],
+    "checked_on": "2026-11-04"
+  },
+  {
+    "model": "ngocthua830/viesvtr",
+    "revision": "61bcfb92a1010a01b8d7ed59961419667abe655f",
+    "license": "cc-by-nc-4.0",
+    "weights_files": [
+      "weights/viesvtr_v7.onnx",
+      "weights/viesvtr_v7.safetensors"
+    ],
+    "checked_on": "2026-11-04"
+  },
+  {
+    "model": "vinai/PhoWhisper-small",
+    "revision": "a86b604c346caf7148c37512eafe783a16420adb",
+    "license": "bsd-3-clause",
+    "weights_files": [
+      "pytorch_model.bin"
+    ],
+    "checked_on": "2026-11-04"
+  },
+  {
+    "model": "intfloat/multilingual-e5-small",
+    "revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+    "license": "mit",
+    "weights_files": [
+      "model.safetensors",
+      "onnx/model.onnx",
+      "onnx/model_O4.onnx",
+      "onnx/model_qint8_avx512_vnni.onnx",
+      "openvino/openvino_model.bin",
+      "pytorch_model.bin"
+    ],
+    "checked_on": "2026-11-04"
+  }
+]

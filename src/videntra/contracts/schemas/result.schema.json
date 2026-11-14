@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "video_id": {
+      "type": "string"
+    },
+    "source_video_id": {
+      "type": "string"
+    },
+    "moment_start_seconds": {
+      "type": "number"
+    },
+    "moment_end_seconds": {
+      "type": "number"
+    },
+    "start_original_frame_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "end_original_frame_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "representative_keyframe_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "representative_original_frame_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "representative_timestamp_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "ranking_score": {
+      "type": "number"
+    },
+    "score_type": {
+      "enum": [
+        "uncalibrated_ranking",
+        "calibrated_probability"
+      ]
+    },
+    "match_status": {
+      "enum": [
+        "supported",
+        "partial",
+        "contradicted"
+      ]
+    },
+    "unresolved_predicates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "kind"
+        ],
+        "properties": {
+          "evidence_id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "frame",
+              "event",
+              "ocr_observation",
+              "ocr_track",
+              "asr_segment",
+              "speaker_binding",
+              "relation"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "media_uri": {
+      "type": "string"
+    },
+    "thumbnail_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timing_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "frame_index_base": {
+          "const": 0
+        },
+        "frame_index_scope": {
+          "const": "ingested_video_presentation_order"
+        },
+        "end_frame_inclusive": {
+          "const": true
+        },
+        "interval_convention": {
+          "const": "[start,end)"
+        },
+        "coordinate_system": {
+          "const": "clip_relative"
+        },
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "num": {
+              "type": "integer"
+            },
+            "den": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "num",
+            "den"
+          ]
+        },
+        "first_video_pts": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "representative_pts": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_offset_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source_start_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source_end_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "untrimmed_source_frame_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "proxy_to_clip_offset_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timeline_revision": {
+          "type": "string"
+        },
+        "boundary_method": {
+          "type": "string"
+        },
+        "boundary_uncertainty_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "frame_index_base",
+        "frame_index_scope",
+        "end_frame_inclusive",
+        "interval_convention",
+        "coordinate_system",
+        "time_base",
+        "first_video_pts",
+        "representative_pts",
+        "source_offset_seconds",
+        "source_start_seconds",
+        "source_end_seconds",
+        "untrimmed_source_frame_index",
+        "proxy_to_clip_offset_seconds",
+        "timeline_revision",
+        "boundary_method",
+        "boundary_uncertainty_seconds"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "synthetic": {
+          "type": "boolean"
+        },
+        "index_snapshot": {
+          "type": "string"
+        },
+        "model_manifest": {
+          "type": "string"
+        },
+        "query_graph_version": {
+          "const": "1.0"
+        },
+        "media_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "synthetic",
+        "index_snapshot",
+        "model_manifest",
+        "query_graph_version",
+        "media_sha256",
+        "run_id"
+      ]
+    }
+  },
+  "required": [
+    "video_id",
+    "source_video_id",
+    "moment_start_seconds",
+    "moment_end_seconds",
+    "start_original_frame_index",
+    "end_original_frame_index",
+    "representative_keyframe_id",
+    "representative_original_frame_index",
+    "representative_timestamp_seconds",
+    "ranking_score",
+    "score_type",
+    "match_status",
+    "unresolved_predicates",
+    "evidence",
+    "media_uri",
+    "thumbnail_uri",
+    "timing_metadata",
+    "provenance"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "synthetic": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "media_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

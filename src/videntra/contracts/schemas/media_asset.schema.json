@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "video_id": {
+      "type": "string"
+    },
+    "source_video_id": {
+      "type": "string"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "media_uri": {
+      "type": "string"
+    },
+    "video_stream_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "audio_stream_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "source_offset_us": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "source_mapping_kind": {
+      "enum": [
+        "constant_offset",
+        "piecewise",
+        "unknown"
+      ]
+    },
+    "timeline_origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "num": {
+          "type": "integer"
+        },
+        "den": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "num",
+        "den"
+      ]
+    },
+    "duration_us": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rights_status": {
+      "enum": [
+        "allowed",
+        "restricted",
+        "unknown"
+      ]
+    },
+    "rights_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "original_dataset_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "official_split": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exposure": {
+      "enum": [
+        "train",
+        "development_previously_used",
+        "sealed_evaluation",
+        "unknown"
+      ]
+    },
+    "decode_status": {
+      "enum": [
+        "pending",
+        "ready",
+        "partial",
+        "failed"
+      ]
+    },
+    "timeline_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "modality_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visual": {
+          "enum": [
+            "ready",
+            "missing",
+            "failed",
+            "not_run",
+            "empty_observed"
+          ]
+        },
+        "ocr": {
+          "enum": [
+            "ready",
+            "missing",
+            "failed",
+            "not_run",
+            "empty_observed"
+          ]
+        },
+        "asr": {
+          "enum": [
+            "ready",
+            "missing",
+            "failed",
+            "not_run",
+            "empty_observed"
+          ]
+        }
+      },
+      "required": [
+        "visual",
+        "ocr",
+        "asr"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "video_id",
+    "source_video_id",
+    "sha256",
+    "media_uri",
+    "video_stream_index",
+    "audio_stream_index",
+    "source_offset_us",
+    "source_mapping_kind",
+    "timeline_origin",
+    "duration_us",
+    "rights_status",
+    "rights_reference",
+    "original_dataset_id",
+    "official_split",
+    "exposure",
+    "decode_status",
+    "timeline_revision",
+    "modality_status"
+  ]
+}

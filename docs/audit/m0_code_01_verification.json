@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-05",
+  "milestone": "M0-CODE-01",
+  "status": "complete",
+  "python": "3.12.10",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "tests": 58,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "duration_seconds": 3.62,
+  "manifest_records": 25,
+  "registry_added_first": 25,
+  "registry_added_repeat": 0,
+  "pip_check": "passed",
+  "wheel_smoke": "passed; imported installed wheel outside repo root",
+  "gpu_or_model_benchmarks_run": false,
+  "full_legacy_media_decode": false,
+  "files_sha256": {
+    "requirements-lock.txt": "d5d9d13ccee85f02325d3463a573abf25d96d2d3016432beb61201dfa275920d",
+    "manifests/qvh24.media.json": "0e079a73adaa7d302c8f5d07f43dbb72e06cfff0d35420b8f3dad96d21b9546b",
+    "manifests/qvh24.dataset.json": "fe1eb9f79c573e55095e435420e853023b0755e30fecceae6fe70de5ea37cd95",
+    "work/m0-tests.xml": "d959fd0039f621b698b3a79628528d047d61bf5f5cd3e3c218fce0c3647ae32c",
+    "work/wheels/videntra-0.1.0-py3-none-any.whl": "fcea4947c0eb9c288d5929a50ddd61eca41ac877ae58b1e374eaca1fcb7c85fa"
+  }
+}

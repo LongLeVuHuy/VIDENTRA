@@ -1,0 +1,196 @@
+{
+  "schema_version": "1.0",
+  "original_query": "Tìm người áo đỏ đưa túi cho người áo xanh, sau đó người áo xanh nói cảm ơn, phía sau có chữ SALE.",
+  "language": "vi",
+  "entities": [
+    {
+      "id": "a",
+      "type": "person",
+      "mention": "người áo đỏ",
+      "attributes": [
+        {
+          "name": "clothing_color",
+          "value": "red",
+          "source_span": "áo đỏ"
+        }
+      ],
+      "coreference_of": null,
+      "uncertainty": []
+    },
+    {
+      "id": "b",
+      "type": "person",
+      "mention": "người áo xanh",
+      "attributes": [
+        {
+          "name": "clothing_color",
+          "value": "blue",
+          "source_span": "áo xanh"
+        }
+      ],
+      "coreference_of": null,
+      "uncertainty": [
+        "áo xanh có thể blue hoặc green; cần giữ alternative nếu người dùng chưa xác định"
+      ]
+    },
+    {
+      "id": "bag",
+      "type": "object",
+      "mention": "túi",
+      "attributes": [],
+      "coreference_of": null,
+      "uncertainty": []
+    },
+    {
+      "id": "sign",
+      "type": "text_region",
+      "mention": "chữ SALE",
+      "attributes": [],
+      "coreference_of": null,
+      "uncertainty": []
+    }
+  ],
+  "predicates": [
+    {
+      "id": "give",
+      "kind": "action",
+      "operator": "give",
+      "roles": {
+        "subject": "a",
+        "object": "bag",
+        "recipient": "b"
+      },
+      "value": null,
+      "source_span": "người áo đỏ đưa túi cho người áo xanh",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "visual"
+        ]
+      ],
+      "scope": null,
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "speak",
+      "kind": "asr",
+      "operator": "semantic_phrase",
+      "roles": {
+        "speaker": "b"
+      },
+      "value": "cảm ơn",
+      "source_span": "người áo xanh nói cảm ơn",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "asr",
+          "audio_visual"
+        ]
+      ],
+      "scope": null,
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "order",
+      "kind": "temporal",
+      "operator": "before",
+      "roles": {
+        "event_a": "give",
+        "event_b": "speak"
+      },
+      "value": null,
+      "source_span": "sau đó",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "visual",
+          "asr"
+        ]
+      ],
+      "scope": {
+        "anchor_predicate_id": null,
+        "min_gap_ms": 0,
+        "max_gap_ms": null,
+        "quantifier": "exists"
+      },
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "sale",
+      "kind": "ocr",
+      "operator": "exact_text",
+      "roles": {
+        "text_entity": "sign"
+      },
+      "value": "SALE",
+      "source_span": "chữ SALE",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "ocr"
+        ]
+      ],
+      "scope": {
+        "anchor_predicate_id": "give",
+        "min_gap_ms": null,
+        "max_gap_ms": null,
+        "quantifier": "exists"
+      },
+      "confidence": null,
+      "uncertainty": []
+    },
+    {
+      "id": "behind",
+      "kind": "spatial",
+      "operator": "behind",
+      "roles": {
+        "subject": "sign",
+        "reference": "a"
+      },
+      "value": null,
+      "source_span": "phía sau",
+      "polarity": "positive",
+      "modality_options": [
+        [
+          "visual"
+        ]
+      ],
+      "scope": {
+        "anchor_predicate_id": "give",
+        "min_gap_ms": null,
+        "max_gap_ms": null,
+        "quantifier": "exists"
+      },
+      "confidence": null,
+      "uncertainty": []
+    }
+  ],
+  "logic": [
+    {
+      "id": "all",
+      "op": "AND",
+      "children": [
+        "give",
+        "speak",
+        "order",
+        "sale",
+        "behind"
+      ]
+    }
+  ],
+  "root_id": "all",
+  "ambiguities": [
+    "phía sau chưa chỉ rõ sau người nào hay nền cảnh; không chốt 3D behind",
+    "áo xanh chưa phân biệt blue/green"
+  ],
+  "residual_constraints": [],
+  "parser": {
+    "status": "validated",
+    "model_revision": "synthetic-example-not-model-output",
+    "prompt_version": "qg-v1",
+    "confidence_kind": "uncalibrated"
+  }
+}

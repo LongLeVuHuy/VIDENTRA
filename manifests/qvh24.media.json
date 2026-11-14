@@ -1,0 +1,678 @@
+{
+  "kind": "media_asset",
+  "revision": "m0-local24-v1",
+  "records": [
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:c12895f168c00faf3fa7bab1c3a69a62e3ce3a1f5e735baee9f003928489b93a",
+      "source_video_id": "qvhighlights:clip:00DH3yn5C30_210.0_360.0",
+      "sha256": "c12895f168c00faf3fa7bab1c3a69a62e3ce3a1f5e735baee9f003928489b93a",
+      "media_uri": "asset://qvhighlights/00DH3yn5C30_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:ac7b8b63bf2a4f80d77b9f850f6da179a31c6fc610d5d822021d6d83c0390c73",
+      "source_video_id": "qvhighlights:clip:2vFzBa_WKNg_210.0_360.0",
+      "sha256": "ac7b8b63bf2a4f80d77b9f850f6da179a31c6fc610d5d822021d6d83c0390c73",
+      "media_uri": "asset://qvhighlights/2vFzBa_WKNg_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016683,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:724761572dc8714aa2b8083239469cfa6b83da3988e8903c2e13871f94f0d766",
+      "source_video_id": "qvhighlights:clip:4G9S-eoLgX4_210.0_360.0",
+      "sha256": "724761572dc8714aa2b8083239469cfa6b83da3988e8903c2e13871f94f0d766",
+      "media_uri": "asset://qvhighlights/4G9S-eoLgX4_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:0985cda8436a32a31e6ec063a58dc5f30daa937dd8a18bb4798d3347523780e7",
+      "source_video_id": "qvhighlights:clip:8_RYMkPdpE8_210.0_360.0",
+      "sha256": "0985cda8436a32a31e6ec063a58dc5f30daa937dd8a18bb4798d3347523780e7",
+      "media_uri": "asset://qvhighlights/8_RYMkPdpE8_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:9566b444cf430cdd35bf1d8b6ef6ae9c341cbc4efff16581075b75914fd81cea",
+      "source_video_id": "qvhighlights:clip:8ghB2QPRORg_60.0_210.0",
+      "sha256": "9566b444cf430cdd35bf1d8b6ef6ae9c341cbc4efff16581075b75914fd81cea",
+      "media_uri": "asset://qvhighlights/8ghB2QPRORg_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:6694469a4461066de246344d78179e72b440b852491d3245fda552b29a9b4868",
+      "source_video_id": "qvhighlights:clip:AVErftnrqwY_210.0_360.0",
+      "sha256": "6694469a4461066de246344d78179e72b440b852491d3245fda552b29a9b4868",
+      "media_uri": "asset://qvhighlights/AVErftnrqwY_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150024875,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:d614191db4f973ea6046e3d725b5f97b8dff529472b5770a7f301e5343b56224",
+      "source_video_id": "qvhighlights:clip:AW6IgzeMjpE_360.0_510.0",
+      "sha256": "d614191db4f973ea6046e3d725b5f97b8dff529472b5770a7f301e5343b56224",
+      "media_uri": "asset://qvhighlights/AW6IgzeMjpE_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:03aa90998a936fec9016d182f9afc99fa8c649384e8c2ba9a79a8bc20cb8fb61",
+      "source_video_id": "qvhighlights:clip:A_MFAuOwK5k_510.0_660.0",
+      "sha256": "03aa90998a936fec9016d182f9afc99fa8c649384e8c2ba9a79a8bc20cb8fb61",
+      "media_uri": "asset://qvhighlights/A_MFAuOwK5k_510.0_660.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:b056a0498d2303f3feb8c787ad2ade940588ea0c060c407d5f8423687ea9f7e6",
+      "source_video_id": "qvhighlights:clip:FYU3KWg9TdQ_60.0_210.0",
+      "sha256": "b056a0498d2303f3feb8c787ad2ade940588ea0c060c407d5f8423687ea9f7e6",
+      "media_uri": "asset://qvhighlights/FYU3KWg9TdQ_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016683,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:a6ded085f7ff8ead427f49489023e64d46ba3c52ea6b0be81ad7250b9d0b429d",
+      "source_video_id": "qvhighlights:clip:GAUdBAL0K5A_360.0_510.0",
+      "sha256": "a6ded085f7ff8ead427f49489023e64d46ba3c52ea6b0be81ad7250b9d0b429d",
+      "media_uri": "asset://qvhighlights/GAUdBAL0K5A_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:43bca71866c61f94d9dc7cf65846aaa61e9e2af246c05bdd9687d2f006418112",
+      "source_video_id": "qvhighlights:clip:M2LGcH3S_ok_60.0_210.0",
+      "sha256": "43bca71866c61f94d9dc7cf65846aaa61e9e2af246c05bdd9687d2f006418112",
+      "media_uri": "asset://qvhighlights/M2LGcH3S_ok_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:5f76b07c95735fe617264b2c03b9c33ad94402afa52dac9e2e1f0e797087dc5d",
+      "source_video_id": "qvhighlights:clip:NUsG9BgSes0_60.0_210.0",
+      "sha256": "5f76b07c95735fe617264b2c03b9c33ad94402afa52dac9e2e1f0e797087dc5d",
+      "media_uri": "asset://qvhighlights/NUsG9BgSes0_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016683,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:ab5935d6dcfbbae77a5393bde4ae2f54ad71c4722552bc58a6b9bddc8da227dd",
+      "source_video_id": "qvhighlights:clip:NzyjaMWxNrU_360.0_510.0",
+      "sha256": "ab5935d6dcfbbae77a5393bde4ae2f54ad71c4722552bc58a6b9bddc8da227dd",
+      "media_uri": "asset://qvhighlights/NzyjaMWxNrU_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:376fedaacc32931143ed248073bb415affcbf6b98e3b81050b86d7e32b9c2534",
+      "source_video_id": "qvhighlights:clip:Piw-9dOC8YQ_60.0_210.0",
+      "sha256": "376fedaacc32931143ed248073bb415affcbf6b98e3b81050b86d7e32b9c2534",
+      "media_uri": "asset://qvhighlights/Piw-9dOC8YQ_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:8660c72e49c7a46a3c29b68fd1ab643a48bbb6ce4740c2912c4fdb8a8c77a667",
+      "source_video_id": "qvhighlights:clip:RWvWkkCtjfY_60.0_210.0",
+      "sha256": "8660c72e49c7a46a3c29b68fd1ab643a48bbb6ce4740c2912c4fdb8a8c77a667",
+      "media_uri": "asset://qvhighlights/RWvWkkCtjfY_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:e847dbe79219afc6d70225117684a7e03563e1580b6f455ece13f89747cb5a50",
+      "source_video_id": "qvhighlights:clip:RoripwjYFp8_60.0_210.0",
+      "sha256": "e847dbe79219afc6d70225117684a7e03563e1580b6f455ece13f89747cb5a50",
+      "media_uri": "asset://qvhighlights/RoripwjYFp8_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:bcc6947fe22c1c0d6312401282f786b0f112c150ec9589d756b40d902c673fbc",
+      "source_video_id": "qvhighlights:clip:UaYhvOSmzNc_60.0_210.0",
+      "sha256": "bcc6947fe22c1c0d6312401282f786b0f112c150ec9589d756b40d902c673fbc",
+      "media_uri": "asset://qvhighlights/UaYhvOSmzNc_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:f4e71a2ebbc486b97433a4a1cf5d3a5009a023e8c2b6a74533c9b3f625aaaff9",
+      "source_video_id": "qvhighlights:clip:bP5KfdFJzC4_60.0_210.0",
+      "sha256": "f4e71a2ebbc486b97433a4a1cf5d3a5009a023e8c2b6a74533c9b3f625aaaff9",
+      "media_uri": "asset://qvhighlights/bP5KfdFJzC4_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:3dcf6d9d30184a771bddb701094526bd9c382928e63e487a2bce6db988d1e37f",
+      "source_video_id": "qvhighlights:clip:iH1-Z6eB2cY_660.0_810.0",
+      "sha256": "3dcf6d9d30184a771bddb701094526bd9c382928e63e487a2bce6db988d1e37f",
+      "media_uri": "asset://qvhighlights/iH1-Z6eB2cY_660.0_810.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150000000,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:acbc8c115d79f573e9dfa0703ec34059d8ef761e1f178ac8ff197d35ecf48500",
+      "source_video_id": "qvhighlights:clip:iuMlh75-tzs_360.0_510.0",
+      "sha256": "acbc8c115d79f573e9dfa0703ec34059d8ef761e1f178ac8ff197d35ecf48500",
+      "media_uri": "asset://qvhighlights/iuMlh75-tzs_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:98161a7dcd36008e89a6617ecab3e958368136de75a1cb2729a5f1965a449f8d",
+      "source_video_id": "qvhighlights:clip:nJUP36AmrSM_360.0_510.0",
+      "sha256": "98161a7dcd36008e89a6617ecab3e958368136de75a1cb2729a5f1965a449f8d",
+      "media_uri": "asset://qvhighlights/nJUP36AmrSM_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:3596162393334a16723076a134298f126e34e1b146209efebe99f0dbe7ff87bc",
+      "source_video_id": "qvhighlights:clip:wFPaHOAoGzI_360.0_510.0",
+      "sha256": "3596162393334a16723076a134298f126e34e1b146209efebe99f0dbe7ff87bc",
+      "media_uri": "asset://qvhighlights/wFPaHOAoGzI_360.0_510.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:1f80e0bc0447b558666673515dffb8dde1522e403e60ef3eb043a35813f3d268",
+      "source_video_id": "qvhighlights:clip:yDu6jiOdj80_60.0_210.0",
+      "sha256": "1f80e0bc0447b558666673515dffb8dde1522e403e60ef3eb043a35813f3d268",
+      "media_uri": "asset://qvhighlights/yDu6jiOdj80_60.0_210.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "video_id": "sha256:e531cef42ec443585dbecbfa4c981075b628ca4b84fd6d8b33a13d8fefdbde29",
+      "source_video_id": "qvhighlights:clip:z12l9AAZhXc_210.0_360.0",
+      "sha256": "e531cef42ec443585dbecbfa4c981075b628ca4b84fd6d8b33a13d8fefdbde29",
+      "media_uri": "asset://qvhighlights/z12l9AAZhXc_210.0_360.0.mp4",
+      "video_stream_index": 0,
+      "audio_stream_index": 1,
+      "source_offset_us": null,
+      "source_mapping_kind": "unknown",
+      "timeline_origin": {
+        "num": 0,
+        "den": 1
+      },
+      "duration_us": 150016533,
+      "rights_status": "unknown",
+      "rights_reference": null,
+      "original_dataset_id": "QVHighlights",
+      "official_split": "val",
+      "exposure": "development_previously_used",
+      "decode_status": "pending",
+      "timeline_revision": null,
+      "modality_status": {
+        "visual": "not_run",
+        "ocr": "not_run",
+        "asr": "not_run"
+      }
+    }
+  ]
+}

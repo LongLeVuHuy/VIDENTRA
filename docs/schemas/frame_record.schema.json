@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "video_id": {
+      "type": "string"
+    },
+    "source_video_id": {
+      "type": "string"
+    },
+    "timeline_revision": {
+      "type": "string"
+    },
+    "epoch_id": {
+      "type": "string"
+    },
+    "original_decoded_frame_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "presentation_timestamp": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "best_effort_timestamp": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "num": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "den": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "num",
+        "den"
+      ]
+    },
+    "timestamp_us": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "timestamp_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "duration_us": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pts_occurrence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_offset_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "source_timestamp_us": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "source_original_frame_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sampled_frame_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scene_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sampling_reason": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "first",
+          "last",
+          "max_gap",
+          "cut_before",
+          "cut_after",
+          "change",
+          "motion",
+          "burst",
+          "ocr_probe",
+          "query_refinement"
+        ]
+      }
+    },
+    "image_dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ]
+    },
+    "fingerprint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "codec_key_frame": {
+      "type": "boolean"
+    },
+    "timestamp_quality": {
+      "enum": [
+        "exact_pts",
+        "best_effort",
+        "missing",
+        "discontinuous"
+      ]
+    },
+    "decoder_recipe": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "video_id",
+    "source_video_id",
+    "timeline_revision",
+    "epoch_id",
+    "original_decoded_frame_index",
+    "presentation_timestamp",
+    "best_effort_timestamp",
+    "time_base",
+    "timestamp_us",
+    "timestamp_seconds",
+    "duration_us",
+    "pts_occurrence",
+    "source_offset_seconds",
+    "source_timestamp_us",
+    "source_original_frame_index",
+    "sampled_frame_id",
+    "scene_id",
+    "sampling_reason",
+    "image_dimensions",
+    "fingerprint",
+    "codec_key_frame",
+    "timestamp_quality",
+    "decoder_recipe"
+  ]
+}

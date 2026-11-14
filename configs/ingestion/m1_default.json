@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "recipe_id": "m1_default",
+  "stream_selection": {
+    "video_stream_index": null,
+    "audio_stream_index": null,
+    "allow_missing_audio": true
+  },
+  "decode": {
+    "thread_count": 0,
+    "max_frames": null,
+    "error_policy": "strict"
+  },
+  "timeline": {
+    "row_group_size": 1000,
+    "time_unit": "us"
+  },
+  "sampling": {
+    "lowres_max_dim": 256,
+    "max_gap_seconds": 2.0,
+    "burst_pre_seconds": 0.5,
+    "burst_post_seconds": 1.0,
+    "burst_fps": 4.0,
+    "soft_target_fps": 1.0,
+    "soft_window_seconds": 60.0,
+    "ocr_probe_fps": 1.0,
+    "change_threshold_r": 3.0,
+    "change_threshold_d": 0.04,
+    "change_threshold_c": 0.35,
+    "phash_min_distance": 4,
+    "optical_flow_enabled": false
+  },
+  "jobs": {
+    "max_retries": 2,
+    "lease_timeout_seconds": 300,
+    "worker_cpu_count": 1
+  }
+}

@@ -1,0 +1,136 @@
+[
+  {
+    "repository": "Breakthrough/PySceneDetect",
+    "url": "https://github.com/Breakthrough/PySceneDetect",
+    "code_license": "BSD-3-Clause",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "Breakthrough/PySceneDetect",
+      "tag": "v0.7.2",
+      "date": "2026-10-12T04:44:24Z",
+      "url": "https://github.com/Breakthrough/PySceneDetect/releases/tag/v0.7.2"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "facebookresearch/faiss",
+    "url": "https://github.com/facebookresearch/faiss",
+    "code_license": "MIT",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "facebookresearch/faiss",
+      "tag": "v1.15.1",
+      "date": "2026-09-16T19:24:02Z",
+      "url": "https://github.com/facebookresearch/faiss/releases/tag/v1.15.1"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "PaddlePaddle/PaddleOCR",
+    "url": "https://github.com/PaddlePaddle/PaddleOCR",
+    "code_license": "Apache-2.0",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "PaddlePaddle/PaddleOCR",
+      "tag": "v3.7.0",
+      "date": "2026-06-11T12:09:14Z",
+      "url": "https://github.com/PaddlePaddle/PaddleOCR/releases/tag/v3.7.0"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "pbcquoc/vietocr",
+    "url": "https://github.com/pbcquoc/vietocr",
+    "code_license": "Apache-2.0",
+    "default_branch": "master",
+    "latest_release": {
+      "repo": "pbcquoc/vietocr",
+      "tag": "v0.36",
+      "date": "2021-10-13T13:30:02Z",
+      "url": "https://github.com/pbcquoc/vietocr/releases/tag/v0.36"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "SYSTRAN/faster-whisper",
+    "url": "https://github.com/SYSTRAN/faster-whisper",
+    "code_license": "MIT",
+    "default_branch": "master",
+    "latest_release": {
+      "repo": "SYSTRAN/faster-whisper",
+      "tag": "v1.2.1",
+      "date": "2025-10-31T11:34:00Z",
+      "url": "https://github.com/SYSTRAN/faster-whisper/releases/tag/v1.2.1"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "VinAIResearch/PhoWhisper",
+    "url": "https://github.com/VinAIResearch/PhoWhisper",
+    "code_license": "BSD-3-Clause",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "VinAIResearch/PhoWhisper",
+      "error": "GitHub API error 404: {\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/releases/releases#get-the-latest-release\",\"status\":\"404\"}"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "m-bain/whisperX",
+    "url": "https://github.com/m-bain/whisperX",
+    "code_license": "BSD-2-Clause",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "m-bain/whisperX",
+      "tag": "v3.8.6",
+      "date": "2026-05-25T12:35:47Z",
+      "url": "https://github.com/m-bain/whisperX/releases/tag/v3.8.6"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "line/lighthouse",
+    "url": "https://github.com/line/lighthouse",
+    "code_license": "Apache-2.0",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "line/lighthouse",
+      "tag": "v1.2",
+      "date": "2025-11-20T06:48:21Z",
+      "url": "https://github.com/line/lighthouse/releases/tag/v1.2"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "jayleicn/moment_detr",
+    "url": "https://github.com/jayleicn/moment_detr",
+    "code_license": "MIT",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "jayleicn/moment_detr",
+      "error": "GitHub API error 404: {\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/releases/releases#get-the-latest-release\",\"status\":\"404\"}"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "repository": "DanBenAmi/HiMu",
+    "url": "https://github.com/DanBenAmi/HiMu",
+    "code_license": "MIT",
+    "default_branch": "main",
+    "latest_release": {
+      "repo": "DanBenAmi/HiMu",
+      "error": "GitHub API error 404: {\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/releases/releases#get-the-latest-release\",\"status\":\"404\"}"
+    },
+    "verification": "API metadata and README inspected; runtime NOT EXECUTED",
+    "checked_on": "2026-11-04"
+  }
+]
