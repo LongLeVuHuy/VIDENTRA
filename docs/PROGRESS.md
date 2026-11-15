@@ -1,5 +1,18 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kết quả P1 cho Qwen2.5‑1.5B (`Q00`, `Q10`) & Trạng thái Kaggle VideoPrism
+
+- **Tải & xác minh artifact Kaggle Qwen2.5‑1.5B (`lvhuylong/videntra-msr-qwen15b-dev-20261115`, `COMPLETE` lúc 20:34 UTC+7):**
+  - Tải về [work/kaggle/qwen_msr_output_20261115_203448](file:///C:/Users/DELL/Desktop/VIDENTRA/work/kaggle/qwen_msr_output_20261115_203448): `qwen_receipt.json` khớp `model_revision = 989aa7980e4cf806f80c7fef2b1adb7bc71aa306`, `weights_sha256 = dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee`, `prompt_version = compact-v1`, `query_plan_cache.jsonl` có 797 entries (`llm_compact=731`, `fallback=35`, `fast_rule=30`, `tri_modal_broadcast=1`).
+  - Khi nối vào `capture_msr_candidate_pools.py` trên `dev_full_859` (859 queries): `cache_hits=740`, `cache_misses=82` (fallback rules), `rule_tier_count=37`, `llm_live_calls=0`.
+- **Kết quả benchmark ghép cặp trên `dev_full_859` (`work/experiments/msrvtt_stage2_qwen_20261115`, `alpha=0.0`, `N=809` MSR-VTT):**
+  - **R00 vs R10 (`a5` vs `clip_reserve`, rules):** K=10 Hit@1 giữ nguyên **312/809 (38.57%)** (`0/0` W/L), Recall@10 **544 → 555/809** (+15/-4), MRR@10 **0.4758 → 0.4771**; K=20 Hit@1 **312/809 (38.57%)**, Recall@20 **606 → 611/809** (+9/-4).
+  - **R00 vs Q00 (`a5` rules vs `a5` Qwen cache):** K=10 & K=20 Hit@1 giảm **312/809 (38.57%) → 252/809 (31.15%)** (`16W / 76L`, **`-7.42 pp`**, 95% CI **`[-9.64, -5.19] pp`**), MRR@10 **0.4758 → 0.4141**, Recall@10 **544 → 520/809** (Recall@20 **606 → 596/809**). Trên lát cắt dùng cache (`N=740`): **280/740 (37.84%) → 220/740 (29.73%)** (`-8.11 pp`).
+  - **R10 vs Q10 (`clip_reserve` rules vs `clip_reserve` Qwen cache):** K=10 & K=20 Hit@1 giảm **312/809 (38.57%) → 252/809 (31.15%)** (`16W / 76L`, **`-7.42 pp`**), Recall@10 **555 → 537/809** (Recall@20 **611 → 609/809**).
+  - **Guardrails:** QVH **19/22 (86.36%)**, AVC **26/28 (92.86%)**, Moment Hit@1@0.5 **16/22 (72.73%)** (`0/0` W/L).
+  - **Kết luận P1 cho Qwen:** Cache `compact-v1` sinh nhiều clause tổng quát hóa (ví dụ `"visual action clause"`) làm mất từ khóa chi tiết của MSR-VTT và tụt Hit@1 `-7.42 pp`; **giữ `rules` làm mặc định**.
+- **Trạng thái Kaggle VideoPrism (`lvhuylong/videntra-msr-videoprism-dev-20261115`):** Chuyển từ `QUEUED` sang `CANCEL_ACKNOWLEDGED` lúc 20:54 UTC+7 (không có log/output; `R01`, `R11`, `Q11` đang `chờ artifact`).
+
 ## 15/11/2026 — Hoàn thiện P0 Benchmark Hardening, Qwen Cache Wiring, Kiểm tra Kaggle & Sửa triệt để Video Inspector UI
 
 - **Sửa triệt để Video Inspector UI ([ui_html.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/api/ui_html.py), [test_ui_and_media_streaming.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/api/test_ui_and_media_streaming.py)):**
