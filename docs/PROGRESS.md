@@ -1,5 +1,10 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kế hoạch sửa lỗi Phase 9 và nâng độ chính xác
+
+- Thêm [kế hoạch sửa lỗi và nâng độ chính xác](audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md), tra cứu tài liệu gốc về SQLite, GroupKFold, SigLIP 2, E5, Florence‑2, TEMPO‑P, QVHighlights/QD‑DETR và LightGBM. Mỗi lỗi có vị trí code, cách sửa và regression cần kiểm. Roadmap ưu tiên xác minh baseline và tách thí nghiệm theo lỗi mất ứng viên, nhầm cảnh, nhiễu OCR/ASR và trôi biên. Thêm liên kết trong [PROJECT.md](../PROJECT.md).
+- Chạy bộ test trọng tâm bằng lệnh pytest đầu tiên trong kế hoạch trên `.venv` hiện tại, **103 passed in 22.54s**. Đây là kết quả test trước khi triển khai các thay đổi đề xuất. Chưa có benchmark hoặc đo GPU mới trong lượt viết tài liệu.
+
 ## 15/11/2026 — Rà soát độc lập Phase 9 tại `99254fc`
 
 - Kiểm tra `src/`, `benchmark/`, các script train/benchmark/ingest và snapshot `a2b3d80668124f38bfc2b0361066d7ea`. SHA-256 của runner, pipeline, model LTR, SQLite và các index trong provenance khớp file cục bộ. SHA `32bb0c3` trong run là `HEAD` trước khi commit các thay đổi. Snapshot dùng RapidOCR (6.912 observations), Faster-Whisper Tiny (3.860 segments) và index E5 text. Không có artifact caption hoặc spatial patches trong snapshot cục bộ.

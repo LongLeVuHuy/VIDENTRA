@@ -62,6 +62,8 @@
 
 ## 5. Trạng thái Các Cột mốc (Milestones)
 
+[Kế hoạch sửa lỗi Phase 9 và nâng độ chính xác](docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md) mô tả các việc còn lại trong ingest, evaluator, temporal verifier và các thí nghiệm retrieval tiếp theo.
+
 | Cột mốc | Phạm vi chính | Trạng thái |
 | :--- | :--- | :--- |
 | **M0–M2** | Contracts, Registry Isolation, Timeline Ledger, Hybrid Sampling, Visual SigLIP 2 & FAISS | **DONE** |
