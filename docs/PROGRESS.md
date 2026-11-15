@@ -1,5 +1,21 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kiểm định sau Phase 8 (`902f465`–`f80740b`), Dọn dẹp file tạm `work/` & Cập nhật `README.md` + `VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md`
+
+- **Kiểm định kỹ thuật sau 3 commits Phase 8 của Hydrogen (`902f465`, `8210881`, `f80740b`) ([VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md)):**
+  - **Các phần đã ổn định:**
+    1. Đã vá dứt điểm cả 3 lỗi từ đợt kiểm định trước: `SE-Viterbi` dùng `sub_q_864_mat = np.vstack(...)` không còn nguy cơ crash `AttributeError`/`TypeError`; siết cổng `has_lexical_modality_intent` cho `Dense E5` ở Stage 3 giúp giảm mạnh `Non-Neural Latency (p50 / p95)` từ `72.68 ms / 378.60 ms` xuống **`36.10–43.27 ms / 72.05–81.42 ms`**; gỡ khuếch tán làm mờ biên ngắn ở Stage 6.
+    2. Hoàn thiện các module `P8-1` (`compute_keyframe_hubness_radii`, `MV-SetSim`), `P8-2` (`NMS-MultiPeak` `_win2`/`_win3`, `snap_boundaries_to_shot_cuts`), `P8-3` (`Synergistic-CrossLTR` 22d) và gia cố toàn bộ pipeline Kaggle GPU `P8-4` / `P8-5` (`470 passed` trong pytest, Provenance Gate exit `0`).
+  - **Các điểm chưa ổn ở commit `f80740b` & hướng dẫn sửa chi tiết đã ghi nhận:**
+    1. `window_energy_concentration` tại [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py#L2471-L2475) đang tính `outside_scores` trên `vid_items` (các cụm ứng viên Stage 4) thay vì toàn bộ keyframes, dẫn tới việc thưởng điểm cao gấp ~4.4 lần cho các video nhiễu chỉ có 1 cụm đơn lẻ (`m_count == 1`, `outside_scores == []`) so với video đúng có nhiều cụm (`m_count >= 2`).
+    2. Hạ `l2_reg` từ `1500000.0` xuống `3000.0` trong [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py) đẩy trọng số `s_vis_ctx_coherence` lên `0.594256` và `window_energy_concentration` lên `0.108777` (ép `rrf_vis = 0.0`), làm `dev_150` `Video Hit@1` giảm từ `61.33%` (`8210881`) xuống `60.00%` (`f80740b`) và `Moment Hit@1 (0.5)` giảm từ `72.73%` xuống `68.18%`.
+    3. Bảng `fts_vlm_caption` và `faiss_e5_caption_384.bin` từ `P8-5` ([ingest_kaggle_offline_results.py](../scripts/ingest_kaggle_offline_results.py)) cần được nối vào Stage 3 của `unified_pipeline.py`.
+- **Dọn dẹp file tạm & Cập nhật tài liệu:**
+  - Xóa các file thử nghiệm tạm thời do đợt sweep tạo ra trong `work/` (`work/analyze_ltr_sweep.py`, `work/ltr_dev859_temp.jsonl`, `work/ltr_temp_model.json`) cùng toàn bộ thư mục `__pycache__` và `.pytest_cache`.
+  - Cập nhật toàn diện [README.md](../README.md) với kiến trúc Phase 8 (`22d Synergistic-CrossLTR`, `NMS-MultiPeak`, các lệnh chạy Kaggle `P8-4`/`P8-5` và bảng kết quả 3 tập).
+
+---
+
 ## 15/11/2026 — Hoàn thiện Hạng mục Còn lại Phase 8 (`vis_lexical_synergy` LTR Retrain, Kaggle `P8-4`/`P8-5` Prep & Full 3-Split Verification)
 
 - **Tinh chỉnh `vis_lexical_synergy` & Huấn luyện lại `Synergistic-CrossLTR` 22d ([features.py](../src/videntra/ranking/features.py), [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py), [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json)):**

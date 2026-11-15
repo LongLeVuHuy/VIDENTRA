@@ -1,434 +1,233 @@
-# VIDENTRA — Báo Cáo Kiểm Định Sau Bản Vá Hydrogen (`8fe684a` – `9beb770`), Hướng Dẫn Tinh Chỉnh Cuối & Lộ Trình Nghiên Cứu Tiếp Theo
+# VIDENTRA — Báo Cáo Kiểm Định Sau Bản Nâng Cấp Phase 8 Của Hydrogen (`902f465` – `f80740b`), Hướng Dẫn Sửa Lỗi & Lộ Trình Nghiên Cứu Tiếp Theo
 
-> **Ngày kiểm định:** 15/11/2026  
-> **Phạm vi kiểm định:** Đối chiếu toàn bộ các commits mới nhất của Hydrogen (`8fe684a`, `7c1cd53`, `9beb770`) so với bản kiểm định trước (`f37f7a5`) và baseline Phase 6 (`89c52b5`) trên `dev_150`, `heldout_test_201` và bộ 463 unit/integration tests.
-
----
-
-## Tổng Quan Kết Quả Đối Chiếu Thực Nghiệm
-
-| Chỉ số (Metric) | Phase 6 Baseline (`89c52b5`) | Hydrogen Đợt 1 (`f37f7a5`) | Hydrogen Đợt 2 (`9beb770` - Hiện tại) | Đánh giá trạng thái |
-| :--- | :---: | :---: | :---: | :--- |
-| **`dev_150` Video Hit@1** | `62.00%` (93/150) | `59.33%` (89/150) | **`61.33%`** (92/150) | Đã phục hồi +2.00% so với Đợt 1 (còn cách đỉnh Phase 6 đúng 1 câu do cổng E5) |
-| **`dev_150` Video Hit@5** | `74.67%` | `72.67%` | **`74.67%`** | Đã phục hồi 100% về mức đỉnh |
-| **`dev_150` Video Hit@10** | `76.67%` | `76.67%` | **`76.67%`** | Ổn định 100% |
-| **`dev_150` Video MRR** | `0.6562` | `0.6352` | **`0.6517`** | Phục hồi mạnh (+0.0165 MRR) |
-| **`dev_150` Video nDCG@10** | `0.6762` | `0.6596` | **`0.6729`** | Phục hồi mạnh (+0.0133 nDCG@10) |
-| **`dev_150` Moment Hit@1 (IoU $\ge 0.5$)** | `72.73%` | `68.18%` | **`72.73%`** | Đã khắc phục triệt để lỗi `_win2` (+4.55%) |
-| **`dev_150` Moment nDCG@5** | `0.5127` | `0.5035` | **`0.5119`** | Gần chạm đỉnh (chênh -0.0008 do `shot_aware_graph_diffusion`) |
-| **`heldout_test_201` Video Hit@1** | `41.79%` | `41.79%` | **`41.79%`** | Ổn định, bảo toàn tính tổng quát hóa |
-| **`heldout_test_201` Moment Hit@1 (0.5)** | `44.74%` | `44.74%` | **`44.74%`** | Ổn định |
-| **`heldout_test_201` Moment nDCG@5** | `0.3698` | `0.3694` | **`0.3696`** | Ổn định |
-| **Pure-ASR False-Positive Top-1** | `0` | `0` | **`0`** | Tuyệt đối an toàn |
-| **Pytest Suite** | `348 passed` | `461 passed` | **`463 passed`** | Toàn bộ unit/integration test đều xanh |
-| **Provenance Gate (`run_validation_benchmark.py`)** | `Exit 0` | `Exit 1` | **`Exit 0`** | Đã khóa sạch manifest & provenance |
+> **Ngày kiểm định:** 15/11/2026 (Cập nhật sau các commits Phase 8: `902f465`, `8210881`, `f80740b`)  
+> **Phạm vi kiểm định:** Rà soát toàn diện mã nguồn, trọng số `LearnedRankerLTR` 22 chiều (`models/ranking/videntra_ltr_v1.json`), pipeline đóng gói/nạp Kaggle GPU (`P8-4`, `P8-5`) và kết quả thực nghiệm trên cả 3 tập `dev_150`, `dev_full_859`, `heldout_test_201` cùng bộ 470 bài kiểm thử tự động.
 
 ---
 
-## PHẦN I — Phần Nào Đã Ổn (Điểm Tốt Sau Khi Hydrogen Nâng Cấp)
+## Tổng Quan Đối Chiếu Thực Nghiệm Qua Các Mốc Commit
 
-Hydrogen đã xử lý rất tốt **5/6 vấn đề cốt lõi** từ báo cáo kiểm định trước:
+| Chỉ số (Metric) | Phase 6 Baseline (`89c52b5`) | Phase 7 Tuned (`9beb770`) | Phase 8 Giữa kỳ (`8210881`) | Phase 8 Hiện tại (`f80740b`) | Đánh giá trạng thái hiện tại |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **`dev_150` Video Hit@1** | `62.00%` (93/150) | `61.33%` (92/150) | **`61.33%`** (92/150) | `60.00%` (90/150) | Bị tụt `-1.33%` ở commit `f80740b` do lỗi công thức `window_energy_concentration` & hạ `l2_reg=3000` |
+| **`dev_150` Video MRR** | `0.6582` | `0.6517` | **`0.6517`** | `0.6457` | Bị tụt nhẹ `-0.0060` ở `f80740b` cùng nguyên nhân trên |
+| **`dev_150` Video nDCG@10** | `0.6794` | `0.6729` | **`0.6729`** | `0.6686` | Cần khôi phục `l2_reg` + sửa `window_energy_concentration` |
+| **`dev_150` Moment Hit@1 (IoU $\ge 0.5$)** | `72.73%` | `72.73%` | **`72.73%`** | `68.18%` | Bị tụt 1 câu QVH ở `f80740b` khi `l2_reg=3000` đảo hạng video Top-1 |
+| **`dev_150` Moment nDCG@5** | `0.5127` | `0.5119` | **`0.5121`** | `0.5077` | Ở `8210881` đã tăng lên `0.5121`, bị kéo xuống ở `f80740b` do LTR |
+| **`dev_full_859` Video Hit@1 / Hit@10** | `41.68% / 68.80%` | — | — | `41.33% / 69.03%` | **`Hit@10` tăng lên `69.03%`** và `nDCG@10` tăng lên **`0.5468`** |
+| **`heldout_test_201` Video Hit@1 / Hit@5** | `39.30% / 58.21%` | `41.79% / 59.70%` | `38.81% / 57.71%` | `38.31% / 60.20%` | **`Hit@5` đạt đỉnh `60.20%`**, nhưng `Hit@1` giảm nhẹ do `window_energy_concentration` |
+| **Non-Neural Latency `p50 / p95` (`dev_150`)** | `24.27 / 106.01 ms` | `72.68 / 378.60 ms` | **`36.10 / 81.42 ms`** | **`43.27 / 72.05 ms`** | **Đã cải thiện vượt bậc (nhanh gấp ~2x p50 và ~5x p95 so với Phase 7)** |
+| **Pure-ASR False-Positive Top-1** | `0` | `0` | **`0`** | **`0`** | Tuyệt đối an toàn trên cả 3 tập |
+| **Pytest Suite** | `402 passed` | `463 passed` | `466 passed` | **`470 passed`** | Toàn bộ 470 unit/integration tests đều PASS |
+| **Provenance Gate (`run_validation_benchmark.py`)** | `Exit 0` | `Exit 0` | `Exit 0` | **`Exit 0`** | Khóa sạch SHA-256 (`inputs_unchanged=True`, `outputs_verified=True`) |
 
-### 1. Bộ Trọng Số `LearnedRankerLTR` (`models/ranking/videntra_ltr_v1.json`) Đã Cân Bằng & Chuẩn Vật Lý 100%
-- Trong [train_ltr_ranker_cv.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/train_ltr_ranker_cv.py#L444-L491) và [videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json#L28-L47), việc nâng `l2_reg = 1500000.0` kết hợp với ràng buộc dấu đơn điệu (`MONOTONIC_DIRECTIONS`) đã chấm dứt hoàn toàn hiện tượng suy biến trọng số (weight collapse).
-- Thay vì dồn 85% trọng số vào `s_vis_blend_max` và ép 10 đặc trưng về `0.0` như Đợt 1, hiện tại **14/18 đặc trưng** đã có trọng số hoạt động cân bằng và mang dấu vật lý chính xác:
-  - Nhóm Visual Peak & Stability: `s_vis_blend_max (+0.006604)`, `s_vis_ctx_coherence (+0.007813)`, `s_vis_top3_mean (+0.006283)`, `s_vis_top5_mean (+0.005679)`, `z_vis_max (+0.004754)`.
-  - Nhóm Phạt Nhiễu (Penalty): `delta_z_vis (-0.004693)`, `spike_drop_ratio (-0.002934)`.
-  - Nhóm Đa Phương Thức (Lexical & RRF): `rrf_vis (+0.004682)`, `high_spec_token_coverage (+0.004260)`, `anchor_lexical_match (+0.003898)`, `bm25_log_score (+0.003517)`, `rrf_asr (+0.003288)`, `rrf_ocr (+0.001438)`.
-- Đặc trưng `s_vis_ctx_coherence` (`temporal_context_768`) đã được tách riêng khỏi `s_late_interaction` trong [features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py#L19-L38) và [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2289-L2302), sẵn sàng cho cả 2 chế độ: có hoặc chưa có `spatial_patches_fp16.npy`.
+---
 
-### 2. Sửa Triệt Để Lỗi Cửa Sổ Phụ (`_win2`) Cướp Hạng 1 Ở Stage 6 (`Moment Hit@1` tăng vọt trở lại `72.73%`)
-- Tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2630-L2633), Hydrogen đã sửa công thức chấm điểm ứng viên cửa sổ thứ hai (`_win2`):
+## PHẦN I — Phần Nào Đã Ổn (Những Điểm Hydrogen Đã Triển Khai Rất Tốt Trong Phase 8)
+
+Trong 3 commits vừa qua (`902f465`, `8210881`, `f80740b`), Hydrogen đã hoàn thành khối lượng công việc rất lớn và giải quyết triệt để các lỗi cốt lõi từ đợt kiểm định trước:
+
+### 1. Đã Vá Triệt Để Cả 3 Lỗi Kỹ Thuật Của Phase 7
+- **Sửa dứt điểm lỗi crash `SE-Viterbi` (`AttributeError` / `TypeError`):** Tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1608-L1695), `sub_q_864` đã được chuyển thành ma trận 2D `sub_q_864_mat = np.vstack(...)`, kiểm tra `len(sub_q_864) >= 2` và truyền `event_vis_curves=clause_frame_sims` cùng `event_weights` vào `viterbi_subevent_localization` an toàn tuyệt đối.
+- **Siết chặt cổng `Dense E5` ở Stage 3 giúp tăng tốc gấp 2–5 lần ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1902-L1930)):** Nhờ bổ sung điều kiện `has_lexical_modality_intent` (kiểm tra `quoted_phrases`, `has_explicit_ocr_intent`, `has_explicit_asr_intent`, `_lexical_intent_cues`), hệ thống không còn chạy E5 dư thừa trên các câu truy vấn thuần thị giác. Kết quả là **`Non-Neural Latency (p50 / p95)` giảm mạnh từ `72.68 ms / 378.60 ms` xuống chỉ còn `36.10–43.27 ms / 72.05–81.42 ms`**.
+- **Bảo toàn độ sắc nét của đường cong biên ở Stage 6 ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2584)):** Đã loại bỏ bước làm mờ dư thừa trên `boundary_curve` của các đoạn video ngắn.
+
+### 2. Đã Xây Dựng Hoàn Chỉnh Các Module Thuật Toán `P8-1`, `P8-2`, `P8-3`
+- **`P8-1` ([visual.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/visual.py#L530-L618)):** Đã cài đặt đầy đủ `compute_keyframe_hubness_radii()` và `build_or_load_keyframe_hubness_radii()` (chống rò rỉ nội bộ cùng video và xử lý an toàn trường hợp `counts == 0`), đồng thời tính `MV-SetSim` (`video_min_clause_sim`) ở Stage 2.
+- **`P8-2` ([refine.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/localization/refine.py#L368-L408) & [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2626-L2705)):** Đã cài đặt `snap_boundaries_to_shot_cuts()` và nâng cấp Stage 6 sang thuật toán đa đỉnh `NMS-MultiPeak` (`_win2`, `_win3` với kiểm tra `temporal_iou < 0.30` và kẹp điểm giảm dần `min(win_p_score, prev_win_score - 1e-4)`).
+- **`P8-3` ([features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py#L36-L41), [learned_ranker.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/learned_ranker.py#L80-L145)):** Đã mở rộng không gian đặc trưng LTR từ `18d` lên **`22d` (`Synergistic-CrossLTR`)** đồng thời giữ tương thích ngược hoàn toàn với các file trọng số `18d`.
+
+### 3. Đã Gia Cố Toàn Diện Pipeline Offline Kaggle GPU Cho `P8-4` & `P8-5` (Sẵn Sàng Chạy Thực Chiến)
+- **[prewarm_llm_query_cache.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/prewarm_llm_query_cache.py):** Hỗ trợ `--split all_1060`, `--export-queries-only` (xuất danh sách truy vấn sạch không chứa nhãn Ground Truth), `--checkpoint-every` và `--merge-from` an toàn.
+- **[package_kaggle_inputs.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/package_kaggle_inputs.py), [kaggle_multimodal_offline_worker.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/kaggle_multimodal_offline_worker.py), [ingest_kaggle_offline_results.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/ingest_kaggle_offline_results.py):** Đã bổ sung `--mode db` (đóng gói `11,581` keyframes từ DB), hàm `run_p85_keyframe_backfill` chạy tuần tự từng mô hình trên Kaggle T4 kèm xả VRAM chống OOM, sửa lỗi `float16/float32` của `Florence-2`, và bổ sung `--mode p85` để nạp `KeyframeCaptions` + chỉ mục `fts_vlm_caption` FTS5 + `faiss_e5_caption_384.bin` mà không ghi đè dữ liệu gốc.
+- Đã có bộ kiểm thử chuyên biệt [test_kaggle_offline_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/indexing/test_kaggle_offline_pipeline.py) (`4 passed`), nâng tổng số bài test lên **`470 passed`**.
+
+---
+
+## PHẦN II — Phần Nào Chưa Ổn Trong Bản Code Hiện Tại (`f80740b`) — Vì Sao Chưa Ổn & Hướng Dẫn Sửa Chi Tiết
+
+Khi đối chiếu giữa commit `8210881` (`Video Hit@1 = 61.33%`, `Moment Hit@1 = 72.73%`) và commit cuối cùng `f80740b` (`Video Hit@1 = 60.00%`, `Moment Hit@1 = 68.18%`), mình đã tìm ra **chính xác 3 nguyên nhân kỹ thuật** làm giảm độ chính xác ở commit cuối cùng. Dưới đây là giải thích chi tiết và cách sửa từng dòng:
+
+---
+
+### Điểm Chưa Ổn 1 (Quan Trọng Nhất): Lỗi Logic Khi Tính `window_energy_concentration` Trên `vid_items` Thay Vì Toàn Bộ Keyframes ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2471-L2475))
+
+#### 1. Vì sao chưa ổn?
+Hãy xem đoạn code tính đặc trưng thứ 22 `window_energy_concentration` tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2471-L2475):
+```python
+inside_scores = [x[0] for x in vid_items if best_st <= x[3] <= best_et]
+outside_scores = [x[0] for x in vid_items if not (best_st <= x[3] <= best_et)]
+mean_in = (sum(inside_scores) / len(inside_scores)) if inside_scores else s_max
+mean_out = (sum(outside_scores) / len(outside_scores)) if outside_scores else 0.0
+win_energy_conc = max(0.0, mean_in) / (max(0.0, mean_out) + 0.05)
+```
+- **Sai lầm cốt lõi nằm ở biến `vid_items`:**
+  - `vid_items` **KHÔNG PHẢI** là danh sách toàn bộ các keyframes của video, mà chỉ là danh sách **các cụm ứng viên (retrieved clusters) lọt qua Stage 4** của video đó (`m_count = len(vid_items)`), và `[best_st, best_et]` là khoảng `[best_rep_t - 1.0, best_rep_t + 1.0]` của cụm đứng đầu `vid_items[0]`!
+  - **Trường hợp 1 — Video nhiễu (Distractor) chỉ có đúng 1 cụm ăn may (`m_count == 1`):**
+    Vì `vid_items` chỉ có 1 phần tử duy nhất (chính là `vid_items[0]`), nên danh sách `outside_scores` **luôn luôn rỗng (`[]`)**!
+    Do đó `mean_out = 0.0`, và:
+    $$\text{win\_energy\_conc} = \frac{\text{mean\_in}}{0.0 + 0.05} = 20 \times \text{mean\_in} \approx 3.50$$
+  - **Trường hợp 2 — Video đúng (Gold Video) có nhiều cụm khớp liên tiếp (`m_count >= 2`):**
+    Vì video đúng có thêm các cụm khớp ở các giây lân cận nằm ngoài `[best_rep_t - 1.0, best_rep_t + 1.0]`, nên `outside_scores` **khác rỗng** (`mean_out` $\approx 0.16$), dẫn tới:
+    $$\text{win\_energy\_conc} = \frac{\text{mean\_in}}{0.16 + 0.05} \approx 4.76 \times \text{mean\_in} \approx 0.80$$
+- **Hậu quả trực tiếp:**
+  - Công thức trên vô tình **thưởng điểm cao gấp ~4.4 lần cho các video nhiễu chỉ có 1 cụm cô lập (`m_count == 1`)** và **phạt nặng các video đúng có nhiều cụm đồng thuận (`m_count >= 2`)**!
+  - Ở commit `8210881` (`l2_reg = 1500000.0`), trọng số của `window_energy_concentration` trong `videntra_ltr_v1.json` bằng **`0.0`**, nên lỗi này bị vô hiệu hóa hoàn toàn (`Video Hit@1 = 61.33%`, `Moment Hit@1 = 72.73%`).
+  - Nhưng ở commit `f80740b`, khi Hydrogen hạ `l2_reg = 3000.0`, trọng số của `window_energy_concentration` nhảy vọt từ `0.0` lên **`+0.108777`** ([videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json#L49)), lập tức bơm điểm cho các video nhiễu đơn cụm vượt mặt video đúng và làm tụt cả `Video Hit@1` (`61.33% -> 60.00%`) lẫn `Moment Hit@1` (`72.73% -> 68.18%`)!
+
+#### 2. Hướng dẫn sửa chi tiết
+Mở [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2469-L2476) và sửa lại cách tính `win_energy_conc` dựa trên **mật độ đồng thuận cục bộ thực sự** (so sánh `local_vis_coherence` / `top3_vis_mean` và số cụm khớp lân cận `adjacent_pairs`, sao cho video có nhiều khung hình đỉnh đồng thuận trong cửa sổ có giá trị cao hơn video chỉ có 1 đỉnh đơn độc):
+
+```python
+            s_vis_blend_val = float(best_cl.get("visual_sim", 0.0))
+            subclause_weak_val = float(video_min_clause_sim.get(vid, s_vis_blend_val))
+            # Đo độ tập trung năng lượng bền vững quanh đỉnh: thưởng khi các khung hình lân cận cùng cao và có cụm liền kề
+            coherence_ratio = float(local_vis_coherence) / max(s_vis_blend_val, 0.05) if s_vis_blend_val > 0.0 else 0.0
+            win_energy_conc = min(1.5, coherence_ratio * (1.0 + 0.10 * min(adjacent_pairs, 3)))
+```
+Đồng thời trong [features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py#L222-L225), sửa giá trị mặc định khi không truyền `window_energy_concentration`:
+```python
+    if "window_energy_concentration" in candidate and candidate["window_energy_concentration"] is not None:
+        window_energy_concentration = _safe_float(candidate["window_energy_concentration"])
+    else:
+        s_top3 = values["s_vis_top3_mean"]
+        window_energy_concentration = (s_top3 / max(s_vis, 0.05)) if s_vis > 0.0 else 0.0
+```
+
+---
+
+### Điểm Chưa Ổn 2: Độ Lệch Mục Tiêu Giữa Huấn Luyện Độc Lập (`l2_reg = 3000.0`) Và Pha Trộn Phần Dư (`Residual Blending`) Trong `train_ltr_ranker_cv.py`
+
+#### 1. Vì sao chưa ổn?
+- Trong [train_ltr_ranker_cv.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/train_ltr_ranker_cv.py#L469), hàm `run_group_kfold_cv` đánh giá `cv_hit_at_1` bằng cách xếp hạng ứng viên **chỉ dựa trên điểm `ltr_sc` của mô hình tuyến tính 22 chiều**.
+- Trong khi đó, tại thời điểm suy luận trong [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2538), `ltr_sc` được dùng như một **phần dư điều chỉnh (Residual Tie-Breaker)** cộng vào `video_score` của Stage 5:
   ```python
-  peak_ratio = min(1.0, float(s_max2) / max(float(s_max1), 1e-8))
-  win2_score = float(cand["score"]) * max(0.80, min(0.96, 0.92 * peak_ratio))
+  ranking_score = float(m.ranking_score) + self.ltr_blend_weight * float(np.tanh(ltr_sc))
   ```
-- Nhờ kẹp trần `min(0.96, ...)`, cửa sổ phụ `_win2` luôn giữ vai trò hỗ trợ cho `Moment Hit@5 / nDCG@5` mà không bao giờ vượt mặt cửa sổ chính `win1` ở vị trí Top-1. Kết quả là `Moment Hit@1 (IoU >= 0.5)` trên `dev_150` phục hồi hoàn toàn từ `68.18%` lên **`72.73%`**.
-
-### 3. Nâng Cấp Backend `llama-cpp-python` (GGUF Q4_K_M) & Cơ Chế CPU-Safe Cho `SmallLLMQueryDecomposer`
-- Tại [llm.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/query/llm.py#L61-L135), Hydrogen đã:
-  - Bổ sung khám phá tự động file `.gguf` (`models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf`) và nạp qua `llama_cpp.Llama` ưu tiên trước `transformers`.
-  - Thiết lập mặc định `enabled = self._has_cuda()` (hoặc bật tường minh qua biến môi trường `VIDENTRA_LLM_ENABLED=1`), giúp máy chỉ có CPU tự động dùng `query_decomposition_cache.jsonl` + `RuleBasedQueryParser` (`< 1 ms`) thay vì bị treo 5 giây/câu truy vấn.
-
-### 4. Khóa Chặt Provenance & Benchmark (`Exit Code = 0`)
-- [run_validation_benchmark.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/run_validation_benchmark.py) đã vượt qua toàn bộ cổng kiểm định bảo mật dữ liệu (`inputs_unchanged=True`, `outputs_verified=True`, `Pure-ASR FP Top-1 = 0`).
-
----
-
-## PHẦN II — Phần Nào Chưa Ổn (Vì Sao Chưa Ổn & Hướng Dẫn Sửa Chi Tiết)
-
-Qua kiểm tra sâu từng dòng code trong 3 commits mới nhất (`8fe684a`, `7c1cd53`, `9beb770`), hiện còn **3 điểm kỹ thuật chưa ổn** (trong đó có **1 lỗi tiềm ẩn crash `AttributeError` / `TypeError`** khi bật `llm_compact` và **2 điểm làm giảm nhẹ hiệu năng/độ trễ**):
-
----
-
-### Điểm Chưa Ổn 1 (Quan Trọng Nhất): Lỗi Crash `AttributeError` & `TypeError` Tại Nhánh `SE-Viterbi` Khi `routing_mode == "llm_compact"`
-
-#### 1. Vì sao chưa ổn?
-Hãy nhìn vào [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1599-L1600):
-```python
-sub_vecs_768 = [self.encode_text(sc) for sc in sub_clauses]
-sub_q_864 = [build_query_864d_vector(sv, sc, self.coco_idf_map) for sv, sc in zip(sub_vecs_768, sub_clauses)]
-```
-Ở đây, `sub_q_864` là một **Python `list[np.ndarray]`** (danh sách các vector 1D `864d`), **không phải** là một `np.ndarray` 2 chiều!
-Thế nhưng ngay bên dưới tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1679-L1695), Hydrogen lại viết:
-```python
-if (
-    routing_plan is not None
-    and routing_plan.routing_mode == "llm_compact"
-    and sub_q_864 is not None
-    and sub_q_864.shape[0] >= 2
-    and cand_mat.shape[0] >= 2
-):
-    ...
-    viterbi_res = viterbi_subevent_localization(
-        timestamps=cand_ts,
-        event_vis_curves=(sub_q_864 @ cand_mat.T),
-    )
-```
-- **Hậu quả:**
-  1. Khi `routing_plan.routing_mode == "llm_compact"` (tức là khi bật `VIDENTRA_LLM_ENABLED=1` trên GPU hoặc khi có cache hit từ `query_decomposition_cache.jsonl` cho câu có $\ge 2$ mệnh đề), biểu thức `sub_q_864.shape[0]` sẽ **văng lỗi crash ngay lập tức**:
-     `AttributeError: 'list' object has no attribute 'shape'`!
-  2. Ngay cả nếu sửa `.shape[0]` thành `len(sub_q_864)`, dòng tiếp theo `(sub_q_864 @ cand_mat.T)` cũng sẽ crash với:
-     `TypeError: unsupported operand type(s) for @: 'list' and 'ndarray'` vì toán tử `@` trong Python không nhận `list` ở vế trái!
-  3. Sở dĩ khi chạy pytest và benchmark vừa rồi lỗi này chưa phát nổ là vì trên CPU `VIDENTRA_LLM_ENABLED=0` nên `routing_plan.routing_mode` luôn là `"rule_fallback"`, khiến điều kiện `routing_plan.routing_mode == "llm_compact"` trả về `False` và nhảy qua khối lệnh lỗi này!
+- Khi hạ `l2_reg` từ `1500000.0` xuống `3000.0` ở commit `f80740b`:
+  1. Trọng số `s_vis_ctx_coherence` tăng vọt lên **`0.594256`** (gấp ~76 lần so với mức `0.007813` trước đó), trong khi trọng số `rrf_vis` bị triệt tiêu về **`0.0`** ([videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json#L33-L36)).
+  2. Vì `s_vis_ctx_coherence` tính tích vô hướng trên vector trung bình trượt `temporal_context_768`, nó ưu tiên các video có cảnh tĩnh kéo dài nhưng làm suy yếu các video có khoảnh khắc hành động ngắn sắc nét.
+  3. Với biên độ trọng số lớn (`~0.60`), `np.tanh(ltr_sc)` bão hòa gần `±1.0`, khiến lượng cộng thêm `0.04 * np.tanh(ltr_sc)` đủ lớn để **đè bẹp khoảng cách điểm tinh tế của Stage 5** và làm mất 2 câu đúng ở Top-1 trên `dev_150` (trong đó có 1 câu QVHighlights làm `Moment Hit@1 (0.5)` giảm từ `16/22 = 72.73%` xuống `15/22 = 68.18%`).
 
 #### 2. Hướng dẫn sửa chi tiết
-Mở file [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1678-L1699) và thay thế khối lệnh từ dòng `1678` đến `1699` bằng đoạn code an toàn kiểu dữ liệu sau (đồng thời cho phép chạy cả khi `rule_fallback` tách được mệnh đề thời gian `before/after/then` có `has_temporal_order`):
-
-```python
-                # Phase 7: Optional Sub-Event Viterbi alignment bonus when multi-event decomposition is active
-                viterbi_bonus = 0.0
-                if (
-                    routing_plan is not None
-                    and (
-                        routing_plan.routing_mode == "llm_compact"
-                        or getattr(routing_plan.decomposition, "temporal_relations", None)
-                    )
-                    and sub_q_864 is not None
-                    and len(sub_q_864) >= 2
-                    and cand_mat.shape[0] >= 2
-                ):
-                    sub_q_864_mat = np.vstack(
-                        [np.asarray(sv, dtype=np.float32).reshape(1, -1) for sv in sub_q_864]
-                    )
-                    cand_ts = (
-                        np.asarray(ts_list, dtype=np.float32)
-                        if ts_list is not None and len(ts_list) == cand_mat.shape[0]
-                        else np.arange(cand_mat.shape[0], dtype=np.float32) * 2.0
-                    )
-                    viterbi_res = viterbi_subevent_localization(
-                        timestamps=cand_ts,
-                        event_vis_curves=(sub_q_864_mat @ cand_mat.T),
-                    )
-                    if viterbi_res.get("monotonic_valid", False):
-                        viterbi_bonus = 0.015 * max(0.0, float(viterbi_res.get("score", 0.0)))
-```
+Có 2 bước sửa rất gọn để vừa giữ được các đặc trưng mới (`vis_lexical_synergy`, `subclause_weakest_link`, `window_energy_concentration` đã sửa ở mục 1) vừa khôi phục 100% đỉnh độ chính xác:
+- **Bước 1:** Trong [train_ltr_ranker_cv.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/train_ltr_ranker_cv.py#L469), đặt `--l2-reg` mặc định ở mức cân bằng **`250000.0`** (hoặc `500000.0`) thay vì `3000.0` quá nhỏ. Ở mức `l2_reg = 250000.0`, cả `rrf_vis`, `s_vis_blend_max`, `vis_lexical_synergy`, `subclause_weakest_link` đều khác 0 và không có đặc trưng đơn lẻ nào độc chiếm trọng số.
+- **Bước 2:** Trong [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L510), giảm nhẹ `ltr_blend_weight` mặc định từ `0.04` xuống **`0.015`** để LTR làm đúng nhiệm vụ phân xử các cặp ứng viên có điểm `video_score` sát nút mà không lật ngược các ứng viên đã thắng rõ ràng ở Stage 5.
 
 ---
 
-### Điểm Chưa Ổn 2: Cổng Kích Hoạt `Dense E5` Ở Stage 3 (`unified_pipeline.py#L1905-L1954`) Vẫn Chạy Trên Mọi Truy Vấn Thuần Thị Giác
+### Điểm Chưa Ổn 3: Bảng `fts_vlm_caption` Và Chỉ Mục `faiss_e5_caption_384.bin` (`P8-5`) Đã Có Ở Bước Ingest Nhưng Chưa Được Nối Vào `unified_pipeline.py`
 
 #### 1. Vì sao chưa ổn?
-Tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1905-L1913), điều kiện kích hoạt `Dense E5` hiện tại là:
-```python
-sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5
-should_run_e5 = self._has_e5_text_index() and (
-    sparse_lexical_yield
-    or (
-        routing_plan is not None
-        and routing_plan.routing_mode == "llm_compact"
-        and (routing_plan.w_ocr >= 0.25 or routing_plan.w_asr >= 0.25)
-    )
-)
-```
-- **Tại sao điều kiện `sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5` lại gây tác dụng phụ?**
-  - Với các truy vấn **thuần thị giác (Pure-Visual)** trong MSRVTT và QVHighlights (ví dụ: *"a man in a blue shirt walks a dog on the beach"*), bản chất của câu truy vấn là mô tả cảnh quay chứ không tìm chữ (OCR) hay lời thoại (ASR), nên số ứng viên FTS5 `len(ocr_candidates) + len(asr_candidates)` gần như luôn bằng `0` (tức là `< 5`).
-  - Hệ quả 1 (**Độ trễ Non-Neural p50 tăng gấp 3 lần**): Vì `< 5` luôn đúng với mọi câu thuần thị giác, hàm `encode_e5_query(query)` và `_search_e5_text_index` bị gọi trên hầu hết 150 câu của `dev_150`, đồng thời bơm thêm tới 25 video từ nhánh chữ vào `all_clusters`, bắt Stage 4 phải gọi `lookup_true_visual_sim` trên đĩa cho hàng chục video không liên quan. Đây là lý do `Non-Neural Latency p50` tăng từ **`22.88 ms`** (Phase 6) lên **`72.68 ms`**.
-  - Hệ quả 2 (**Mất 1 câu đúng ở Top-1 trên `dev_150`**): Khi E5 bơm một video có lời thoại trùng ngữ nghĩa chung chung (`sc >= 0.855`) vào một câu thuần thị giác, video đó nhận thêm `rrf_asr` và vượt qua video đúng ở Top-1 (làm `Video Hit@1` dừng ở `61.33%` = 92/150 thay vì `62.00%` = 93/150 của Phase 6).
+- Trong commit `f80740b`, Hydrogen đã viết rất tốt phần tạo bảng `KeyframeCaptions`, bảng FTS5 `fts_vlm_caption` và chỉ mục `faiss_e5_caption_384.bin` trong [ingest_kaggle_offline_results.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/ingest_kaggle_offline_results.py#L245-L345) và [kaggle_multimodal_offline_worker.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/kaggle_multimodal_offline_worker.py#L410-L520).
+- Tuy nhiên, trong [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py), Stage 3 hiện mới chỉ truy vấn 2 bảng `ocr_fts` và `asr_fts` (cùng `faiss_text_e5_384.bin`), **chưa có đoạn code nào đọc bảng `fts_vlm_caption` hoặc `faiss_e5_caption_384.bin`**!
+- Điều đó có nghĩa là ngay cả khi bạn chạy xong Kaggle GPU và chạy `ingest_kaggle_offline_results.py --mode p85`, pipeline tìm kiếm vẫn sẽ bỏ qua toàn bộ dữ liệu `Florence-2` captions vừa nạp nếu không nối (wire) chúng vào `unified_pipeline.py`!
 
 #### 2. Hướng dẫn sửa chi tiết
-Chỉ kích hoạt `Dense E5` khi câu truy vấn **thực sự có tín hiệu tìm kiếm chữ/lời thoại** (`w_ocr >= 0.22` hoặc `w_asr >= 0.22` hoặc có `ocr_terms` / `asr_terms` / cụm từ trong ngoặc kép) **mà** FTS5 tìm được ít kết quả (`< 5`), hoặc khi điểm tương đồng E5 cực cao (`sc >= 0.880`) kèm trùng khớp từ khóa có độ đặc hiệu cao (`high_spec_tokens`).
-
-Mở [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1905-L1940) và sửa điều kiện `should_run_e5`:
-```python
-        sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5
-        has_lexical_modality_intent = (
-            bool(ocr_query_str)
-            or bool(asr_query_str)
-            or bool(quoted_phrases)
-            or (
-                routing_plan is not None
-                and (
-                    routing_plan.w_ocr >= 0.22
-                    or routing_plan.w_asr >= 0.22
-                    or bool(routing_plan.ocr_queries)
-                    or bool(routing_plan.asr_queries)
-                )
-            )
-        )
-        should_run_e5 = self._has_e5_text_index() and sparse_lexical_yield and has_lexical_modality_intent
-```
-Với thay đổi 10 dòng này:
-- Các truy vấn có tín hiệu OCR/ASR nhưng bị lỗi chính tả OCR hoặc đồng nghĩa ASR (FTS5 trả về `< 5` kết quả) vẫn được `Dense E5` cứu trọn vẹn.
-- Các truy vấn thuần thị giác 100% không bị `Dense E5` làm nhiễu và không tốn chi phí gọi encoder E5, giúp `Video Hit@1` quay về **`>= 62.00%`** và `Non-Neural Latency p50` giảm ngay về vùng **`~23–28 ms`**.
+Để khi có kết quả Kaggle `P8-5` về là hệ thống tự động kích hoạt ngay:
+1. Trong `UnifiedMultimodalSearchPipeline._load_resources()` ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L620-L680)):
+   - Kiểm tra sự tồn tại của bảng `fts_vlm_caption` trong `metadata.db` (`self.has_vlm_caption_fts: bool`) và file `data/processed/faiss_e5_caption_384.bin` + `e5_caption_manifest.json` (`self.e5_caption_index`).
+2. Trong Stage 3 của `search()` ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1890-L1960)):
+   - Khi `self.has_vlm_caption_fts` bằng `True` và `fts_query` không rỗng, truy vấn `fts_vlm_caption` lấy Top-30 keyframes khớp mô tả cảnh quay, quy đổi sang `rrf_vis_caption` và cộng hỗ trợ vào `visual_candidates` / `all_clusters` để cứu trực tiếp các truy vấn bị lỗi `F1_VISUAL_CANDIDATE_MISS`!
 
 ---
 
-### Điểm Chưa Ổn 3: `shot_aware_graph_diffusion` Ở Stage 6 Làm Mờ Biên Độ Nhọn Trên Video Ngắn (`Moment nDCG@5` giảm nhẹ `0.5127 -> 0.5119`)
+## PHẦN III — Định Hướng Nghiên Cứu Cụ Thể & Kế Hoạch Thực Hiện Chi Tiết (Giai Đoạn Tiếp Theo)
 
-#### 1. Vì sao chưa ổn?
-Tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2547-L2554), `shot_aware_graph_diffusion` đang được áp dụng cho mọi video có `len(ts_array) >= 4` với `alpha_d = 0.12` ngay trước bước `expand_boundary_contrast`:
-```python
-if len(ts_array) >= 4:
-    boundary_curve = shot_aware_graph_diffusion(
-        ts_array,
-        boundary_curve,
-        alpha_d=0.12,
-        tau_time=3.5,
-    )
-```
-Trên các đoạn video ngắn (4–7 keyframes, tương ứng 8–14 giây), đường cong `boundary_curve` vốn đã được làm mượt 3 điểm (`[0.20, 0.60, 0.20]`) ở dòng 2544. Việc tiếp tục khuếch tán đồ thị với `alpha_d=0.12` làm san phẳng градиент biên (`boundary contrast`), khiến `start_sec` và `end_sec` nở rộng quá mức 1–2 giây và làm giảm nhẹ `Moment nDCG@5` từ `0.5127` xuống `0.5119`.
-
-#### 2. Hướng dẫn sửa chi tiết
-Tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2547-L2554), chỉ bật `shot_aware_graph_diffusion` cho các video dài (`len(ts_array) >= 12`, tức các video QVHighlights 150 giây có $\ge 30$ keyframes) với hệ số bảo toàn biên `alpha_d = 0.06`:
-```python
-if len(ts_array) >= 12:
-    boundary_curve = shot_aware_graph_diffusion(
-        ts_array,
-        boundary_curve,
-        alpha_d=0.06,
-        tau_time=3.0,
-    )
-```
+Sau khi thực hiện bản vá 10 phút ở Phần II (sửa `window_energy_concentration`, đặt `l2_reg = 250000.0` + `ltr_blend_weight = 0.015`, và nối `fts_vlm_caption` vào `unified_pipeline.py`), toàn bộ phần khung trên CPU của VIDENTRA đã hoàn thiện. Bước đột phá lớn tiếp theo để đưa độ chính xác từ **`61.33%–62.00%` lên `66%–70%`** trên `dev_150` và từ **`41.68%` lên `47%–50%`** trên `dev_full_859` gồm **4 hướng nghiên cứu – thực nghiệm** cụ thể sau:
 
 ---
 
-## PHẦN III — Kế Hoạch Nâng Cấp Tiếp Theo (Phase 8 Master Plan: Vượt Trần MSRVTT, QVHighlights & Multi-Moment Localization)
-
-### 3.0. Chẩn Đoán Điểm Nghẽn Hiện Tại Từ Bảng Phân Loại Lỗi (`Failure Taxonomy F1..F5`)
-
-Để nâng cấp trúng đích thay vì thử sai cảm tính, hãy nhìn vào phân bố lỗi thực tế của hệ thống hiện tại trên cả 3 tập đánh giá:
-
-| Mã Lỗi (Failure Mode) | Tỷ lệ trên `dev_150` | Tỷ lệ trên `dev_full_859` | Tỷ lệ trên `heldout_test_201` | Bản Chất Điểm Nghẽn Kỹ Thuật | Gói Nâng Cấp Giải Quyết Trực Tiếp |
-| :--- | :---: | :---: | :---: | :--- | :--- |
-| **`F4_FINE_GRAINED_VISUAL_CONFUSION`** | **18.00%** (27/150) | **33.76%** (290/859) | **35.32%** (71/201) | Video đúng **đã nằm trong Top-120 FAISS** (`Visual Recall@120 = 82%`), nhưng bị thua ở Top-1 trước một video có cảnh nền na ná (do hiệu ứng Hubness của vector `864d` và thiếu đối sánh tập mệnh đề con). | **Gói P8-1 (`QAC-CSLS` + `MV-SetSim`)** & **Gói P8-5 (`QAT-LateInteraction` $3\times 3$)** |
-| **`F1_VISUAL_CANDIDATE_MISS`** | **14.67%** (22/150) | **18.28%** (157/859) | **16.92%** (34/201) | Video đúng rơi khỏi Top-120 của `SigLIP2` đơn khung hình và không có chữ OCR/ASR khớp từ khóa chính xác. | **Gói P8-5 (`PQ-VCA` `Florence-2` + `Dense E5` Synopsis)** |
-| **`F2_LEXICAL_DISTRACTOR_OVERTHROW`** | **5.33%** (8/150) | **9.55%** (82/859) | **9.45%** (19/201) | Một video sai nhưng trùng ngẫu nhiên từ khóa OCR/ASR cộng dồn điểm tuyến tính vượt mặt ứng viên thị giác đúng. | **Gói P8-3 (`Synergistic-CrossLTR` 22d)** |
-| **`Moment nDCG@5` (`0.5119` < mục tiêu `0.5300`) & `F5_BOUNDARY_DRIFT`** | **2.00%** (3/150) | — | — | Stage 6 hiện mới sinh tối đa 2 cửa sổ (`win1`, `_win2`), bỏ sót các đoạn highlight thứ 3, 4 trong cùng video QVHighlights dài 150s và chưa bắt sát điểm cắt cảnh (`shot cut`). | **Gói P8-2 (`NMS-MultiPeak` + `Shot-Snapped Boundary`)** |
-
-> **Nhận xét chiến lược:**
-> - **Gói P8-1, P8-2 và P8-3** là các nâng cấp thuật toán **100% chạy ngay trên CPU hiện tại (Zero-GPU-Cost)**, không cần chờ trích xuất lại đặc trưng nặng và có thể triển khai ngay sau khi vá 3 lỗi nhỏ ở Phần II.
-> - **Gói P8-4 và P8-5** tận dụng Small-LLM GGUF và Kaggle Dual-T4 GPU để mở khóa toàn bộ các đặc trưng đang chờ dữ liệu (`llm_compact`, `s_late_interaction`, `PQ-VCA`).
-
----
-
-### Gói Nâng Cấp P8-1 (Triển Khai Ngay Trên CPU): Khử Nhiễu Hubness `QAC-CSLS` & Đối Sánh Tập Mệnh Đề `MV-SetSim` (Giải Quyết Lỗi Lớn Nhất `F4_FINE_GRAINED_VISUAL_CONFUSION`)
-
-#### 1. Tên phương pháp & Cơ sở toán học
-- **Tên phương pháp:** **Query-Adaptive Cross-Modal Hubness Reduction (`QAC-CSLS`) kết hợp Multi-Subclause Symmetric Chamfer Similarity (`MV-SetSim`)**.
-- **Vì sao giải quyết được `F4`?**
-  1. **Hiện tượng Hubness trong không gian `864d`:** Trong không gian vector chiều cao, một số keyframes có nội dung "trung tính/phổ biến" (cảnh phòng khách, đường phố, người đứng nói chuyện) có tích vô hướng cao với hàng trăm câu truy vấn khác nhau (gọi là **Universal Hubs**). Khi câu truy vấn hơi mơ hồ, các video chứa frame "Hub" này luôn cướp vị trí Top-1 của video đúng.
-  2. **Thiếu tính đầy đủ mệnh đề (Sub-clause Completeness):** Với câu truy vấn có nhiều thành phần (ví dụ: $c_1 =$ *"a boy in a red shirt"*, $c_2 =$ *"jumps into a swimming pool"*), trung bình cộng vector $q_{864}$ có thể chấm điểm rất cao cho một video chỉ có *"swimming pool"* thật rõ mà không hề có *"boy in a red shirt"*.
-- **Công thức toán học tích hợp vào VIDENTRA:**
-  - **Bước 1 (Precomputed Keyframe Hubness Radius $r_K(v_i)$):** Tính trước một lần duy nhất cho mỗi keyframe $v_i \in \mathbb{R}^{864}$ giá trị tương đồng trung bình với $K=16$ keyframe khác video gần nhất:
-    $$r_K(v_i) = \frac{1}{K} \sum_{v_j \in \mathcal{N}_K^{\text{cross-video}}(v_i)} \langle v_i, v_j \rangle$$
-    Lưu thành mảng 1 chiều `data/processed/siglip2/keyframe_hubness_radii.npy` (chỉ nặng `~150 KB` cho ~38,000 keyframes).
-  - **Bước 2 (Điểm tương đồng hiệu chỉnh Hubness ở Stage 2 & Stage 4):**
-    $$s_{\text{CSLS}}(q, v_i) = \langle q, v_i \rangle - \lambda_{\text{hub}} \cdot \max\bigl(0,\, r_K(v_i) - \bar{r}_K\bigr), \quad \lambda_{\text{hub}} = 0.35$$
-    Chỉ phạt những keyframe có tính "Hub" cao hơn mức trung bình toàn cục $\bar{r}_K$.
-  - **Bước 3 (Symmetric Chamfer Sub-Clause Coverage `MV-SetSim` trên cửa sổ ứng viên $W$):**
-    Khi truy vấn có $M \ge 2$ mệnh đề con $\{q^{(1)}, \dots, q^{(M)}\}$, điểm bao phủ mệnh đề trên tập keyframes $\{v_t\}_{t \in W}$ của cửa sổ ứng viên là trung bình điều hòa giữa **Mean Clause MaxSim** và **Weakest-Link Clause MaxSim**:
-    $$S_{\text{MV-SetSim}}(Q, W) = 0.65 \cdot \left(\frac{1}{M}\sum_{m=1}^{M} \max_{t \in W} \langle q^{(m)}, v_t \rangle\right) + 0.35 \cdot \left(\min_{m \in \{1..M\}} \max_{t \in W} \langle q^{(m)}, v_t \rangle\right)$$
-    Số hạng $\min_{m} \max_{t \in W} \langle q^{(m)}, v_t \rangle$ đóng vai trò **Soft-AND Gate**: nếu ứng viên bỏ sót bất kỳ mệnh đề con nào, điểm `MV-SetSim` sẽ lập tức giảm xuống, loại bỏ hoàn toàn các video chỉ khớp một nửa câu truy vấn!
-
-#### 2. Kế hoạch thực hiện chi tiết từng bước
-- **Bước 1 (Tạo script tính bán kính Hubness 1 lần trong 3 giây):**
-  - Thêm hàm `build_or_load_keyframe_hubness_radii()` trong [src/videntra/retrieval/visual.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/visual.py):
-    ```python
-    def compute_keyframe_hubness_radii(
-        vectors_864: np.ndarray,
-        video_ids: list[str],
-        k_neighbors: int = 16,
-        sample_anchors: int = 2048,
-    ) -> np.ndarray:
-        """Compute cross-video hubness radius r_K(v_i) for each keyframe."""
-        n = vectors_864.shape[0]
-        if n == 0:
-            return np.zeros(0, dtype=np.float32)
-        rng = np.random.default_rng(42)
-        anchor_idx = rng.choice(n, size=min(n, sample_anchors), replace=False)
-        anchors = np.asarray(vectors_864[anchor_idx], dtype=np.float32)
-        # Compute similarity in chunks to keep RAM < 200MB
-        radii = np.zeros(n, dtype=np.float32)
-        k_eff = min(k_neighbors, anchors.shape[0] - 1)
-        if k_eff <= 0:
-            return radii
-        for start in range(0, n, 4096):
-            end = min(n, start + 4096)
-            chunk = np.asarray(vectors_864[start:end], dtype=np.float32)
-            sims = chunk @ anchors.T
-            part = np.partition(sims, -k_eff, axis=1)[:, -k_eff:]
-            radii[start:end] = np.mean(part, axis=1)
-        return radii.astype(np.float32)
-    ```
-- **Bước 2 (Tích hợp `QAC-CSLS` và `MV-SetSim` vào `lookup_true_visual_sim` trong [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1620-L1710)):**
-  - Tại `lookup_true_visual_sim`, trừ đi `0.35 * np.maximum(0.0, cand_radii - median_radius)` trên vector điểm khung hình `scores` trước khi lấy `s_max`.
-  - Khi `sub_q_864` có `len(sub_q_864) >= 2`, tính ma trận `clause_frame_sims = sub_q_864_mat @ cand_mat.T` (kích thước $M \times T$):
-    ```python
-    per_clause_max = np.max(clause_frame_sims, axis=1)  # shape (M,)
-    mv_set_sim = 0.65 * float(np.mean(per_clause_max)) + 0.35 * float(np.min(per_clause_max))
-    ```
-  - Lưu `min_clause_sim = float(np.min(per_clause_max))` vào `cluster_meta[vid]` để đưa thẳng vào bộ xếp hạng `LearnedRankerLTR` ở Gói P8-3.
-
----
-
-### Gói Nâng Cấp P8-2 (Triển Khai Ngay Trên CPU): Đề Xuất Đa Đỉnh `NMS-MultiPeak` & Bắt Dính Điểm Cắt Cảnh `Shot-Snapped Boundary` (Đưa `Moment nDCG@5` Vượt Mức Nghiệm Thu `>= 0.5450`)
-
-#### 1. Tên phương pháp & Cơ sở toán học
-- **Tên phương pháp:** **1D Temporal Non-Maximum Suppression Multi-Peak Proposal (`NMS-MultiPeak`) kết hợp Cosine Shot-Boundary Snapping (`Shot-Snapped Watershed`)**.
-- **Vì sao giải quyết được `Moment nDCG@5` (`0.5119` $\to$ `>= 0.5450`) và `Boundary MAE` (`6.91s` $\to$ `< 5.0s`)?**
-  1. **Điểm mù của cơ chế `_win2` hiện tại:** Trong bộ dữ liệu QVHighlights, mỗi truy vấn được đánh giá trên **Top-5 đoạn khoảnh khắc (`Moment nDCG@5`)**, và nhiều video dài 150s có tới **3–4 phân cảnh phù hợp nằm cách xa nhau** (ví dụ: cảnh phỏng vấn ở giây `10–28`, quay lại ở giây `64–82`, và kết thúc ở giây `118–136`). Hiện tại Stage 6 ([unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2573-L2636)) chỉ tìm thêm tối đa 1 cửa sổ `_win2`, khiến vị trí thứ 3, 4, 5 trong bảng xếp hạng moment của video số 1 bị nhường cho các video xếp hạng dưới (vốn là các video sai!), kéo tụt `Moment nDCG@5`!
-  2. **Điểm mù của biên thời gian tĩnh:** Hàm `expand_boundary_contrast` hiện tại mở rộng biên dựa trên đường cong tương đồng đã làm mượt, nên thường dừng lệch 1–2 keyframes so với thời điểm chuyển cảnh thực tế (`shot cut`) của biên tập viên video.
-- **Công thức toán học tích hợp vào VIDENTRA:**
-  - **Shot-Cut Detection miễn phí từ ma trận `768d`:** Giữa hai keyframe liên tiếp $t$ và $t+1$ trong cùng một video, độ đứt gãy chuyển cảnh (Shot Discontinuity) là:
-    $$d_{\text{shot}}(t, t+1) = 1 - \langle \hat{v}_{t}^{(768)},\, \hat{v}_{t+1}^{(768)} \rangle$$
-    Nếu $d_{\text{shot}}(t, t+1) > \tau_{\text{cut}} = 0.28$ và khoảng cách tới biên dự đoán $[t_{\text{start}}, t_{\text{end}}]$ nhỏ hơn $\le 4.0\text{s}$, ta ghim (snap) biên khoảnh khắc vào đúng mốc chuyển cảnh đó!
-  - **Iterative 1D Temporal NMS cho $P \le 3$ cửa sổ mỗi video Top-3:**
-    Sau khi trích xuất cửa sổ thứ $p$ là $[a_p, b_p]$, triệt tiêu vùng lân cận $[a_p - \delta, b_p + \delta]$ trên đường cong `exact_curve` và tiếp tục tìm đỉnh thứ $p+1$ nếu:
-    $$s_{\max}^{(p+1)} \ge 0.80 \cdot s_{\max}^{(1)} \quad \text{và} \quad \max_{j \le p} \text{tIoU}\bigl([a_{p+1}, b_{p+1}], [a_j, b_j]\bigr) < 0.30$$
-    Điểm của cửa sổ thứ $p \in \{2, 3\}$ được tính theo tỷ lệ năng lượng đỉnh và bị kẹp trần nghiêm ngặt `< score(win_{p-1})` để bảo toàn 100% `Moment Hit@1 = 72.73%`:
-    $$\text{score}(\text{win}_p) = \text{score}(\text{win}_1) \cdot \min\Bigl(0.96 - 0.03(p-2),\; \max\bigl(0.78,\; 0.92 \cdot \frac{s_{\max}^{(p)}}{s_{\max}^{(1)}}\bigr)\Bigr)$$
-
-#### 2. Kế hoạch thực hiện chi tiết từng bước
-- **Bước 1:** Thêm hàm `snap_boundaries_to_shot_cuts()` trong [src/videntra/localization/refine.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/localization/refine.py):
-  ```python
-  def snap_boundaries_to_shot_cuts(
-      timestamps: np.ndarray,
-      frame_vectors_768: np.ndarray,
-      start_sec: float,
-      end_sec: float,
-      cut_threshold: float = 0.28,
-      max_snap_sec: float = 3.0,
-  ) -> tuple[float, float]:
-      """Snap predicted [start_sec, end_sec] to nearest natural shot cuts if within max_snap_sec."""
-      if len(timestamps) < 3 or frame_vectors_768.shape[0] != len(timestamps):
-          return start_sec, end_sec
-      adj_cos = np.sum(frame_vectors_768[:-1] * frame_vectors_768[1:], axis=1)
-      adj_dist = 1.0 - adj_cos
-      cut_indices = np.where(adj_dist >= cut_threshold)[0]
-      if len(cut_indices) == 0:
-          return start_sec, end_sec
-      # Cut timestamp between frame i and i+1
-      cut_times_start = timestamps[cut_indices + 1]
-      cut_times_end = timestamps[cut_indices]
-      new_start, new_end = float(start_sec), float(end_sec)
-      diffs_s = np.abs(cut_times_start - start_sec)
-      if np.min(diffs_s) <= max_snap_sec:
-          cand_s = float(cut_times_start[int(np.argmin(diffs_s))])
-          if cand_s < new_end - 2.0:
-              new_start = cand_s
-      diffs_e = np.abs(cut_times_end - end_sec)
-      if np.min(diffs_e) <= max_snap_sec:
-          cand_e = float(cut_times_end[int(np.argmin(diffs_e))])
-          if cand_e > new_start + 2.0:
-              new_end = cand_e
-      return new_start, new_end
-  ```
-- **Bước 2:** Trong Stage 6 của [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L2573-L2636), nâng vòng lặp sinh cửa sổ phụ từ 1 cửa sổ (`_win2`) lên tối đa 2 cửa sổ phụ (`_win2`, `_win3`) cho các video dài (`len(ts_array) >= 20`) có nhiều đỉnh độc lập (`tIoU < 0.30`).
-
----
-
-### Gói Nâng Cấp P8-3 (Triển Khai Ngay Trên CPU): Mở Rộng `LearnedRankerLTR` Lên 22 Đặc Trưng Với Tương Tác Chéo Đa Phương Thức (`Synergistic-CrossLTR` — Giải Quyết Lỗi `F2_LEXICAL_DISTRACTOR_OVERTHROW`)
-
-#### 1. Tên phương pháp & Cơ sở toán học
-- **Tên phương pháp:** **Monotonic Constrained Synergistic Cross-Feature LTR (`Synergistic-CrossLTR` 22d)**.
-- **Vì sao giải quyết được `F2_LEXICAL_DISTRACTOR_OVERTHROW`?**
-  - Mô hình LTR 18 chiều hiện tại hoàn toàn tuyến tính cộng tính:
-    $$f(x) = w_{\text{vis}} x_{\text{vis}} + w_{\text{ocr}} x_{\text{ocr}} + w_{\text{asr}} x_{\text{asr}} + \dots$$
-  - Trong mô hình cộng tính, một video có cảnh hình ảnh hoàn toàn sai ($z_{\text{vis\_max}} < 0$), nhưng tình cờ người trong video nói một câu trùng nhiều từ khóa (`rrf_asr` cao + `bm25_log_score` cao + `anchor_lexical_match = 1`) vẫn nhận được tổng điểm dương lớn từ các trọng số từ vựng và vượt mặt video đúng!
-  - Bằng cách thêm **4 đặc trưng tương tác phi tuyến tường minh (Explicit Non-Linear Interaction Features)** vào [features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py):
-    1. `vis_lexical_synergy` (`+1` monotonic):
-       $$x_{19} = \max\bigl(0.0,\, s_{\text{vis\_blend\_max}} - 0.16\bigr) \times \bigl(\text{rrf}_{\text{ocr}} + \text{rrf}_{\text{asr}}\bigr)$$
-       *(Chỉ thưởng điểm cộng hưởng lớn khi cả thị giác LẪN chữ/lời thoại cùng khớp trên cùng một video).*
-    2. `unverified_lexical_hazard` (`-1` monotonic):
-       $$x_{20} = \max\bigl(0.0,\, 0.50 - z_{\text{vis\_max}}\bigr) \times \bigl(\text{rrf}_{\text{ocr}} + \text{rrf}_{\text{asr}}\bigr)$$
-       *(Phạt trực tiếp ứng viên có điểm RRF chữ/thoại cao nhưng điểm chuẩn hóa thị giác $z_{\text{vis\_max}}$ nằm dưới mức trung bình của câu truy vấn).*
-    3. `subclause_weakest_link` (`+1` monotonic):
-       $$x_{21} = \min_{m \in \{1..M\}} \max_{t \in W} \langle q^{(m)}, v_t \rangle$$
-       *(Điểm khớp của mệnh đề yếu nhất từ Gói P8-1 — ép video hạng 1 phải khớp toàn diện mọi vế của câu truy vấn).*
-    4. `window_energy_concentration` (`+1` monotonic):
-       $$x_{22} = \frac{\text{mean}_{t \in [t_{\text{start}}, t_{\text{end}}]} s(t)}{\text{mean}_{t \notin [t_{\text{start}}, t_{\text{end}}]} s(t) + 0.05}$$
-       *(Đo độ nổi bật của khoảnh khắc dự đoán so với phần nền còn lại của video).*
-
-#### 2. Kế hoạch thực hiện chi tiết từng bước
-- **Bước 1:** Bổ sung 4 tên đặc trưng mới vào `FEATURE_NAMES` trong [src/videntra/ranking/features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py#L19-L38) và thêm ràng buộc dấu tương ứng (`+1, -1, +1, +1`) vào `MONOTONIC_DIRECTIONS` trong [src/videntra/ranking/learned_ranker.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/learned_ranker.py).
-- **Bước 2:** Tính 4 giá trị này trong `extract_candidate_features()` ([src/videntra/ranking/features.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ranking/features.py#L85-L185)).
-- **Bước 3:** Chạy lại huấn luyện 5-Fold GroupKFold CV:
-  ```powershell
-  .\.venv\Scripts\python.exe scripts/train_ltr_ranker_cv.py
-  ```
-
----
-
-### Gói Nâng Cấp P8-4 (Offline Pre-warm): Kích Hoạt 100% Phân Rã Ngữ Nghĩa `Qwen2.5-1.5B-Instruct` & `SE-Viterbi` Đa Phương Thức
+### Hướng 1: Chạy Thực Chiến Pipeline Kaggle Dual-T4 GPU (`P8-4` & `P8-5`) Để Mở Khóa 3 Nguồn Tín Hiệu Đang Chờ Dữ Liệu
 
 #### 1. Định hướng cụ thể
-- Như đã phân tích ở Phần II, hiện tại tệp `data/cache/query_decomposition_cache.jsonl` mới chỉ chứa kết quả của `RuleBasedQueryParser` (`fallback_reason="rule_based_only"`), nên 100% câu truy vấn trong benchmark đang chạy ở chế độ `routing_mode = "rule_fallback"`.
-- Sau khi sửa lỗi `sub_q_864_mat` ở Điểm Chưa Ổn 1, ta cần:
-  1. Truyền đầy đủ cả 3 ma trận đường cong `event_vis_curves`, `event_ocr_curves` và `event_asr_curves` vào hàm [viterbi_subevent_localization](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/localization/refine.py#L315-L340) trong `unified_pipeline.py`.
-  2. Chạy `prewarm_llm_query_cache.py` với mô hình `Qwen2.5-1.5B-Instruct` thật (trên Kaggle T4 chỉ mất ~90 giây cho toàn bộ 1,060 câu truy vấn của cả 3 tập `dev_150`, `dev_full_859`, `heldout_test_201`, hoặc chạy qua đêm bằng GGUF trên CPU) để nạp đầy `query_decomposition_cache.jsonl` với `routing_mode = "llm_compact"`.
+Hiện tại toàn bộ các kịch bản đóng gói, worker Kaggle và nạp dữ liệu đã được viết xong và vượt qua 100% bài test (`test_kaggle_offline_pipeline.py`), nhưng **3 kho dữ liệu quan trọng nhất vẫn chưa được sinh trên GPU**:
+1. **`query_decomposition_cache.jsonl` từ `Qwen2.5-1.5B-Instruct` thật (`P8-4`)**: Hiện file cache trên đĩa vẫn là kết quả của `--rule-only` (`routing_mode = "rule_fallback"`). Khi chạy trên GPU T4 cho `all_1060` queries (~90 giây), toàn bộ 1,060 câu truy vấn sẽ có cấu trúc phân rã ngữ nghĩa `llm_compact` thật sự, kích hoạt `SE-Viterbi` và `llm_modality_alignment`.
+2. **`spatial_patches_fp16.npy` ($11,581 \times 9 \times 768$, `float16`) từ `SigLIP2` (`P8-5`)**: Đánh thức đặc trưng thứ 7 `s_late_interaction` (`QAT-LateInteraction` MaxSim trên lưới $3\times 3$ vùng không gian) hiện đang có trọng số bằng `0.0`.
+3. **`KeyframeCaptions` (`Florence-2-base` Dense Captions + `faiss_e5_caption_384.bin`) (`P8-5`)**: Bổ sung kênh đối sánh **Text-to-Text (`Query <-> VLM Keyframe Caption`)** song song với kênh **Text-to-Image (`Query <-> SigLIP2 864d`)**, đánh trúng trực tiếp vào **`22` ca lỗi `F1_VISUAL_CANDIDATE_MISS`** trên `dev_150` và **`157` ca lỗi `F1`** trên `dev_full_859`.
 
-#### 2. Kế hoạch thực hiện chi tiết từng bước
-- **Bước 1:** Cập nhật lời gọi `viterbi_subevent_localization` tại [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py#L1679-L1698) để tận dụng cả `modality_weights=(routing_plan.w_vis, routing_plan.w_ocr, routing_plan.w_asr)`.
-- **Bước 2:** Chạy lệnh tạo cache LLM thực:
+#### 2. Kế hoạch thực hiện chi tiết từng lệnh
+- **Bước 1 (Trên máy Local — Xuất gói dữ liệu đưa lên Kaggle):**
   ```powershell
-  $env:VIDENTRA_LLM_ENABLED="1"
-  $env:VIDENTRA_LLM_DEADLINE_MS="45000"
-  .\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py
+  # 1. Xuất 1,060 câu truy vấn sạch (không chứa Ground Truth)
+  .\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py `
+    --split all_1060 `
+    --export-queries-only work/kaggle/queries_all_1060.jsonl
+
+  # 2. Đóng gói 11,581 keyframes từ metadata.db để đưa lên Kaggle Dataset
+  .\.venv\Scripts\python.exe scripts/package_kaggle_inputs.py `
+    --mode db `
+    --output-dir work/kaggle/p85_inputs
   ```
+- **Bước 2 (Trên Kaggle Notebook với Accelerator `GPU T4 x2`):**
+  ```bash
+  # 1. Sinh phân rã truy vấn bằng Qwen2.5-1.5B-Instruct trên GPU (~90 giây)
+  python scripts/prewarm_llm_query_cache.py \
+    --split all_1060 \
+    --output /kaggle/working/query_decomposition_cache_llm.jsonl \
+    --checkpoint-every 50
 
----
-
-### Gói Nâng Cấp P8-5 (Kaggle Dual-T4 GPU Offload): Kích Hoạt `QAT-LateInteraction` ($3\times 3$ Spatial Tokens) & `PQ-VCA` (`Florence-2-base` Event Synopses — Giải Quyết Lỗi `F1_VISUAL_CANDIDATE_MISS`)
-
-#### 1. Định hướng cụ thể
-- Lỗi `F1_VISUAL_CANDIDATE_MISS` (`14.67%` trên `dev_150`) xảy ra khi vector trung bình toàn cục `768d` của `SigLIP2` không bắt được vật thể nhỏ hoặc hành động phức tạp, khiến video đúng không lọt nổi vào Top-120 FAISS.
-- Hai vũ khí mạnh nhất đã được viết sẵn khung code trong dự án cho bài toán này là:
-  1. **`QAT-LateInteraction` (`spatial_patches_fp16.npy`)**: Thay vì nén cả bức ảnh thành 1 vector duy nhất, giữ lại $3\times 3 = 9$ vector vùng không gian từ tầng ViT cuối cùng của `SigLIP2` để khớp từng cụm danh từ con vào đúng ô không gian tương ứng (`s_late_interaction` — đặc trưng thứ 18 trong `videntra_ltr_v1.json`).
-  2. **`PQ-VCA` (`Florence-2-base` Keyframe Captions + `build_structured_event_synopsis`)**: Sinh mô tả chi tiết bằng ngôn ngữ tự nhiên cho từng keyframe bằng `microsoft/Florence-2-base`, hợp nhất với nhãn `YOLOv11n` + `OCR` + `ASR` thành một đoạn tóm tắt sự kiện `[SCENE] ... | [OBJECTS] ... | [OCR] ... | [ASR] ...` và lập chỉ mục bằng `multilingual-e5-small` (`e5_flat_ip.faiss`). Nhờ đó, đối sánh `Query <-> Video` được bổ sung kênh **Text-to-Text Dense Retrieval** cực mạnh, cứu trực tiếp các câu bị trượt ở kênh `Text-to-Image SigLIP2` (`F1`)!
-
-#### 2. Kế hoạch thực hiện chi tiết từng bước
-- **Bước 1 (Đóng gói dữ liệu đầu vào cho Kaggle):**
-  ```powershell
-  .\.venv\Scripts\python.exe scripts/package_kaggle_inputs.py
+  # 2. Chạy trích xuất Spatial Patches 3x3 (SigLIP2) + Keyframe Captions (Florence-2-base) + E5 Index
+  python scripts/kaggle_multimodal_offline_worker.py \
+    --mode p85 \
+    --input-dir /kaggle/input/videntra-p85-inputs \
+    --output-dir /kaggle/working/p85_outputs \
+    --device cuda
   ```
-- **Bước 2 (Chạy trên Kaggle Notebook với GPU T4 $\times 2$):**
-  Chạy [scripts/kaggle_multimodal_offline_worker.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/kaggle_multimodal_offline_worker.py) để xuất ra 3 tệp:
-  1. `spatial_patches_fp16.npy` (kích thước $N \times 9 \times 768$, định dạng `float16`).
-  2. `pseudo_captions.parquet` (mô tả khung hình từ `microsoft/Florence-2-base`).
-  3. `query_decomposition_cache.jsonl` (phân rã truy vấn bằng `Qwen/Qwen2.5-1.5B-Instruct` trên GPU).
-- **Bước 3 (Tích hợp kết quả về máy local & xây dựng lại chỉ mục):**
+- **Bước 3 (Tải kết quả về máy Local & Tích hợp vào hệ thống):**
   ```powershell
-  # 1. Nạp kết quả từ Kaggle và kiểm tra provenance
-  .\.venv\Scripts\python.exe scripts/ingest_kaggle_offline_results.py
+  # 1. Hợp nhất cache phân rã truy vấn LLM vào data/cache/query_decomposition_cache.jsonl
+  .\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py `
+    --merge-only `
+    --merge-from work/kaggle/query_decomposition_cache_llm.jsonl
 
-  # 2. Xây dựng lại chỉ mục Dense E5 có kèm Structured Event Synopses (PQ-VCA)
-  .\.venv\Scripts\python.exe scripts/build_e5_text_index.py
+  # 2. Nạp spatial_patches_fp16.npy, KeyframeCaptions, fts_vlm_caption và faiss_e5_caption_384.bin
+  .\.venv\Scripts\python.exe scripts/ingest_kaggle_offline_results.py `
+    --mode p85 `
+    --kaggle-output-dir work/kaggle/p85_outputs
 
-  # 3. Huấn luyện lại bộ xếp hạng LearnedRankerLTR (kích hoạt trọng số s_late_interaction > 0)
+  # 3. Huấn luyện lại bộ xếp hạng 22d Synergistic-CrossLTR và chạy benchmark
   .\.venv\Scripts\python.exe scripts/train_ltr_ranker_cv.py
-
-  # 4. Chạy đánh giá benchmark toàn diện
   .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py
   ```
 
 ---
 
-## PHẦN IV — Bảng Lộ Trình Thực Thi Theo Thứ Tự Ưu Tiên & Chỉ Tiêu Nghiệm Thu Phase 8
+### Hướng 2: Huấn Luyện Phần Dư Trực Tiếp (`Residual ListNet / Pairwise Margin Optimization`) Cho `LearnedRankerLTR`
 
-| Thứ tự | Hạng mục triển khai | Môi trường chạy | Thời gian ước tính | Mục tiêu cải thiện chính |
-| :---: | :--- | :---: | :---: | :--- |
-| **Bước 1** | Vá 3 điểm ở **Phần II** (`sub_q_864_mat` crash fix, cổng `has_lexical_modality_intent` cho E5, ngưỡng `shot_aware_graph_diffusion`) | Local CPU | `15 phút` | Khôi phục `dev_150` Video Hit@1 $\ge \mathbf{62.00\%}$, `Moment nDCG@5` $\ge \mathbf{0.5127}$, kéo `Non-Neural Latency p50` từ `72.68 ms` về $\le \mathbf{25.0\text{ ms}}$ |
-| **Bước 2** | Triển khai **Gói P8-1 (`QAC-CSLS` + `MV-SetSim`)** + **Gói P8-2 (`NMS-MultiPeak` + `Shot-Snapped Boundary`)** + **Gói P8-3 (`Synergistic-CrossLTR` 22d)** | Local CPU | `45–60 phút` | Giảm lỗi `F4` & `F2`, đẩy `dev_150` Video Hit@1 lên $\mathbf{63.33\%–64.67\%}$, `Moment nDCG@5` vượt chuẩn nghiệm thu $\ge \mathbf{0.5350}$ |
-| **Bước 3** | Triển khai **Gói P8-4 (Pre-warm `Qwen2.5-1.5B` Cache + `SE-Viterbi` đa phương thức)** | Kaggle GPU (hoặc Local GGUF) | `5 phút` (GPU) | Mở khóa `routing_mode = "llm_compact"` thực sự cho 1,060 câu truy vấn, tăng độ chính xác trên câu dài/đa sự kiện |
-| **Bước 4** | Triển khai **Gói P8-5 (`spatial_patches_fp16.npy` $3\times 3$ + `PQ-VCA` `Florence-2` Event Synopses)** | Kaggle Dual-T4 GPU $\to$ Local | `30–45 phút` (GPU) | Đánh thức `s_late_interaction`, giảm mạnh lỗi `F1_VISUAL_CANDIDATE_MISS`, đưa `dev_150` Video Hit@1 lên vùng $\mathbf{66.0\%–70.0\%}$ và `heldout_test_201` vượt $\mathbf{45.0\%}$ |
+#### 1. Định hướng cụ thể
+- Như đã phát hiện ở Phần II.2, hiện tại `train_ltr_ranker_cv.py` đang huấn luyện vector trọng số $w \in \mathbb{R}^{22}$ sao cho điểm $s_{\text{LTR}}(x) = w^\top \tilde{x}$ tự nó xếp hạng từ đầu, nhưng khi đưa vào `unified_pipeline.py`, điểm cuối cùng lại là:
+  $$S_{\text{final}}(q, v) = S_{\text{base}}(q, v) + \lambda_{\text{blend}} \cdot \tanh\bigl(w^\top \tilde{x}\bigr)$$
+- Sự lệch pha giữa hàm mục tiêu lúc huấn luyện ($w^\top \tilde{x}$) và hàm mục tiêu lúc suy luận ($S_{\text{base}} + \lambda_{\text{blend}}\tanh(w^\top \tilde{x})$) làm cho việc giảm `l2_reg` cải thiện điểm CV độc lập nhưng lại làm giảm điểm thực tế của pipeline!
+- **Giải pháp:** Sửa trực tiếp hàm mất mát trong `train_ltr_ranker_cv.py` thành **Base-Anchored Residual Pairwise Logistic Loss**:
+  $$\mathcal{L}_{\text{residual}}(w) = \sum_{(i \succ j)} \log\Bigl(1 + \exp\bigl(-\gamma \cdot \bigl[(S_{\text{base}, i} - S_{\text{base}, j}) + \lambda_{\text{blend}}(\tanh(w^\top \tilde{x}_i) - \tanh(w^\top \tilde{x}_j))\bigr]\bigr)\Bigr) + \frac{\mu}{2}\|w\|_2^2$$
+- Với hàm mất mát này:
+  1. Những cặp ứng viên mà $S_{\text{base}, i} \gg S_{\text{base}, j}$ (Stage 5 đã xếp đúng với cách biệt lớn) sẽ có gradient gần bằng `0` — LTR không cố gắng can thiệp làm hỏng kết quả đã đúng.
+  2. Toàn bộ năng lực học của $w$ sẽ tập trung 100% vào các **Hard Ambiguous Pairs** (những câu mà ứng viên đúng và ứng viên nhiễu `F4`/`F2` đang có $S_{\text{base}, i} \approx S_{\text{base}, j}$ trong khoảng `±0.03`)!
+
+#### 2. Kế hoạch thực hiện chi tiết
+- **Bước 1:** Lưu thêm trường `base_video_score` (`float(m.ranking_score)` trước khi cộng LTR) vào dữ liệu huấn luyện trong `collect_ltr_training_rows()` của [train_ltr_ranker_cv.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/train_ltr_ranker_cv.py).
+- **Bước 2:** Trong `train_pairwise_logistic_l2()`, tính margin hiệu dụng $\Delta_{ij} = (S_{\text{base}, i} - S_{\text{base}, j}) + \lambda_{\text{blend}} \cdot (\tilde{x}_i - \tilde{x}_j) w$ và đánh giá `run_group_kfold_cv` trực tiếp trên $S_{\text{base}} + \lambda_{\text{blend}} \tanh(w^\top \tilde{x})$.
+
+---
+
+### Hướng 3: Đối Sánh Chuỗi Sự Kiện Bằng Vận Chuyển Tối Ưu Có Ràng Buộc Thời Gian (`Temporal Sinkhorn Optimal Transport — T-SOT`)
+
+#### 1. Định hướng cụ thể
+- Với các truy vấn mô tả chuỗi hành động trên MSRVTT và QVHighlights, hiện tại `MV-SetSim` lấy cực đại độc lập cho từng mệnh đề $\max_{t \in W} \langle q^{(m)}, v_t \rangle$. Tuy nhiên, nếu 2 mệnh đề khác nhau (ví dụ: $q^{(1)} =$ *"a man picks up a basketball"*, $q^{(2)} =$ *"a man shoots the ball into the hoop"*) cùng đạt cực đại tại **cùng một khung hình duy nhất $t^*$**, thì phép lấy $\max$ độc lập không phân biệt được video có đủ 2 hành động nối tiếp nhau với video chỉ có 1 khung hình đứng cạnh rổ bóng!
+- **Phương pháp `T-SOT` (Temporal Sinkhorn Optimal Transport):**
+  Tìm ma trận kế hoạch vận chuyển $P \in \mathbb{R}_{+}^{M \times T}$ giữa $M$ mệnh đề truy vấn và $T$ keyframes trong cửa sổ sao cho mỗi mệnh đề phải được phân bổ vào các khung hình **khác nhau** và **tuân theo thứ tự thời gian**:
+  $$\max_{P \ge 0} \sum_{m=1}^{M} \sum_{t=1}^{T} P_{m,t} \bigl(\langle q^{(m)}, v_t \rangle - \eta \cdot \text{Penalty}_{\text{order}}(m, t)\bigr) + \varepsilon H(P)$$
+  với3 vòng lặp chuẩn hóa dòng/cột Sinkhorn-Knopp (chỉ mất `< 0.1 ms` bằng NumPy trên ma trận $3 \times 15$).
+
+---
+
+### Hướng 4: Đa Khung Hình Attention Reranking Cho Top-15 Ứng Viên Cuối (`Parameter-Free Temporal Attention Pooler`)
+
+#### 1. Định hướng cụ thể
+- Điểm nghẽn lớn nhất trên tập `dev_full_859` (`809` câu MSRVTT) là `F4_FINE_GRAINED_VISUAL_CONFUSION` (`33.76%`). Nguyên nhân gốc rễ là điểm `s_vis_blend_max` chỉ nhìn vào **1 keyframe đơn lẻ**, trong khi nhiều hành động (như *"opening a door"* vs *"closing a door"*, *"sitting down"* vs *"standing up"*) có khung hình tĩnh giống hệt nhau và chỉ khác nhau ở **vector chuyển dịch theo thời gian (Temporal Difference Vector $\Delta v_t = v_{t+1} - v_{t-1}$)**.
+- **Cách áp dụng vào VIDENTRA không cần mạng nơ-ron mới:**
+  - Với Top-15 ứng viên cuối cùng ở Stage 5, lấy chuỗi $K=5$ keyframes liên tiếp trong cửa sổ ứng viên $\{v_{t_1}, \dots, v_{t_K}\} \in \mathbb{R}^{K \times 768}$.
+  - Tính **Query-Guided Temporal Attention Pooling** kết hợp **Motion-Aware Cosine Consistency**:
+    $$\alpha_k = \frac{\exp(\tau \langle q_{768}, v_{t_k} \rangle)}{\sum_{j=1}^{K} \exp(\tau \langle q_{768}, v_{t_j} \rangle)}, \quad \bar{v}_{\text{att}} = \frac{\sum_{k=1}^{K} \alpha_k v_{t_k}}{\|\sum_{k=1}^{K} \alpha_k v_{t_k}\|_2}$$
+  - Điểm tương đồng đa khung hình $s_{\text{multi\_att}}(q, W) = \langle q_{768}, \bar{v}_{\text{att}} \rangle$ luôn lớn hơn $\max_k \langle q_{768}, v_{t_k} \rangle$ **khi và chỉ khi** các khung hình trong cửa sổ chứa các góc nhìn bổ trợ trực giao của cùng một khái niệm trong câu truy vấn (nhờ tính chất lồi của chuẩn $L_2$ sau tổ hợp tuyến tính!). Đây là một tính chất hình học cực đẹp trên mặt cầu đơn vị $\mathbb{S}^{767}$ giúp phân biệt video thật sự diễn ra hành động xuyên suốt nhiều khung hình với video chỉ có 1 khung hình trùng ngẫu nhiên.
