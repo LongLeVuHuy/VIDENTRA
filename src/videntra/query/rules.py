@@ -637,16 +637,52 @@ class RuleBasedQueryParser:
                 )
             )
 
-        # 7. Temporal ordering
-        seq_m = re.search(r'\b(sau đó|rồi|and then|then)\b', raw_query, re.IGNORECASE)
-        if seq_m:
+        # 7. Temporal ordering (canonicalized to operator="before")
+        temp_m = re.search(
+            r'\b(sau khi|after|trước khi|before|sau đó|rồi|and then|then)\b',
+            raw_query,
+            re.IGNORECASE,
+        )
+        if temp_m:
+            cue = temp_m.group(1).lower()
+            event_preds = [p for p in predicates if p.kind in ("action", "ocr", "asr")]
+            event_preds.sort(
+                key=lambda p: (
+                    low.find(p.source_span.lower())
+                    if p.source_span and low.find(p.source_span.lower()) >= 0
+                    else len(low)
+                )
+            )
+            if len(event_preds) >= 2:
+                ev1_id, ev2_id = event_preds[0].id, event_preds[1].id
+                ev1_pos = (
+                    low.find(event_preds[0].source_span.lower())
+                    if event_preds[0].source_span
+                    else -1
+                )
+            else:
+                ev1_id = action_pred_id or "action_main"
+                ev2_id = asr_pred_id or "speak_asr"
+                ev1_pos = -1
+
+            is_prefix = ev1_pos >= 0 and temp_m.start() < ev1_pos
+            if cue in ("after", "sau khi"):
+                # "A after B" -> B before A; "after B, A" -> B (ev1) before A (ev2)
+                role_a, role_b = (ev1_id, ev2_id) if is_prefix else (ev2_id, ev1_id)
+            elif cue in ("before", "trước khi") and is_prefix:
+                # "before B, A" -> A (ev2) before B (ev1)
+                role_a, role_b = ev2_id, ev1_id
+            else:
+                # "A before B", "A then B", "A sau đó B", "A rồi B" -> A before B
+                role_a, role_b = ev1_id, ev2_id
+
             predicates.append(
                 Predicate(
                     id="temporal_order",
                     kind="temporal",
                     operator="before",
-                    roles={"event_a": action_pred_id or "action_main", "event_b": asr_pred_id or "speak_asr"},
-                    source_span=seq_m.group(0),
+                    roles={"event_a": role_a, "event_b": role_b},
+                    source_span=temp_m.group(0),
                     polarity="positive",
                     modality_options=[["visual"]],
                 )

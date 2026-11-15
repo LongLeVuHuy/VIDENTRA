@@ -374,3 +374,88 @@ def test_base_anchored_residual_pairwise_training(tmp_path: Path):
     legacy_path.write_text("\n".join(__import__("json").dumps(r) for r in legacy_rows), encoding="utf-8")
     _, _, _, _, legacy_base = load_ltr_jsonl_dataset(legacy_path, return_base_scores=True)
     assert legacy_base is None
+
+
+def test_oof_fold_schema_per_fold_normalization_and_leakage_guards():
+    from scripts.train_ltr_ranker_cv import assign_connected_source_groups
+
+    rng = np.random.default_rng(99)
+    # Construct 10 queries where two AVC clips share source xvAvN5xn5oY
+    query_targets = [
+        ("q_avc_a", ["xvAvN5xn5oY__s140__e150"]),
+        ("q_avc_b", ["xvAvN5xn5oY__s560__e570"]),
+        ("q_multi", ["grpX__s0__e10", "grpY__s10__e20"]),
+        ("q_grpY", ["grpY__s30__e40"]),
+        ("q_3", ["video1"]),
+        ("q_4", ["video2"]),
+        ("q_5", ["video3"]),
+        ("q_6", ["video4"]),
+        ("q_7", ["video5"]),
+        ("q_8", ["video6"]),
+    ]
+    assigned = assign_connected_source_groups(query_targets)
+    fg = assigned["fold_group_by_query"]
+
+    X_rows, y_rows, qids, grps = [], [], [], []
+    for idx, (qid, _) in enumerate(query_targets):
+        for c_idx in range(4):
+            feat = rng.normal(loc=float(idx * 2), scale=0.3, size=len(LTR_FEATURE_NAMES))
+            if c_idx == 0:
+                feat[0] += 3.0
+            X_rows.append(feat)
+            y_rows.append(1.0 if c_idx == 0 else 0.0)
+            qids.append(qid)
+            grps.append(fg[qid])
+
+    X = np.vstack(X_rows)
+    y = np.asarray(y_rows)
+    global_mean = np.mean(X, axis=0)
+
+    artifact = run_group_kfold_cv(
+        X=X,
+        y=y,
+        query_ids=qids,
+        source_video_ids=grps,
+        n_splits=5,
+        l2_reg=1.0,
+        backend="pairwise_logistic",
+        manifest_hash=assigned["manifest_hash"],
+        raw_groups_by_query=assigned["raw_groups_by_query"],
+    )
+
+    assert artifact["manifest_hash"] == assigned["manifest_hash"]
+    assert artifact["metadata"]["manifest_hash"] == assigned["manifest_hash"]
+    seen_oof_qids = set()
+    for fw in artifact["fold_weights"]:
+        assert "fold_id" in fw
+        assert fw["manifest_hash"] == assigned["manifest_hash"]
+        tr_g = set(fw["train_group_ids"])
+        ev_g = set(fw["eval_group_ids"])
+        assert tr_g and ev_g
+        assert tr_g.isdisjoint(ev_g)
+        ev_q = set(fw["eval_query_ids"])
+        assert seen_oof_qids.isdisjoint(ev_q)
+        seen_oof_qids |= ev_q
+        # Same-source AVC pair must stay in the same fold
+        if "q_avc_a" in ev_q or "q_avc_b" in ev_q:
+            assert {"q_avc_a", "q_avc_b"}.issubset(ev_q)
+        # Multi-target connected component must stay in the same fold
+        if "q_multi" in ev_q or "q_grpY" in ev_q:
+            assert {"q_multi", "q_grpY"}.issubset(ev_q)
+        # Per-fold feature_mean must be fit strictly on train split, not global
+        assert not np.allclose(fw["feature_mean"], global_mean, atol=1e-3)
+
+    assert seen_oof_qids == {qid for qid, _ in query_targets}
+
+    # Query spanning multiple unmerged groups must be rejected
+    bad_grps = list(grps)
+    bad_grps[0] = "different_unmerged_group"
+    with pytest.raises(ValueError, match="multiple unmerged source groups"):
+        run_group_kfold_cv(
+            X=X,
+            y=y,
+            query_ids=qids,
+            source_video_ids=bad_grps,
+            n_splits=5,
+            backend="pairwise_logistic",
+        )

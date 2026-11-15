@@ -25,3 +25,34 @@ def test_missing_encoder_fails_explicitly(tmp_path):
     pipeline = UnifiedMultimodalSearchPipeline(model_dir=tmp_path / "missing", lazy_load=True, use_disk_cache=False)
     with pytest.raises(RuntimeError, match="Text encoder unavailable"):
         pipeline.encode_texts(["example"])
+
+
+def test_report_renders_denominators_latency_separation_and_not_measured(tmp_path):
+    summary = json.loads(Path("benchmark/benchmark_summary.json").read_text(encoding="utf-8"))
+    summary["metrics_overall"]["moment_labeled_n"] = 22
+    summary["metrics_overall"]["pure_asr_top1_count"] = 2
+    summary["metrics_overall"]["pure_asr_fp_top1_count"] = 0
+    summary["metrics_overall"]["cold_latency_mean_ms"] = None
+    summary["metrics_overall"]["cold_latency_p50_ms"] = None
+    summary["metrics_overall"]["cold_latency_p95_ms"] = None
+    summary["metrics_overall"]["ram_rss_mb"] = None
+    summary["metrics_overall"]["ram_peak_mb"] = None
+    summary["metrics_overall"].pop("pvalue_vs_a0_hit1", None)
+    summary["metrics_overall"].pop("pvalue_vs_a0_mrr", None)
+    summary["metrics_overall"]["branch_recall"]["union_recall"] = 0.85
+    summary["metrics_overall"]["branch_recall"]["shortlist_recall"] = 0.82
+    summary["metrics_overall"]["branch_recall"]["shortlist_not_top1_count"] = 31
+    summary["metrics_overall"]["branch_recall"]["shortlist_not_top1_rate"] = 0.2067
+
+    path = tmp_path / "report.md"
+    generate_markdown_report(path, summary, [])
+    text = path.read_text(encoding="utf-8")
+    assert "N=22" in text
+    assert "0/2 pure-ASR" in text
+    assert "End-to-End" in text
+    assert "Non-Neural Latency" in text
+    assert "Union Recall" in text
+    assert "Shortlist Recall" in text
+    assert "NOT_MEASURED" in text
+    assert "None ms" not in text
+    assert "None MB" not in text

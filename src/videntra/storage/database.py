@@ -5,18 +5,41 @@ object detections, multi-model OCR observations & evidence groups, and multi-mod
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from videntra.evidence.normalize import normalize_text, fold_diacritics
 
 
 def current_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class PayloadConflictError(ValueError):
+    """Raised when an existing record ID is re-ingested with a different payload."""
+
+
+def compute_recipe_hash(recipe_spec: dict[str, Any]) -> str:
+    """Compute a deterministic 12-char hex digest from model/config/timeline provenance."""
+    canonical = json.dumps(recipe_spec, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def make_deterministic_record_id(
+    record_type: str,
+    target_id: str,
+    recipe_hash: str,
+    ordinal: int,
+) -> str:
+    """Build collision-free deterministic ID: <target_id>__<record_type>_<recipe_hash>_<ordinal:05d>."""
+    return f"{target_id}__{record_type}_{recipe_hash}_{ordinal:05d}"
 
 
 class OfflineMetadataStore:
@@ -27,13 +50,28 @@ class OfflineMetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+    def _get_connection(self, *, isolation_level: str | None = "") -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=isolation_level)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Run multi-step writes + FTS rebuild in a single atomic transaction with FK enforcement."""
+        conn = self._get_connection(isolation_level=None)
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+            yield conn
+            conn.commit()
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._get_connection() as conn:
@@ -506,36 +544,91 @@ class OfflineMetadataStore:
     # -------------------------------------------------------------------------
     # OCR Multi-Model Operations
     # -------------------------------------------------------------------------
-    def insert_ocr_observations(self, observations: Sequence[dict[str, Any]]) -> None:
-        now = current_iso()
-        rows = [
-            (
-                obs["observation_id"],
-                obs["video_id"],
-                obs["keyframe_id"],
-                int(obs["timestamp_ms"]),
-                obs["model_id"],
-                obs["raw_text"],
-                normalize_text(obs["raw_text"]),
-                float(obs["bbox_x1"]),
-                float(obs["bbox_y1"]),
-                float(obs["bbox_x2"]),
-                float(obs["bbox_y2"]),
-                float(obs.get("confidence", 1.0)),
-                obs.get("language", "vi"),
-                obs.get("created_at", now),
-            )
-            for obs in observations
-        ]
-        with self._get_connection() as conn:
-            conn.executemany("""
-            INSERT OR REPLACE INTO OCRObservations (
-                observation_id, video_id, keyframe_id, timestamp_ms, model_id, raw_text,
-                normalized_text, bbox_x1, bbox_y1, bbox_x2, bbox_y2, confidence, language, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """, rows)
+    @staticmethod
+    def _values_match(existing: Sequence[Any], incoming: Sequence[Any]) -> bool:
+        if len(existing) != len(incoming):
+            return False
+        for a, b in zip(existing, incoming):
+            if isinstance(a, float) or isinstance(b, float):
+                if a is None or b is None or not math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=1e-6):
+                    return False
+            elif a != b:
+                return False
+        return True
 
-    def insert_ocr_evidence_groups(self, groups: Sequence[dict[str, Any]], member_mappings: Sequence[tuple[str, str, str]]) -> None:
+    def insert_ocr_observations(
+        self,
+        observations: Sequence[dict[str, Any]],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        """Insert OCR observations, treating identical retries as no-ops and raising on payload conflicts."""
+        now = current_iso()
+
+        def _apply(c: sqlite3.Connection) -> int:
+            new_rows: list[tuple[Any, ...]] = []
+            seen_batch: dict[str, tuple[Any, ...]] = {}
+            for obs in observations:
+                obs_id = obs["observation_id"]
+                payload = (
+                    obs["video_id"],
+                    obs["keyframe_id"],
+                    int(obs["timestamp_ms"]),
+                    obs["model_id"],
+                    obs["raw_text"],
+                    normalize_text(obs["raw_text"]),
+                    float(obs["bbox_x1"]),
+                    float(obs["bbox_y1"]),
+                    float(obs["bbox_x2"]),
+                    float(obs["bbox_y2"]),
+                    float(obs.get("confidence", 1.0)),
+                    obs.get("language", "vi"),
+                )
+                if obs_id in seen_batch:
+                    if not self._values_match(seen_batch[obs_id], payload):
+                        raise PayloadConflictError(f"Conflicting payload for observation_id={obs_id}")
+                    continue
+                seen_batch[obs_id] = payload
+
+                existing = c.execute(
+                    """
+                    SELECT video_id, keyframe_id, timestamp_ms, model_id, raw_text,
+                           normalized_text, bbox_x1, bbox_y1, bbox_x2, bbox_y2, confidence, language
+                    FROM OCRObservations WHERE observation_id = ?;
+                    """,
+                    (obs_id,),
+                ).fetchone()
+                if existing is not None:
+                    if not self._values_match(tuple(existing), payload):
+                        raise PayloadConflictError(f"Conflicting payload for observation_id={obs_id}")
+                    continue
+                new_rows.append((obs_id, *payload, obs.get("created_at", now)))
+
+            if new_rows:
+                c.executemany(
+                    """
+                    INSERT INTO OCRObservations (
+                        observation_id, video_id, keyframe_id, timestamp_ms, model_id, raw_text,
+                        normalized_text, bbox_x1, bbox_y1, bbox_x2, bbox_y2, confidence, language, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    new_rows,
+                )
+            return len(new_rows)
+
+        if conn is not None:
+            return _apply(conn)
+        with self._get_connection() as own_conn:
+            return _apply(own_conn)
+
+    def insert_ocr_evidence_groups(
+        self,
+        groups: Sequence[dict[str, Any]],
+        member_mappings: Sequence[tuple[str, str, str]],
+        *,
+        conn: sqlite3.Connection | None = None,
+        update_fts: bool = True,
+    ) -> None:
         now = current_iso()
         group_rows = [
             (
@@ -555,72 +648,137 @@ class OfflineMetadataStore:
             )
             for g in groups
         ]
-        with self._get_connection() as conn:
-            conn.executemany("""
-            INSERT OR REPLACE INTO OCREvidenceGroups (
-                group_id, video_id, keyframe_id, timestamp_ms, consensus_text,
-                normalized_text, consensus_bbox, status, track_id,
-                estimated_start_ms, estimated_end_ms, models_involved, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """, group_rows)
 
-            conn.executemany("""
-            INSERT OR REPLACE INTO OCREvidenceMembers (group_id, observation_id, model_id)
-            VALUES (?, ?, ?);
-            """, member_mappings)
-
-            # Update FTS5
-            fts_rows = [
-                (
-                    normalize_text(g["consensus_text"]),
-                    fold_diacritics(normalize_text(g["consensus_text"])),
-                    g["video_id"],
-                    g["group_id"],
-                    g["keyframe_id"],
-                    int(g["timestamp_ms"]),
+        def _apply(c: sqlite3.Connection) -> None:
+            if group_rows:
+                c.executemany(
+                    """
+                    INSERT INTO OCREvidenceGroups (
+                        group_id, video_id, keyframe_id, timestamp_ms, consensus_text,
+                        normalized_text, consensus_bbox, status, track_id,
+                        estimated_start_ms, estimated_end_ms, models_involved, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(group_id) DO UPDATE SET
+                        video_id=excluded.video_id,
+                        keyframe_id=excluded.keyframe_id,
+                        timestamp_ms=excluded.timestamp_ms,
+                        consensus_text=excluded.consensus_text,
+                        normalized_text=excluded.normalized_text,
+                        consensus_bbox=excluded.consensus_bbox,
+                        status=excluded.status,
+                        track_id=excluded.track_id,
+                        estimated_start_ms=excluded.estimated_start_ms,
+                        estimated_end_ms=excluded.estimated_end_ms,
+                        models_involved=excluded.models_involved;
+                    """,
+                    group_rows,
                 )
-                for g in groups
-                if g["consensus_text"].strip()
-            ]
-            if fts_rows:
-                conn.executemany("""
-                INSERT INTO fts_ocr (normalized_text, unaccented_text, video_id, group_id, keyframe_id, timestamp_ms)
-                VALUES (?, ?, ?, ?, ?, ?);
-                """, fts_rows)
+
+            if member_mappings:
+                c.executemany(
+                    """
+                    INSERT INTO OCREvidenceMembers (group_id, observation_id, model_id)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(group_id, observation_id) DO UPDATE SET
+                        model_id=excluded.model_id;
+                    """,
+                    member_mappings,
+                )
+
+            if update_fts:
+                fts_rows = [
+                    (
+                        normalize_text(g["consensus_text"]),
+                        fold_diacritics(normalize_text(g["consensus_text"])),
+                        g["video_id"],
+                        g["group_id"],
+                        g["keyframe_id"],
+                        int(g["timestamp_ms"]),
+                    )
+                    for g in groups
+                    if g["consensus_text"].strip()
+                ]
+                if fts_rows:
+                    c.executemany(
+                        """
+                        INSERT INTO fts_ocr (normalized_text, unaccented_text, video_id, group_id, keyframe_id, timestamp_ms)
+                        VALUES (?, ?, ?, ?, ?, ?);
+                        """,
+                        fts_rows,
+                    )
+
+        if conn is not None:
+            _apply(conn)
+            return
+        with self._get_connection() as own_conn:
+            _apply(own_conn)
 
     # -------------------------------------------------------------------------
     # ASR Multi-Model Operations
     # -------------------------------------------------------------------------
-    def insert_asr_segments(self, segments: Sequence[dict[str, Any]], words: Sequence[dict[str, Any]] | None = None) -> None:
+    def insert_asr_segments(
+        self,
+        segments: Sequence[dict[str, Any]],
+        words: Sequence[dict[str, Any]] | None = None,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        """Insert ASR segments & words, treating identical retries as no-ops and raising on payload conflicts."""
         now = current_iso()
-        seg_rows = [
-            (
-                s["segment_id"],
-                s["video_id"],
-                s["model_id"],
-                int(s["start_ms"]),
-                int(s["end_ms"]),
-                s["raw_text"],
-                normalize_text(s["raw_text"]),
-                s.get("language", "vi"),
-                float(s.get("confidence", 1.0)),
-                s.get("speaker_id"),
-                s.get("created_at", now),
-            )
-            for s in segments
-        ]
-        with self._get_connection() as conn:
-            conn.executemany("""
-            INSERT OR REPLACE INTO ASRSegments (
-                segment_id, video_id, model_id, start_ms, end_ms, raw_text,
-                normalized_text, language, confidence, speaker_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """, seg_rows)
 
+        def _apply(c: sqlite3.Connection) -> int:
+            new_seg_rows: list[tuple[Any, ...]] = []
+            seen_segs: dict[str, tuple[Any, ...]] = {}
+            for s in segments:
+                seg_id = s["segment_id"]
+                payload = (
+                    s["video_id"],
+                    s["model_id"],
+                    int(s["start_ms"]),
+                    int(s["end_ms"]),
+                    s["raw_text"],
+                    normalize_text(s["raw_text"]),
+                    s.get("language", "vi"),
+                    float(s.get("confidence", 1.0)),
+                    s.get("speaker_id"),
+                )
+                if seg_id in seen_segs:
+                    if not self._values_match(seen_segs[seg_id], payload):
+                        raise PayloadConflictError(f"Conflicting payload for segment_id={seg_id}")
+                    continue
+                seen_segs[seg_id] = payload
+
+                existing = c.execute(
+                    """
+                    SELECT video_id, model_id, start_ms, end_ms, raw_text,
+                           normalized_text, language, confidence, speaker_id
+                    FROM ASRSegments WHERE segment_id = ?;
+                    """,
+                    (seg_id,),
+                ).fetchone()
+                if existing is not None:
+                    if not self._values_match(tuple(existing), payload):
+                        raise PayloadConflictError(f"Conflicting payload for segment_id={seg_id}")
+                    continue
+                new_seg_rows.append((seg_id, *payload, s.get("created_at", now)))
+
+            if new_seg_rows:
+                c.executemany(
+                    """
+                    INSERT INTO ASRSegments (
+                        segment_id, video_id, model_id, start_ms, end_ms, raw_text,
+                        normalized_text, language, confidence, speaker_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    new_seg_rows,
+                )
+
+            new_word_rows: list[tuple[Any, ...]] = []
             if words:
-                word_rows = [
-                    (
-                        w["word_id"],
+                seen_words: dict[str, tuple[Any, ...]] = {}
+                for w in words:
+                    word_id = w["word_id"]
+                    w_payload = (
                         w["segment_id"],
                         w["word"],
                         int(w["start_ms"]),
@@ -628,15 +786,49 @@ class OfflineMetadataStore:
                         float(w.get("confidence", 1.0)),
                         w.get("alignment_source", "ctc"),
                     )
-                    for w in words
-                ]
-                conn.executemany("""
-                INSERT OR REPLACE INTO ASRWords (
-                    word_id, segment_id, word, start_ms, end_ms, confidence, alignment_source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?);
-                """, word_rows)
+                    if word_id in seen_words:
+                        if not self._values_match(seen_words[word_id], w_payload):
+                            raise PayloadConflictError(f"Conflicting payload for word_id={word_id}")
+                        continue
+                    seen_words[word_id] = w_payload
 
-    def insert_asr_evidence_groups(self, groups: Sequence[dict[str, Any]], member_mappings: Sequence[tuple[str, str, str]]) -> None:
+                    existing_w = c.execute(
+                        """
+                        SELECT segment_id, word, start_ms, end_ms, confidence, alignment_source
+                        FROM ASRWords WHERE word_id = ?;
+                        """,
+                        (word_id,),
+                    ).fetchone()
+                    if existing_w is not None:
+                        if not self._values_match(tuple(existing_w), w_payload):
+                            raise PayloadConflictError(f"Conflicting payload for word_id={word_id}")
+                        continue
+                    new_word_rows.append((word_id, *w_payload))
+
+                if new_word_rows:
+                    c.executemany(
+                        """
+                        INSERT INTO ASRWords (
+                            word_id, segment_id, word, start_ms, end_ms, confidence, alignment_source
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        new_word_rows,
+                    )
+            return len(new_seg_rows) + len(new_word_rows)
+
+        if conn is not None:
+            return _apply(conn)
+        with self._get_connection() as own_conn:
+            return _apply(own_conn)
+
+    def insert_asr_evidence_groups(
+        self,
+        groups: Sequence[dict[str, Any]],
+        member_mappings: Sequence[tuple[str, str, str]],
+        *,
+        conn: sqlite3.Connection | None = None,
+        update_fts: bool = True,
+    ) -> None:
         now = current_iso()
         group_rows = [
             (
@@ -654,39 +846,69 @@ class OfflineMetadataStore:
             )
             for g in groups
         ]
-        with self._get_connection() as conn:
-            conn.executemany("""
-            INSERT OR REPLACE INTO ASREvidenceGroups (
-                group_id, video_id, start_ms, end_ms, consensus_text, normalized_text,
-                status, models_involved, temporal_overlap_ratio, text_similarity, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """, group_rows)
 
-            conn.executemany("""
-            INSERT OR REPLACE INTO ASREvidenceMembers (group_id, segment_id, model_id)
-            VALUES (?, ?, ?);
-            """, member_mappings)
-
-            # Update FTS5
-            fts_rows = [
-                (
-                    normalize_text(g["consensus_text"]),
-                    fold_diacritics(normalize_text(g["consensus_text"])),
-                    g["video_id"],
-                    g["group_id"],
-                    f"grp_{g['group_id']}",
-                    int(g["start_ms"]),
-                    int(g["end_ms"]),
-                    g["models_involved"],
+        def _apply(c: sqlite3.Connection) -> None:
+            if group_rows:
+                c.executemany(
+                    """
+                    INSERT INTO ASREvidenceGroups (
+                        group_id, video_id, start_ms, end_ms, consensus_text, normalized_text,
+                        status, models_involved, temporal_overlap_ratio, text_similarity, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(group_id) DO UPDATE SET
+                        video_id=excluded.video_id,
+                        start_ms=excluded.start_ms,
+                        end_ms=excluded.end_ms,
+                        consensus_text=excluded.consensus_text,
+                        normalized_text=excluded.normalized_text,
+                        status=excluded.status,
+                        models_involved=excluded.models_involved,
+                        temporal_overlap_ratio=excluded.temporal_overlap_ratio,
+                        text_similarity=excluded.text_similarity;
+                    """,
+                    group_rows,
                 )
-                for g in groups
-                if g["consensus_text"].strip()
-            ]
-            if fts_rows:
-                conn.executemany("""
-                INSERT INTO fts_asr (normalized_text, unaccented_text, video_id, group_id, segment_id, start_ms, end_ms, model_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """, fts_rows)
+
+            if member_mappings:
+                c.executemany(
+                    """
+                    INSERT INTO ASREvidenceMembers (group_id, segment_id, model_id)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(group_id, segment_id) DO UPDATE SET
+                        model_id=excluded.model_id;
+                    """,
+                    member_mappings,
+                )
+
+            if update_fts:
+                fts_rows = [
+                    (
+                        normalize_text(g["consensus_text"]),
+                        fold_diacritics(normalize_text(g["consensus_text"])),
+                        g["video_id"],
+                        g["group_id"],
+                        f"grp_{g['group_id']}",
+                        int(g["start_ms"]),
+                        int(g["end_ms"]),
+                        g["models_involved"],
+                    )
+                    for g in groups
+                    if g["consensus_text"].strip()
+                ]
+                if fts_rows:
+                    c.executemany(
+                        """
+                        INSERT INTO fts_asr (normalized_text, unaccented_text, video_id, group_id, segment_id, start_ms, end_ms, model_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        fts_rows,
+                    )
+
+        if conn is not None:
+            _apply(conn)
+            return
+        with self._get_connection() as own_conn:
+            _apply(own_conn)
 
     # -------------------------------------------------------------------------
     # Progress Jobs & Model Registry

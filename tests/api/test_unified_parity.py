@@ -62,7 +62,12 @@ def test_concurrent_metadata_does_not_leak(pipeline):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(run, range(12)))
     assert [r["snapshot_id"] for r in results] == [str(i) for i in range(12)]
-    assert all(r["timings"]["t_total_ms"] >= 0 and not r["diagnostics"] for r in results)
+    assert all(
+        r["timings"]["t_total_ms"] >= 0
+        and isinstance(r["diagnostics"], dict)
+        and set(r["diagnostics"].keys()) <= {"ranked_videos"}
+        for r in results
+    )
 
 
 def test_lexical_database_error_is_not_reported_as_complete(pipeline):

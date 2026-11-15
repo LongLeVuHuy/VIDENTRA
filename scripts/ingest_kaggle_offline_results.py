@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from fractions import Fraction
@@ -12,6 +13,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from typing import Any, Callable
 import numpy as np
 
 import faiss
@@ -22,7 +24,7 @@ if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
 from videntra.evidence.normalize import fold_diacritics, normalize_text  # noqa: E402
-from videntra.storage.database import OfflineMetadataStore, current_iso  # noqa: E402
+from videntra.storage.database import OfflineMetadataStore, PayloadConflictError, current_iso  # noqa: E402
 from videntra.storage.grouping import OCREvidenceGrouper, ASREvidenceGrouper  # noqa: E402
 from videntra.storage.integrity import verify_offline_storage_integrity  # noqa: E402
 
@@ -328,87 +330,278 @@ def _rebuild_ocr_asr_fts(conn: sqlite3.Connection) -> None:
         )
 
 
-def ingest_ocr_asr_artifacts(
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _preflight_ocr_asr_artifacts(
     outputs_dir: Path,
-    db_path: Path,
-    *,
-    dry_run: bool = False,
-) -> dict[str, object]:
-    """Safely merge Kaggle OCR/ASR JSONL outputs into an existing metadata.db and rebuild FTS5."""
-    if not db_path.is_file():
-        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
-
-    receipt_path = outputs_dir / "ocr_asr_receipt.json"
-    if receipt_path.is_file():
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if not isinstance(receipt, dict) or receipt.get("status") != "success":
-            raise ValueError("ocr_asr_receipt.json must report status='success' before ingest")
-
+    conn: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Validate receipt, file hashes, line counts, media/keyframe ownership, OCR boxes, and ASR timestamps."""
     ocr_file = outputs_dir / "ocr_observations.jsonl"
     asr_file = outputs_dir / "asr_segments.jsonl"
     if not ocr_file.is_file() and not asr_file.is_file():
         raise FileNotFoundError(f"Neither ocr_observations.jsonl nor asr_segments.jsonl found in {outputs_dir}")
 
     ocr_obs = _load_jsonl(ocr_file) if ocr_file.is_file() else []
+    asr_segs = _load_jsonl(asr_file) if asr_file.is_file() else []
+
+    receipt_path = outputs_dir / "ocr_asr_receipt.json"
+    legacy_unverified = False
+    provenance_status = "verified"
+
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or receipt.get("status") != "success":
+            raise ValueError("ocr_asr_receipt.json must report status='success' before ingest")
+        receipt_version = receipt.get("receipt_version")
+        if receipt_version is not None and str(receipt_version) not in {"1.0", "2.0"}:
+            raise ValueError(f"Unsupported ocr_asr_receipt.json version: {receipt_version}")
+
+        artifacts = receipt.get("artifacts")
+        if str(receipt_version) == "2.0" or artifacts is not None:
+            if not isinstance(artifacts, dict):
+                raise ValueError("ocr_asr_receipt.json 'artifacts' must be an object")
+            for key, path, loaded_rows in (
+                ("ocr_observations", ocr_file, ocr_obs),
+                ("asr_segments", asr_file, asr_segs),
+            ):
+                art_meta = artifacts.get(key)
+                if art_meta is None:
+                    continue
+                if not isinstance(art_meta, dict):
+                    raise ValueError(f"ocr_asr_receipt.json artifacts.{key} must be an object")
+                expected_count = art_meta.get("line_count")
+                if expected_count is not None and int(expected_count) != len(loaded_rows):
+                    raise ValueError(
+                        f"Line count mismatch for {path.name}: receipt={expected_count}, actual={len(loaded_rows)}"
+                    )
+                expected_sha = art_meta.get("sha256")
+                if path.is_file() and expected_sha is not None:
+                    actual_sha = _sha256_file(path)
+                    if actual_sha != expected_sha:
+                        raise ValueError(
+                            f"SHA-256 mismatch for {path.name}: receipt={expected_sha}, actual={actual_sha}"
+                        )
+                elif not path.is_file() and expected_count:
+                    raise FileNotFoundError(f"Receipt lists {expected_count} rows for missing {path.name}")
+
+        if ocr_obs and not isinstance(receipt.get("ocr_models"), dict):
+            raise ValueError("ocr_asr_receipt.json missing 'ocr_models' provenance for OCR observations")
+        if asr_segs and not isinstance(receipt.get("asr_models"), dict):
+            raise ValueError("ocr_asr_receipt.json missing 'asr_models' provenance for ASR segments")
+        if receipt_version is None and artifacts is None:
+            provenance_status = "legacy_receipt"
+    else:
+        legacy_unverified = True
+        provenance_status = "unverified"
+
+    video_durations: dict[str, int] = {
+        str(row[0]): int(row[1] or 0)
+        for row in conn.execute("SELECT video_id, duration_ms FROM Videos;").fetchall()
+    }
+    keyframe_meta: dict[str, tuple[str, int]] = {
+        str(row[0]): (str(row[1]), int(row[2]))
+        for row in conn.execute("SELECT keyframe_id, video_id, timestamp_ms FROM Keyframes;").fetchall()
+    }
+
     for idx, obs in enumerate(ocr_obs):
         for req in ("observation_id", "video_id", "keyframe_id", "timestamp_ms", "model_id", "raw_text",
                     "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"):
             if req not in obs:
                 raise ValueError(f"OCR observation {idx} missing required field '{req}'")
+        if not isinstance(obs["model_id"], str) or not obs["model_id"].strip():
+            raise ValueError(f"OCR observation {idx} has invalid model_id")
         conf = obs.get("confidence", 1.0)
         if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
             raise ValueError(f"OCR observation {idx} has invalid confidence: {conf}")
 
-    asr_segs = _load_jsonl(asr_file) if asr_file.is_file() else []
+        vid_id = str(obs["video_id"])
+        kf_id = str(obs["keyframe_id"])
+        if vid_id not in video_durations:
+            raise ValueError(f"OCR observation {idx} references unknown video_id '{vid_id}'")
+        if kf_id not in keyframe_meta:
+            raise ValueError(f"OCR observation {idx} references unknown keyframe_id '{kf_id}'")
+        if keyframe_meta[kf_id][0] != vid_id:
+            raise ValueError(
+                f"OCR observation {idx} keyframe_id '{kf_id}' belongs to video '{keyframe_meta[kf_id][0]}', not '{vid_id}'"
+            )
+        ts_ms = obs["timestamp_ms"]
+        if isinstance(ts_ms, bool) or not isinstance(ts_ms, (int, float)) or not math.isfinite(ts_ms) or ts_ms < 0:
+            raise ValueError(f"OCR observation {idx} has invalid timestamp_ms: {ts_ms}")
+
+        coords = [obs["bbox_x1"], obs["bbox_y1"], obs["bbox_x2"], obs["bbox_y2"]]
+        if any(isinstance(c, bool) or not isinstance(c, (int, float)) or not math.isfinite(c) for c in coords):
+            raise ValueError(f"OCR observation {idx} has non-finite bbox coordinates: {coords}")
+        x1, y1, x2, y2 = (float(c) for c in coords)
+        if not (0.0 <= x1 < x2 <= 1.0 and 0.0 <= y1 < y2 <= 1.0):
+            raise ValueError(f"OCR observation {idx} has invalid normalized bbox: {(x1, y1, x2, y2)}")
+
+    asr_words: list[dict[str, Any]] = []
     for idx, seg in enumerate(asr_segs):
         for req in ("segment_id", "video_id", "model_id", "start_ms", "end_ms", "raw_text"):
             if req not in seg:
                 raise ValueError(f"ASR segment {idx} missing required field '{req}'")
+        if not isinstance(seg["model_id"], str) or not seg["model_id"].strip():
+            raise ValueError(f"ASR segment {idx} has invalid model_id")
         conf = seg.get("confidence", 1.0)
         if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
             raise ValueError(f"ASR segment {idx} has invalid confidence: {conf}")
 
+        vid_id = str(seg["video_id"])
+        if vid_id not in video_durations:
+            raise ValueError(f"ASR segment {idx} references unknown video_id '{vid_id}'")
+        st_ms, end_ms = seg["start_ms"], seg["end_ms"]
+        if (
+            isinstance(st_ms, bool) or isinstance(end_ms, bool)
+            or not isinstance(st_ms, (int, float)) or not isinstance(end_ms, (int, float))
+            or not math.isfinite(st_ms) or not math.isfinite(end_ms)
+            or st_ms < 0 or st_ms >= end_ms
+        ):
+            raise ValueError(f"ASR segment {idx} has invalid interval start_ms={st_ms}, end_ms={end_ms}")
+        time_basis = seg.get("time_basis")
+        if time_basis is not None and time_basis != "ms":
+            raise ValueError(f"ASR segment {idx} has incompatible time_basis={time_basis!r}")
+        dur_ms = video_durations[vid_id]
+        if dur_ms > 0 and end_ms > dur_ms + 2000:
+            raise ValueError(
+                f"ASR segment {idx} end_ms={end_ms} exceeds video '{vid_id}' duration_ms={dur_ms}"
+            )
+
+        seg_words = seg.get("words") or []
+        if not isinstance(seg_words, list):
+            raise ValueError(f"ASR segment {idx} 'words' must be a list")
+        for w_idx, w in enumerate(seg_words):
+            if not isinstance(w, dict):
+                raise ValueError(f"ASR segment {idx} word {w_idx} must be an object")
+            for w_req in ("word_id", "word", "start_ms", "end_ms"):
+                if w_req not in w:
+                    raise ValueError(f"ASR segment {idx} word {w_idx} missing '{w_req}'")
+            w_st, w_end = int(w["start_ms"]), int(w["end_ms"])
+            if w_st < int(st_ms) or w_end > int(end_ms) or w_st > w_end:
+                raise ValueError(
+                    f"ASR segment {idx} word {w_idx} interval ({w_st}, {w_end}) outside segment ({st_ms}, {end_ms})"
+                )
+            asr_words.append({**w, "segment_id": w.get("segment_id", seg["segment_id"])})
+
+    return {
+        "ocr_obs": ocr_obs,
+        "asr_segs": asr_segs,
+        "asr_words": asr_words,
+        "provenance_status": provenance_status,
+        "legacy_unverified": legacy_unverified,
+    }
+
+
+def ingest_ocr_asr_artifacts(
+    outputs_dir: Path,
+    db_path: Path,
+    *,
+    dry_run: bool = False,
+    _before_fts_hook: Callable[[sqlite3.Connection], None] | None = None,
+) -> dict[str, object]:
+    """Safely merge Kaggle OCR/ASR JSONL outputs into an existing metadata.db and rebuild FTS5."""
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
+
+    store = OfflineMetadataStore(db_path)
+    with store._get_connection() as preflight_conn:
+        preflight = _preflight_ocr_asr_artifacts(outputs_dir, preflight_conn)
+
+    ocr_obs: list[dict[str, Any]] = preflight["ocr_obs"]
+    asr_segs: list[dict[str, Any]] = preflight["asr_segs"]
+    asr_words: list[dict[str, Any]] = preflight["asr_words"]
+    provenance_status: str = preflight["provenance_status"]
+    legacy_unverified: bool = preflight["legacy_unverified"]
+
     ocr_groups_count = 0
     asr_groups_count = 0
+    ocr_inserted = 0
+    asr_inserted = 0
+    fts_rebuilt = False
 
     if not dry_run:
-        store = OfflineMetadataStore(db_path)
-        if ocr_obs:
-            store.insert_ocr_observations(ocr_obs)
-            obs_by_kf: dict[tuple[str, str, int], list[dict]] = {}
-            for obs in ocr_obs:
-                key = (str(obs["video_id"]), str(obs["keyframe_id"]), int(obs["timestamp_ms"]))
-                obs_by_kf.setdefault(key, []).append(obs)
-            for (vid, kf_id, ts_ms), kf_obs in obs_by_kf.items():
-                groups, members = OCREvidenceGrouper.group_keyframe_observations(vid, kf_id, ts_ms, kf_obs)
-                if groups:
-                    store.insert_ocr_evidence_groups(groups, members)
-                    ocr_groups_count += len(groups)
+        with store.transaction() as conn:
+            if ocr_obs:
+                ocr_inserted = store.insert_ocr_observations(ocr_obs, conn=conn)
+                updated_kfs = sorted({(str(obs["video_id"]), str(obs["keyframe_id"])) for obs in ocr_obs})
+                for vid, kf_id in updated_kfs:
+                    existing_group_cnt = conn.execute(
+                        "SELECT COUNT(*) FROM OCREvidenceGroups WHERE keyframe_id = ?;",
+                        (kf_id,),
+                    ).fetchone()[0]
+                    if ocr_inserted == 0 and existing_group_cnt > 0:
+                        continue
+                    all_kf_rows = conn.execute(
+                        """
+                        SELECT observation_id, video_id, keyframe_id, timestamp_ms, model_id, raw_text,
+                               bbox_x1, bbox_y1, bbox_x2, bbox_y2, confidence, language
+                        FROM OCRObservations
+                        WHERE keyframe_id = ?
+                        ORDER BY model_id, observation_id;
+                        """,
+                        (kf_id,),
+                    ).fetchall()
+                    all_kf_obs = [dict(r) for r in all_kf_rows]
+                    ts_ms = int(all_kf_obs[0]["timestamp_ms"])
+                    conn.execute("DELETE FROM OCREvidenceGroups WHERE keyframe_id = ?;", (kf_id,))
+                    groups, members = OCREvidenceGrouper.group_keyframe_observations(vid, kf_id, ts_ms, all_kf_obs)
+                    if groups:
+                        store.insert_ocr_evidence_groups(groups, members, conn=conn, update_fts=False)
+                        ocr_groups_count += len(groups)
 
-        if asr_segs:
-            store.insert_asr_segments(asr_segs)
-            segs_by_vid: dict[str, list[dict]] = {}
-            for seg in asr_segs:
-                segs_by_vid.setdefault(str(seg["video_id"]), []).append(seg)
-            for vid, v_segs in segs_by_vid.items():
-                groups, members = ASREvidenceGrouper.group_video_segments(vid, v_segs)
-                if groups:
-                    store.insert_asr_evidence_groups(groups, members)
-                    asr_groups_count += len(groups)
+            if asr_segs:
+                asr_inserted = store.insert_asr_segments(asr_segs, words=asr_words or None, conn=conn)
+                updated_vids = sorted({str(seg["video_id"]) for seg in asr_segs})
+                for vid in updated_vids:
+                    existing_group_cnt = conn.execute(
+                        "SELECT COUNT(*) FROM ASREvidenceGroups WHERE video_id = ?;",
+                        (vid,),
+                    ).fetchone()[0]
+                    if asr_inserted == 0 and existing_group_cnt > 0:
+                        continue
+                    all_seg_rows = conn.execute(
+                        """
+                        SELECT segment_id, video_id, model_id, start_ms, end_ms, raw_text,
+                               language, confidence, speaker_id
+                        FROM ASRSegments
+                        WHERE video_id = ?
+                        ORDER BY model_id, start_ms, segment_id;
+                        """,
+                        (vid,),
+                    ).fetchall()
+                    all_vid_segs = [dict(r) for r in all_seg_rows]
+                    conn.execute("DELETE FROM ASREvidenceGroups WHERE video_id = ?;", (vid,))
+                    groups, members = ASREvidenceGrouper.group_video_segments(vid, all_vid_segs)
+                    if groups:
+                        store.insert_asr_evidence_groups(groups, members, conn=conn, update_fts=False)
+                        asr_groups_count += len(groups)
 
-        with sqlite3.connect(str(db_path), timeout=30.0) as conn:
-            _rebuild_ocr_asr_fts(conn)
-            conn.commit()
+            if _before_fts_hook is not None:
+                _before_fts_hook(conn)
+
+            if ocr_inserted > 0 or asr_inserted > 0 or ocr_groups_count > 0 or asr_groups_count > 0:
+                _rebuild_ocr_asr_fts(conn)
+                fts_rebuilt = True
 
     return {
         "mode": "ocr_asr",
         "outputs_dir": str(outputs_dir),
         "db_path": str(db_path),
+        "provenance_status": provenance_status,
+        "legacy_unverified": legacy_unverified,
         "ocr_observations_ingested": len(ocr_obs),
+        "ocr_observations_inserted": ocr_inserted,
         "ocr_groups_upserted": ocr_groups_count,
         "asr_segments_ingested": len(asr_segs),
+        "asr_records_inserted": asr_inserted,
         "asr_groups_upserted": asr_groups_count,
-        "fts_rebuilt": not dry_run,
+        "fts_rebuilt": fts_rebuilt,
         "dry_run": dry_run,
     }
 

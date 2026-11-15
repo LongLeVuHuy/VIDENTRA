@@ -45,6 +45,37 @@ def _extract_evidence_interval(item: dict[str, Any]) -> tuple[float, float] | No
     return None
 
 
+def _interval_in_window(
+    span: tuple[float, float],
+    window: tuple[float, float],
+    eps: float = 1e-6,
+) -> bool:
+    """Return True if ``span`` is contained within ``window``."""
+    return (window[0] - eps) <= span[0] and span[1] <= (window[1] + eps)
+
+
+def _scope_evidence_items(
+    evidence_items: Sequence[dict[str, Any]],
+    *,
+    video_id: str | None = None,
+    moment_window: tuple[float, float] | None = None,
+) -> list[dict[str, Any]]:
+    """Filter evidence items to the requested video_id and moment_window."""
+    if video_id is None and moment_window is None:
+        return list(evidence_items)
+    scoped: list[dict[str, Any]] = []
+    for item in evidence_items:
+        item_vid = item.get("video_id")
+        if video_id is not None and item_vid not in (None, "") and str(item_vid) != str(video_id):
+            continue
+        if moment_window is not None:
+            span = _extract_evidence_interval(item)
+            if span is None or not _interval_in_window(span, moment_window):
+                continue
+        scoped.append(item)
+    return scoped
+
+
 @dataclass(frozen=True)
 class GraphMatchResult:
     overall_status: str  # "supported", "partial", "contradicted", "unknown"
@@ -61,14 +92,24 @@ class GraphMatcher:
         query_graph: QueryGraph,
         evidence_items: Sequence[dict[str, Any]],
         event_intervals: dict[str, tuple[float, float]] | None = None,
+        *,
+        video_id: str | None = None,
+        timeline_revision: str | None = None,
+        moment_window: tuple[float, float] | None = None,
     ) -> GraphMatchResult:
         """Execute full relation and logic verification."""
+        scoped_evidence = _scope_evidence_items(
+            evidence_items,
+            video_id=video_id,
+            moment_window=moment_window,
+        )
+
         # 1. Ground entities
-        grounded = ground_entities(query_graph, evidence_items)
+        grounded = ground_entities(query_graph, scoped_evidence)
 
         # 2. Evaluate each predicate
         pred_evals: dict[str, PredicateEvaluation] = {}
-        intervals: dict[str, tuple[float, float]] = dict(event_intervals) if event_intervals else {}
+        caller_intervals = dict(event_intervals) if event_intervals else {}
 
         # First pass: evaluate non-temporal predicates
         for p in query_graph.predicates:
@@ -76,38 +117,145 @@ class GraphMatcher:
                 if "negation_scope_unresolved" in p.uncertainty:
                     ev = PredicateEvaluation(p.id, MatchState.UNKNOWN, 0.0, "Negation scope is unresolved", [])
                 else:
-                    ev = evaluate_predicate(p, evidence_items, grounded)
+                    ev = evaluate_predicate(p, scoped_evidence, grounded)
                 pred_evals[p.id] = ev
 
-        # Infer missing event intervals from grounded evidence_refs before temporal pass
+        # Build verified grounded intervals & refs only from grounded non-temporal events
         evidence_by_id = {
             str(item["evidence_id"]): item
-            for item in evidence_items
+            for item in scoped_evidence
             if item.get("evidence_id") not in (None, "")
         }
+        grounded_intervals: dict[str, tuple[float, float]] = {}
+        grounded_refs: dict[str, list[str]] = {}
+        grounded_revs: dict[str, set[str]] = {}
+        grounded_vids: dict[str, set[str]] = {}
+
         for p_id, ev in pred_evals.items():
-            if p_id in intervals:
+            if not p_id or ev.state not in (MatchState.SUPPORTED, MatchState.PARTIAL):
                 continue
-            if ev.state not in (MatchState.SUPPORTED, MatchState.PARTIAL):
+            valid_refs = [str(ref) for ref in ev.evidence_refs if str(ref) in evidence_by_id]
+            if not valid_refs:
                 continue
+
+            item_vids: set[str] = set()
+            item_revs: set[str] = set()
             spans: list[tuple[float, float]] = []
-            for ref in ev.evidence_refs:
-                item = evidence_by_id.get(str(ref))
-                if item is None:
-                    continue
+            for ref in valid_refs:
+                item = evidence_by_id[ref]
+                if item.get("video_id") not in (None, ""):
+                    item_vids.add(str(item["video_id"]))
+                if item.get("timeline_revision") not in (None, ""):
+                    item_revs.add(str(item["timeline_revision"]))
                 span = _extract_evidence_interval(item)
                 if span is not None:
                     spans.append(span)
-            if spans:
-                intervals[p_id] = (min(s for s, _ in spans), max(e for _, e in spans))
 
-        # Second pass: evaluate temporal predicates referencing prior events
+            if video_id is not None and any(v != str(video_id) for v in item_vids):
+                continue
+            if len(item_vids) > 1:
+                continue
+            if timeline_revision is not None and any(r != str(timeline_revision) for r in item_revs):
+                continue
+            if len(item_revs) > 1:
+                continue
+
+            chosen_span: tuple[float, float] | None = None
+            if p_id in caller_intervals:
+                cand_span = caller_intervals[p_id]
+                if (
+                    len(cand_span) == 2
+                    and math.isfinite(cand_span[0])
+                    and math.isfinite(cand_span[1])
+                    and cand_span[0] <= cand_span[1]
+                    and (moment_window is None or _interval_in_window(cand_span, moment_window))
+                ):
+                    chosen_span = (float(cand_span[0]), float(cand_span[1]))
+            elif spans:
+                chosen_span = (min(s for s, _ in spans), max(e for _, e in spans))
+
+            if chosen_span is None:
+                continue
+
+            grounded_intervals[p_id] = chosen_span
+            grounded_refs[p_id] = list(dict.fromkeys(valid_refs))
+            grounded_revs[p_id] = item_revs
+            grounded_vids[p_id] = item_vids
+
+        # Second pass: evaluate temporal predicates referencing prior grounded events
         for p in query_graph.predicates:
             if p.kind == "temporal":
                 if "negation_scope_unresolved" in p.uncertainty:
                     ev = PredicateEvaluation(p.id, MatchState.UNKNOWN, 0.0, "Negation scope is unresolved", [])
-                else:
-                    ev = evaluate_temporal_order(p, intervals)
+                    pred_evals[p.id] = ev
+                    continue
+
+                event_a_id = p.roles.get("event_a")
+                event_b_id = p.roles.get("event_b")
+                if (
+                    not event_a_id
+                    or not event_b_id
+                    or event_a_id not in grounded_intervals
+                    or event_b_id not in grounded_intervals
+                ):
+                    pred_evals[p.id] = PredicateEvaluation(
+                        p.id,
+                        MatchState.UNKNOWN,
+                        0.0,
+                        f"Missing grounded anchors for events '{event_a_id}' or '{event_b_id}'",
+                        [],
+                    )
+                    continue
+
+                revs_a = grounded_revs.get(event_a_id, set())
+                revs_b = grounded_revs.get(event_b_id, set())
+                if revs_a and revs_b and revs_a != revs_b:
+                    pred_evals[p.id] = PredicateEvaluation(
+                        p.id,
+                        MatchState.UNKNOWN,
+                        0.0,
+                        "Time basis unaligned between events (timeline_revision mismatch)",
+                        [],
+                    )
+                    continue
+
+                vids_a = grounded_vids.get(event_a_id, set())
+                vids_b = grounded_vids.get(event_b_id, set())
+                if vids_a and vids_b and vids_a != vids_b:
+                    pred_evals[p.id] = PredicateEvaluation(
+                        p.id,
+                        MatchState.UNKNOWN,
+                        0.0,
+                        "Events belong to different videos",
+                        [],
+                    )
+                    continue
+
+                refs_a = grounded_refs.get(event_a_id, [])
+                refs_b = grounded_refs.get(event_b_id, [])
+                combined_refs = list(dict.fromkeys([*refs_a, *refs_b]))
+
+                st_a, end_a = grounded_intervals[event_a_id]
+                st_b, end_b = grounded_intervals[event_b_id]
+                if set(refs_a) == set(refs_b) and st_a == st_b and end_a == end_b:
+                    pred_evals[p.id] = PredicateEvaluation(
+                        p.id,
+                        MatchState.PARTIAL,
+                        0.0,
+                        "Events share the same anchor/timestamp; temporal order is ambiguous",
+                        combined_refs,
+                    )
+                    continue
+
+                ev = evaluate_temporal_order(p, grounded_intervals)
+                if ev.state in (MatchState.SUPPORTED, MatchState.PARTIAL, MatchState.CONTRADICTED):
+                    ev = PredicateEvaluation(
+                        ev.predicate_id,
+                        ev.state,
+                        ev.score,
+                        ev.reason,
+                        combined_refs,
+                    )
                 pred_evals[p.id] = ev
 
         # 3. Evaluate logic root node

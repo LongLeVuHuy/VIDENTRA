@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import time
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from videntra.evaluation.split_lock import qvh_source_id
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
     compute_query_z_scores,
@@ -30,6 +33,9 @@ DEFAULT_VAL_DIR = Path("validation")
 DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr_v1.json")
 
 _FORBIDDEN_PATH_TOKENS = ("heldout_test_201", "heldout", "test_queries")
+_AVC_WINDOW_RE = re.compile(r"^(.+?)__s\d+__e\d+$")
+_MSRVTT_ID_RE = re.compile(r"^video\d+$")
+SOURCE_GROUP_RULE = "canonical_avc_window_qvh_youtube_msrvtt_connected_components_v1"
 
 POSITIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "s_vis_blend_max",
@@ -72,6 +78,169 @@ def assert_no_heldout_leakage(path: str | Path) -> Path:
                 f"Refusing to access forbidden held-out/test path during LTR training: {p}"
             )
     return p
+
+
+def resolve_canonical_source_group(
+    clip_id: str,
+    *,
+    dataset: str | None = None,
+    asset_manifest: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """Resolve a clip/video ID to its canonical ``(source_group, status)``.
+
+    Strips AVC ``__s...__e...`` window suffixes, extracts QVHighlights YouTube
+    source IDs, preserves MSR-VTT video IDs, and falls back to an explicit
+    ``unknown:<clip_id>`` group with ``unknown_unverified`` status.
+    """
+    cid = str(clip_id).strip()
+    if not cid:
+        raise ValueError("clip_id must be a non-empty string")
+
+    if asset_manifest and cid in asset_manifest:
+        mapped = str(asset_manifest[cid]).strip()
+        if mapped:
+            return mapped, "manifest_verified"
+
+    avc_match = _AVC_WINDOW_RE.fullmatch(cid)
+    if avc_match:
+        return avc_match.group(1), "avc_window_stripped"
+
+    try:
+        return qvh_source_id(cid), "qvh_youtube_id"
+    except ValueError:
+        pass
+
+    if dataset == "msrvtt" or _MSRVTT_ID_RE.fullmatch(cid):
+        return cid, "msrvtt_video_id"
+
+    return f"unknown:{cid}", "unknown_unverified"
+
+
+def compute_source_manifest_hash(manifest_records: Sequence[Mapping[str, Any]]) -> str:
+    """Compute a deterministic SHA-256 hash over canonical query -> source_group records."""
+    normalized = sorted(
+        (dict(rec) for rec in manifest_records),
+        key=lambda rec: str(rec.get("query_id", "")),
+    )
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def assign_connected_source_groups(
+    query_targets: Sequence[tuple[str, Sequence[str]]],
+    *,
+    dataset_by_query: Mapping[str, str] | None = None,
+    asset_manifest: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve canonical source groups and merge multi-target groups via connected components.
+
+    All target clips/groups of a query (and any queries sharing a source group)
+    are assigned to the same connected-component fold group so no source group
+    or multi-target query can split across CV folds.
+    """
+    parent: dict[str, str] = {}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: str, b: str) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    raw_groups_by_query: dict[str, list[str]] = {}
+    statuses_by_query: dict[str, list[str]] = {}
+    status_counts: dict[str, int] = defaultdict(int)
+    unknown_clips: list[str] = []
+    unique_clips: set[str] = set()
+    unique_raw_groups: set[str] = set()
+
+    for qid, targets in query_targets:
+        q_str = str(qid)
+        ds = dataset_by_query.get(q_str) if dataset_by_query else None
+        q_groups: list[str] = []
+        q_statuses: list[str] = []
+        for tgt in targets:
+            t_str = str(tgt).strip()
+            if not t_str:
+                continue
+            unique_clips.add(t_str)
+            grp, status = resolve_canonical_source_group(
+                t_str, dataset=ds, asset_manifest=asset_manifest
+            )
+            unique_raw_groups.add(grp)
+            status_counts[status] += 1
+            if status == "unknown_unverified":
+                unknown_clips.append(t_str)
+            if grp not in parent:
+                parent[grp] = grp
+            q_groups.append(grp)
+            q_statuses.append(status)
+
+        if not q_groups:
+            raise ValueError(f"Query {q_str} has no target clips for source_group resolution")
+
+        first = q_groups[0]
+        for g in q_groups[1:]:
+            _union(first, g)
+
+        raw_groups_by_query[q_str] = sorted(set(q_groups))
+        statuses_by_query[q_str] = sorted(set(q_statuses))
+
+    groups_by_root: dict[str, set[str]] = defaultdict(set)
+    for grp in parent:
+        groups_by_root[_find(grp)].add(grp)
+
+    fold_group_by_query: dict[str, str] = {}
+    manifest_records: list[dict[str, Any]] = []
+    multi_group_queries: list[str] = []
+
+    for qid, _ in query_targets:
+        q_str = str(qid)
+        q_groups = raw_groups_by_query[q_str]
+        root = _find(q_groups[0])
+        comp_groups = sorted(groups_by_root[root])
+        if len(comp_groups) == 1:
+            comp_id = comp_groups[0]
+        else:
+            comp_id = "cc:" + "+".join(comp_groups)
+            if len(q_groups) > 1:
+                multi_group_queries.append(q_str)
+        fold_group_by_query[q_str] = comp_id
+        manifest_records.append({
+            "query_id": q_str,
+            "source_group": comp_id,
+            "raw_source_groups": q_groups,
+            "resolution_statuses": statuses_by_query[q_str],
+        })
+
+    manifest_hash = compute_source_manifest_hash(manifest_records)
+    return {
+        "fold_group_by_query": fold_group_by_query,
+        "raw_groups_by_query": raw_groups_by_query,
+        "manifest_records": manifest_records,
+        "manifest_hash": manifest_hash,
+        "group_stats": {
+            "total_queries": len(query_targets),
+            "unique_clips": len(unique_clips),
+            "unique_source_groups": len(unique_raw_groups),
+            "unique_fold_groups": len(set(fold_group_by_query.values())),
+            "multi_group_queries": sorted(set(multi_group_queries)),
+            "status_counts": dict(sorted(status_counts.items())),
+            "unknown_clips": sorted(set(unknown_clips)),
+        },
+    }
 
 
 def group_kfold_indices(
@@ -379,8 +548,42 @@ def run_group_kfold_cv(
     backend: str = "auto",
     base_scores: np.ndarray | None = None,
     blend_weight: float = 0.015,
+    manifest_hash: str | None = None,
+    source_group_rule: str = SOURCE_GROUP_RULE,
+    coverage_stats: Mapping[str, Any] | None = None,
+    group_stats: Mapping[str, Any] | None = None,
+    raw_groups_by_query: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """Run 5-Fold GroupKFold CV grouped by source_video_id and build final artifact."""
+    """Run 5-Fold GroupKFold CV grouped by canonical source group and build final artifact."""
+    # Verify every query maps to a single consistent fold group across all its rows
+    q_group_check: dict[str, set[str]] = defaultdict(set)
+    for qid, grp in zip(query_ids, source_video_ids):
+        q_group_check[str(qid)].add(str(grp))
+    split_queries = {q: sorted(gs) for q, gs in q_group_check.items() if len(gs) > 1}
+    if split_queries:
+        raise ValueError(
+            f"Queries span multiple unmerged source groups: {list(split_queries.items())[:3]}"
+        )
+
+    if manifest_hash is None:
+        manifest_records = [
+            {
+                "query_id": qid,
+                "source_group": next(iter(gs)),
+                "raw_source_groups": (
+                    list(raw_groups_by_query[qid])
+                    if raw_groups_by_query and qid in raw_groups_by_query
+                    else [next(iter(gs))]
+                ),
+            }
+            for qid, gs in sorted(q_group_check.items())
+        ]
+        resolved_manifest_hash = compute_source_manifest_hash(manifest_records)
+    else:
+        resolved_manifest_hash = str(manifest_hash).strip()
+        if not resolved_manifest_hash:
+            raise ValueError("manifest_hash must be non-empty")
+
     splits = group_kfold_indices(source_video_ids, n_splits=n_splits)
     base_arr = np.asarray(base_scores, dtype=np.float64) if base_scores is not None else None
 
@@ -395,6 +598,16 @@ def run_group_kfold_cv(
         except ImportError:
             use_lgb = False
 
+    def _groups_for_indices(indices: np.ndarray) -> set[str]:
+        grps: set[str] = set()
+        for i in indices:
+            qid = str(query_ids[i])
+            if raw_groups_by_query and qid in raw_groups_by_query:
+                grps.update(str(g) for g in raw_groups_by_query[qid])
+            else:
+                grps.add(str(source_video_ids[i]))
+        return grps
+
     for fold_idx, (tr_idx, val_idx) in enumerate(splits):
         X_tr, y_tr = X[tr_idx], y[tr_idx]
         X_val, y_val = X[val_idx], y[val_idx]
@@ -402,11 +615,14 @@ def run_group_kfold_cv(
         q_val = [query_ids[i] for i in val_idx]
         base_tr = base_arr[tr_idx] if base_arr is not None else None
 
-        # Verify zero video leakage between train and val folds
-        tr_vids = {source_video_ids[i] for i in tr_idx}
-        val_vids = {source_video_ids[i] for i in val_idx}
-        assert tr_vids.isdisjoint(val_vids), f"GroupKFold video leakage in fold {fold_idx}"
+        # Verify zero source-group leakage between train and val folds
+        tr_groups = _groups_for_indices(tr_idx)
+        val_groups = _groups_for_indices(val_idx)
+        if not tr_groups.isdisjoint(val_groups):
+            overlap = sorted(tr_groups & val_groups)
+            raise ValueError(f"GroupKFold source group leakage in fold {fold_idx}: {overlap[:5]}")
 
+        # Per-fold normalization: f_mean and f_std are fit strictly on X_tr
         w, bias, f_mean, f_std = train_pairwise_logistic_l2(
             X_tr,
             y_tr,
@@ -416,9 +632,13 @@ def run_group_kfold_cv(
             blend_weight=blend_weight,
         )
         fold_weights.append({
+            "fold_id": fold_idx,
             "fold": fold_idx,
+            "train_group_ids": sorted(tr_groups),
+            "eval_group_ids": sorted(val_groups),
             "eval_query_ids": sorted({str(q) for q in q_val}),
             "eval_source_video_ids": sorted({str(source_video_ids[i]) for i in val_idx}),
+            "manifest_hash": resolved_manifest_hash,
             "weights": [round(float(v), 6) for v in w],
             "bias": round(float(bias), 6),
             "feature_mean": [round(float(v), 6) for v in f_mean],
@@ -433,6 +653,19 @@ def run_group_kfold_cv(
         metrics = evaluate_ranking_metrics(val_scores, y_val, q_val)
         metrics["fold"] = fold_idx
         fold_metrics.append(metrics)
+
+    # Validate OOF completeness & uniqueness across all folds
+    seen_oof_qids: set[str] = set()
+    for fw in fold_weights:
+        qset = set(fw["eval_query_ids"])
+        dup_qids = seen_oof_qids & qset
+        if dup_qids:
+            raise ValueError(f"Duplicate OOF query_ids across folds: {sorted(dup_qids)[:5]}")
+        seen_oof_qids |= qset
+    all_qids = {str(q) for q in query_ids}
+    if seen_oof_qids != all_qids:
+        missing_qids = sorted(all_qids - seen_oof_qids)
+        raise ValueError(f"Missing OOF query_ids across folds: {missing_qids[:5]}")
 
     # Fit final model on full dev_full_859 dataset
     mean_cv_hit1 = float(np.mean([m["hit_at_1"] for m in fold_metrics]))
@@ -466,13 +699,17 @@ def run_group_kfold_cv(
             "feature_std": [round(float(v), 6) for v in final_std],
         }
 
+    artifact["manifest_hash"] = resolved_manifest_hash
+    artifact["source_group_rule"] = source_group_rule
     artifact["fold_weights"] = fold_weights
     artifact["metadata"] = {
         "dataset": "dev_full_859",
         "trained_split": "dev_full_859",
-        "trained_query_ids": sorted({str(q) for q in query_ids}),
+        "trained_query_ids": sorted(all_qids),
         "cv_strategy": f"{n_splits}-fold GroupKFold",
-        "grouped_by": "source_video_id",
+        "grouped_by": "source_group",
+        "source_group_rule": source_group_rule,
+        "manifest_hash": resolved_manifest_hash,
         "l2_reg": float(l2_reg),
         "blend_weight": float(blend_weight),
         "residual_training": bool(base_arr is not None),
@@ -480,6 +717,8 @@ def run_group_kfold_cv(
         "cv_mrr": round(mean_cv_mrr, 4),
         "cv_ndcg_at_10": round(mean_cv_ndcg10, 4),
         "fold_metrics": fold_metrics,
+        "coverage_stats": dict(coverage_stats) if coverage_stats is not None else None,
+        "group_stats": dict(group_stats) if group_stats is not None else None,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     return artifact
@@ -540,8 +779,9 @@ def extract_dev859_ltr_dataset(
     save_jsonl_path: Path | None = None,
     max_candidates_per_query: int = 60,
     return_base_scores: bool = False,
+    return_metadata: bool = False,
 ) -> tuple[Any, ...]:
-    """Extract 22D LTR features from dev_full_859 (validation/ only, never held-out test)."""
+    """Extract 24D LTR features from dev_full_859 (validation/ only, never held-out test)."""
     assert_no_heldout_leakage(val_dir)
     if save_jsonl_path is not None:
         assert_no_heldout_leakage(save_jsonl_path)
@@ -575,6 +815,15 @@ def extract_dev859_ltr_dataset(
         if not queries:
             raise ValueError(f"No validation queries loaded from {val_dir}")
 
+        group_assignment = assign_connected_source_groups(
+            [(str(q["query_id"]), list(q["target_videos"])) for q in queries],
+            dataset_by_query={str(q["query_id"]): str(q.get("dataset", "")) for q in queries},
+        )
+        fold_group_by_query = group_assignment["fold_group_by_query"]
+        raw_groups_by_query = group_assignment["raw_groups_by_query"]
+        manifest_hash = group_assignment["manifest_hash"]
+        group_stats = group_assignment["group_stats"]
+
         rows: list[np.ndarray] = []
         labels: list[float] = []
         query_ids: list[str] = []
@@ -582,11 +831,16 @@ def extract_dev859_ltr_dataset(
         base_scores: list[float] = []
         jsonl_records: list[dict[str, Any]] = []
 
+        queries_with_candidates = 0
+        queries_with_positive = 0
+        queries_with_pairable = 0
+        missing_positive_query_ids: list[str] = []
+
         for idx, q in enumerate(queries, start=1):
             qid = str(q["query_id"])
             target_videos = list(q["target_videos"])
             target_set = set(target_videos)
-            src_vid = str(target_videos[0])
+            src_vid = fold_group_by_query[qid]
 
             resp = pipeline.search_with_metadata(
                 snapshot_id="ltr_extract_dev859",
@@ -599,7 +853,9 @@ def extract_dev859_ltr_dataset(
             diag = resp.get("diagnostics", {})
             all_cands = diag.get("all_candidate_moments", [])[:max_candidates_per_query]
             if not all_cands:
+                missing_positive_query_ids.append(qid)
                 continue
+            queries_with_candidates += 1
 
             vis_cands = diag.get("visual_candidates", [])
             ocr_cands = diag.get("ocr_candidates", [])
@@ -636,8 +892,13 @@ def extract_dev859_ltr_dataset(
 
             has_pos = any(m.video_id in target_set for m in all_cands)
             has_neg = any(m.video_id not in target_set for m in all_cands)
+            if has_pos:
+                queries_with_positive += 1
+            else:
+                missing_positive_query_ids.append(qid)
             if not (has_pos and has_neg):
                 continue
+            queries_with_pairable += 1
 
             cand_ltr_map = diag.get("candidate_ltr_features", {})
             z_stats = diag.get("z_stats")
@@ -713,22 +974,39 @@ def extract_dev859_ltr_dataset(
             for rec in jsonl_records:
                 f.write(json.dumps(rec) + "\n")
 
+    coverage_stats = {
+        "total_queries": len(queries),
+        "queries_with_candidates": queries_with_candidates,
+        "queries_with_positive_in_candidates": queries_with_positive,
+        "queries_with_pairable_candidates": queries_with_pairable,
+        "missing_positive_count": len(missing_positive_query_ids),
+        "missing_positive_query_ids": sorted(missing_positive_query_ids),
+        "candidate_recall": round(queries_with_positive / len(queries), 4),
+    }
+    extraction_meta = {
+        "manifest_hash": manifest_hash,
+        "source_group_rule": SOURCE_GROUP_RULE,
+        "raw_groups_by_query": raw_groups_by_query,
+        "group_stats": group_stats,
+        "coverage_stats": coverage_stats,
+    }
+    print(
+        f"[LTR Extract] Coverage: {queries_with_positive}/{len(queries)} positive in top-{max_candidates_per_query} "
+        f"(recall={coverage_stats['candidate_recall']:.4f}, pairable={queries_with_pairable}, "
+        f"missing_pos={len(missing_positive_query_ids)}) | "
+        f"Groups: {group_stats['unique_source_groups']} source groups from {group_stats['unique_clips']} clips "
+        f"(unknown={len(group_stats['unknown_clips'])})",
+        flush=True,
+    )
+
     X_mat = np.vstack(rows).astype(np.float64)
     y_arr = np.asarray(labels, dtype=np.float64)
+    result: tuple[Any, ...] = (X_mat, y_arr, query_ids, source_video_ids)
     if return_base_scores:
-        return (
-            X_mat,
-            y_arr,
-            query_ids,
-            source_video_ids,
-            np.asarray(base_scores, dtype=np.float64),
-        )
-    return (
-        X_mat,
-        y_arr,
-        query_ids,
-        source_video_ids,
-    )
+        result = result + (np.asarray(base_scores, dtype=np.float64),)
+    if return_metadata:
+        result = result + (extraction_meta,)
+    return result
 
 
 def save_ltr_model_json(artifact: dict[str, Any], output_path: Path) -> Path:
@@ -742,7 +1020,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train VIDENTRA LTR ranker with 5-Fold GroupKFold CV")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH, help="Path to dev_full_859 LTR JSONL")
     parser.add_argument("--val-dir", type=Path, default=DEFAULT_VAL_DIR, help="Validation directory for dev_full_859 extraction")
-    parser.add_argument("--extract-from-val", action="store_true", help="Extract 22D features directly from validation/ (dev_full_859)")
+    parser.add_argument("--extract-from-val", action="store_true", help="Extract 24D features directly from validation/ (dev_full_859)")
     parser.add_argument("--save-dataset", action="store_true", help="Persist extracted JSONL to --dataset when extracting from validation/")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output JSON weights path")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
@@ -751,12 +1029,14 @@ def main() -> None:
     parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="auto")
     args = parser.parse_args()
 
+    extraction_meta: dict[str, Any] = {}
     if args.extract_from_val or (args.dataset == DEFAULT_DATASET_PATH and not args.dataset.is_file()):
         save_path = args.dataset if args.save_dataset else None
-        X, y, query_ids, source_video_ids, base_scores = extract_dev859_ltr_dataset(
+        X, y, query_ids, source_video_ids, base_scores, extraction_meta = extract_dev859_ltr_dataset(
             val_dir=args.val_dir,
             save_jsonl_path=save_path,
             return_base_scores=True,
+            return_metadata=True,
         )
     else:
         X, y, query_ids, source_video_ids, base_scores = load_ltr_jsonl_dataset(
@@ -773,6 +1053,11 @@ def main() -> None:
         backend=args.backend,
         base_scores=base_scores,
         blend_weight=args.blend_weight,
+        manifest_hash=extraction_meta.get("manifest_hash"),
+        source_group_rule=extraction_meta.get("source_group_rule", SOURCE_GROUP_RULE),
+        coverage_stats=extraction_meta.get("coverage_stats"),
+        group_stats=extraction_meta.get("group_stats"),
+        raw_groups_by_query=extraction_meta.get("raw_groups_by_query"),
     )
     out = save_ltr_model_json(artifact, args.output)
     meta = artifact["metadata"]

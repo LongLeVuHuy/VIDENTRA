@@ -96,10 +96,22 @@ def verify_a5_runtime() -> dict[str, str]:
     return versions
 
 
-def asr_segment_record(video_id: str, index: int, segment: Any, info: Any) -> dict[str, Any]:
+def asr_segment_record(
+    video_id: str,
+    index: int,
+    segment: Any,
+    info: Any,
+    *,
+    recipe_hash: str | None = None,
+) -> dict[str, Any]:
     """Serialize an ASR observation using the model fixed by the A5 bundle."""
-    return {
-        "segment_id": f"{video_id}__asr_{index}",
+    seg_id = (
+        f"{video_id}__asr_{recipe_hash}_{index:05d}"
+        if recipe_hash
+        else f"{video_id}__asr_{index}"
+    )
+    record = {
+        "segment_id": seg_id,
         "video_id": video_id,
         "model_id": "faster_whisper_small",
         "start_ms": int(segment.start * 1000),
@@ -108,6 +120,9 @@ def asr_segment_record(video_id: str, index: int, segment: Any, info: Any) -> di
         "language": getattr(info, "language", "en"),
         "confidence": round(float(segment.avg_logprob), 4),
     }
+    if recipe_hash:
+        record["recipe_hash"] = recipe_hash
+    return record
 
 
 def frame_time_seconds(frame: Any, stream: Any, origin_pts: int = 0) -> float:
@@ -810,7 +825,43 @@ def run_ocr_asr_extraction(
             raise FileExistsError(f"Output artifact already exists: {out_dir / out_name}")
 
     import torch
+    from videntra.storage.database import compute_recipe_hash, make_deterministic_record_id
+
     resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    ocr_general_model_id = "RapidOCR" if ocr_backend == "rapidocr" else PADDLEOCR_MODEL_ID
+    ocr_general_revision = "rapidocr-onnxruntime-1.4.4" if ocr_backend == "rapidocr" else PADDLEOCR_REVISION
+    vietocr_weights_sha256 = _sha256_file_if_exists(vietocr_weights)
+    base_ocr_recipe_spec: dict[str, Any] = {
+        "record_type": "ocr",
+        "general_model_id": ocr_general_model_id,
+        "general_revision": ocr_general_revision,
+        "vietocr_enabled": bool(enable_vietocr),
+        "vietocr_model_id": VIETOCR_MODEL_ID if enable_vietocr else None,
+        "vietocr_revision": VIETOCR_REVISION if enable_vietocr else None,
+        "vietocr_weights_sha256": vietocr_weights_sha256,
+        "ocr_config_sha256": OCR_CONFIG_SHA256,
+        "min_confidence": 0.35,
+    }
+    base_ocr_recipe_hash = compute_recipe_hash(base_ocr_recipe_spec)
+
+    asr_model_id_prov = PHOWHISPER_MODEL_ID if asr_backend == "phowhisper_small" else "Systran/faster-whisper-small"
+    asr_revision_prov = PHOWHISPER_REVISION if asr_backend == "phowhisper_small" else ASR_REVISION
+    asr_weights_sha256 = _sha256_file_if_exists(asr_model_dir / "model.bin") if asr_model_dir else None
+    asr_decoder_config: dict[str, Any] = (
+        {"chunk_seconds": 30, "sample_rate": 16000}
+        if asr_backend == "phowhisper_small"
+        else {"beam_size": 1, "vad_filter": True, "temperature": 0.0}
+    )
+    base_asr_recipe_spec: dict[str, Any] = {
+        "record_type": "asr",
+        "backend": asr_backend,
+        "model_id": asr_model_id_prov,
+        "revision": asr_revision_prov,
+        "weights_sha256": asr_weights_sha256,
+        "decoder_config": asr_decoder_config,
+    }
+    base_asr_recipe_hash = compute_recipe_hash(base_asr_recipe_spec)
 
     # 1. OCR Extraction
     ocr_observations: list[dict[str, Any]] = []
@@ -863,6 +914,17 @@ def run_ocr_asr_extraction(
                     for b in det_boxes
                 ]
 
+            kf_timeline_rev = rec.get("timeline_revision")
+            kf_asset_sha = rec.get("asset_sha256")
+            if kf_timeline_rev is not None or kf_asset_sha is not None:
+                kf_recipe_hash = compute_recipe_hash({
+                    **base_ocr_recipe_spec,
+                    "timeline_revision": kf_timeline_rev,
+                    "asset_sha256": kf_asset_sha,
+                })
+            else:
+                kf_recipe_hash = base_ocr_recipe_hash
+
             for b_idx, (bbox_norm, hint_txt, det_conf) in enumerate(det_items):
                 bx1, by1, bx2, by2 = bbox_norm
                 x1_px = max(0, int(round(bx1 * w_im)))
@@ -877,11 +939,12 @@ def run_ocr_asr_extraction(
                 if not clean_txt or float(rec_res.confidence) < 0.35:
                     continue
                 ocr_observations.append({
-                    "observation_id": f"{kf_id}__ocr_{b_idx}",
+                    "observation_id": make_deterministic_record_id("ocr", kf_id, kf_recipe_hash, b_idx),
                     "video_id": vid_id,
                     "keyframe_id": kf_id,
                     "timestamp_ms": int(ts_ms),
                     "model_id": rec_res.model_id,
+                    "recipe_hash": kf_recipe_hash,
                     "raw_text": clean_txt,
                     "bbox_x1": round(float(bx1), 4),
                     "bbox_y1": round(float(by1), 4),
@@ -916,6 +979,12 @@ def run_ocr_asr_extraction(
 
         for v_path in video_files:
             vid_id = v_path.stem
+            v_asset_sha = _sha256_file_if_exists(v_path)
+            vid_asr_recipe_hash = (
+                compute_recipe_hash({**base_asr_recipe_spec, "asset_sha256": v_asset_sha})
+                if v_asset_sha
+                else base_asr_recipe_hash
+            )
             if asr_transcriber is not None:
                 import av
                 resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
@@ -932,13 +1001,16 @@ def run_ocr_asr_extraction(
                     for c_idx, st_s in enumerate(range(0, len(audio), chunk_samples)):
                         chunk = audio[st_s : st_s + chunk_samples]
                         res = asr_transcriber.transcribe_chunk(chunk, sample_rate=16000)
-                        if getattr(res, "status", "ok") == "ok" and res.text:
+                        start_ms = int((st_s / 16000.0) * 1000)
+                        end_ms = int(((st_s + len(chunk)) / 16000.0) * 1000)
+                        if getattr(res, "status", "ok") == "ok" and res.text and end_ms > start_ms:
                             asr_segments.append({
-                                "segment_id": f"{vid_id}__asr_{c_idx}",
+                                "segment_id": make_deterministic_record_id("asr", vid_id, vid_asr_recipe_hash, c_idx),
                                 "video_id": vid_id,
                                 "model_id": "phowhisper_small",
-                                "start_ms": int((st_s / 16000.0) * 1000),
-                                "end_ms": int(((st_s + len(chunk)) / 16000.0) * 1000),
+                                "recipe_hash": vid_asr_recipe_hash,
+                                "start_ms": start_ms,
+                                "end_ms": end_ms,
                                 "raw_text": res.text,
                                 "language": res.language,
                                 "confidence": round(float(res.confidence), 4),
@@ -948,51 +1020,80 @@ def run_ocr_asr_extraction(
                 detected_lang = getattr(info, "language", None) or "unknown"
                 for s_idx, seg in enumerate(segs):
                     txt = seg.text.strip()
-                    if not txt:
+                    start_ms = int(seg.start * 1000)
+                    end_ms = int(seg.end * 1000)
+                    if not txt or end_ms <= start_ms:
                         continue
                     avg_lp = float(getattr(seg, "avg_logprob", -0.1))
                     conf = min(1.0, max(0.0, math.exp(avg_lp))) if avg_lp <= 0 else min(1.0, avg_lp)
                     asr_segments.append({
-                        "segment_id": f"{vid_id}__asr_{s_idx}",
+                        "segment_id": make_deterministic_record_id("asr", vid_id, vid_asr_recipe_hash, s_idx),
                         "video_id": vid_id,
                         "model_id": "faster_whisper_small",
-                        "start_ms": int(seg.start * 1000),
-                        "end_ms": int(seg.end * 1000),
+                        "recipe_hash": vid_asr_recipe_hash,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
                         "raw_text": txt,
                         "language": detected_lang,
                         "confidence": round(conf, 4),
                     })
 
     # Write JSONL artifacts
-    with (out_dir / "ocr_observations.jsonl").open("w", encoding="utf-8") as fh:
+    ocr_jsonl_path = out_dir / "ocr_observations.jsonl"
+    with ocr_jsonl_path.open("w", encoding="utf-8") as fh:
         for row in ocr_observations:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    with (out_dir / "asr_segments.jsonl").open("w", encoding="utf-8") as fh:
+    asr_jsonl_path = out_dir / "asr_segments.jsonl"
+    with asr_jsonl_path.open("w", encoding="utf-8") as fh:
         for row in asr_segments:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     receipt = {
+        "receipt_version": "2.0",
         "status": "success",
         "mode": "ocr_asr",
         "device": resolved_device,
+        "recipe_hashes": {
+            "ocr": base_ocr_recipe_hash,
+            "asr": base_asr_recipe_hash,
+        },
+        "artifacts": {
+            "ocr_observations": {
+                "filename": "ocr_observations.jsonl",
+                "sha256": _sha256_file_if_exists(ocr_jsonl_path),
+                "line_count": len(ocr_observations),
+            },
+            "asr_segments": {
+                "filename": "asr_segments.jsonl",
+                "sha256": _sha256_file_if_exists(asr_jsonl_path),
+                "line_count": len(asr_segments),
+            },
+        },
+        "inputs": {
+            "keyframes_manifest_sha256": _sha256_file_if_exists(keyframes_manifest) if keyframes_manifest else None,
+            "num_keyframes": len(kf_records),
+            "num_videos": len(video_files),
+            "video_ids": sorted({str(r["video_id"]) for r in kf_records} | {v.stem for v in video_files}),
+        },
         "ocr_models": {
             "general": {
-                "model_id": "RapidOCR" if ocr_backend == "rapidocr" else PADDLEOCR_MODEL_ID,
-                "revision": "rapidocr-onnxruntime-1.4.4" if ocr_backend == "rapidocr" else PADDLEOCR_REVISION,
+                "model_id": ocr_general_model_id,
+                "revision": ocr_general_revision,
             },
             "vietocr": {
                 "enabled": enable_vietocr,
                 "model_id": VIETOCR_MODEL_ID if enable_vietocr else None,
                 "revision": VIETOCR_REVISION if enable_vietocr else None,
-                "weights_sha256": _sha256_file_if_exists(vietocr_weights),
+                "weights_sha256": vietocr_weights_sha256,
             },
         },
         "asr_models": {
             "backend": asr_backend,
-            "model_id": PHOWHISPER_MODEL_ID if asr_backend == "phowhisper_small" else "Systran/faster-whisper-small",
-            "revision": PHOWHISPER_REVISION if asr_backend == "phowhisper_small" else ASR_REVISION,
-            "model_dir_sha256": _sha256_file_if_exists(asr_model_dir / "model.bin") if asr_model_dir else None,
+            "model_id": asr_model_id_prov,
+            "revision": asr_revision_prov,
+            "model_dir_sha256": asr_weights_sha256,
+            "decoder_config": asr_decoder_config,
         },
         "total_ocr_observations": len(ocr_observations),
         "total_asr_segments": len(asr_segments),

@@ -89,6 +89,46 @@ def get_git_sha() -> str:
         return "nogit"
 
 
+def get_git_worktree_status() -> dict[str, Any]:
+    """Return git worktree dirty status and changed file paths."""
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        lines = [line.rstrip() for line in out.splitlines() if line.strip()]
+        return {
+            "git_dirty": bool(lines),
+            "git_dirty_count": len(lines),
+            "git_dirty_files": lines[:50],
+        }
+    except Exception:
+        return {
+            "git_dirty": None,
+            "git_dirty_count": None,
+            "git_dirty_files": [],
+        }
+
+
+def get_hardware_info(device: str = "cpu") -> dict[str, Any]:
+    """Collect local CPU/RAM/platform hardware metadata."""
+    ram_total_gb: float | None = None
+    if psutil is not None:
+        try:
+            ram_total_gb = round(psutil.virtual_memory().total / (1024.0 ** 3), 2)
+        except Exception:
+            ram_total_gb = None
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "ram_total_gb": ram_total_gb,
+        "device": device,
+    }
+
+
 def get_process_memory_mb() -> tuple[float | None, float | None]:
     """Returns (rss_mb, peak_mb) using psutil or Windows ctypes GetProcessMemoryInfo fallback."""
     if psutil is not None:
@@ -154,11 +194,14 @@ class MultimodalBenchmarkRunner:
         model_dir: Path = Path("models/siglip2"),
         device: str = "cpu",
         use_disk_cache: bool = False,
+        ltr_model_path: Path | str | None = Path("models/ranking/videntra_ltr_v1.json"),
     ):
         self.db_path = db_path
         self.faiss_path = faiss_path
         self.model_dir = model_dir
         self.device = device
+        self.ltr_model_path = Path(ltr_model_path) if ltr_model_path is not None else None
+        self.ranked_videos: list[Any] | None = None
 
         print("1. Đang nạp UnifiedMultimodalSearchPipeline (SSOT)...")
         t0 = time.time()
@@ -169,6 +212,7 @@ class MultimodalBenchmarkRunner:
             device=device,
             use_disk_cache=use_disk_cache,
             memory_cache_size=0,
+            ltr_model_path=ltr_model_path,
         )
         self.indexed_videos = set(self.pipeline.video_durations.keys()) if self.pipeline.video_durations else set()
         if not self.indexed_videos and self.pipeline.keyframe_map:
@@ -202,13 +246,14 @@ class MultimodalBenchmarkRunner:
         )
         self.timings = response["timings"]
         self.diagnostics = response["diagnostics"]
+        self.ranked_videos = response.get("ranked_videos")
         moments = response["moments"]
         return [
             {
                 "video_id": m.video_id,
-                "start_sec": round(m.moment_start_seconds, 2),
-                "end_sec": round(m.moment_end_seconds, 2),
-                "ranking_score": round(m.ranking_score, 5),
+                "start_sec": float(m.moment_start_seconds),
+                "end_sec": float(m.moment_end_seconds),
+                "ranking_score": float(m.ranking_score),
                 "modality_attribution": m.match_status,
             }
             for m in moments
@@ -345,6 +390,83 @@ def _apply_ltr_fold_payload(ltr_ranker: Any, fold_payload: dict[str, Any]) -> No
     ltr_ranker.is_loaded = True
 
 
+def _collect_channel_diagnostics(
+    diag: dict[str, Any],
+    channel_agg: dict[str, dict[str, Any]],
+) -> None:
+    """Aggregate channel_status and degraded diagnostics (dict or legacy list/str)."""
+    def _record(ch: str, status: str, reason: str) -> None:
+        entry = channel_agg.setdefault(
+            ch,
+            {"status": status, "affected_queries": 0, "sample_reason": reason},
+        )
+        entry["affected_queries"] += 1
+        # Prefer more severe status if mixed across queries
+        severity = {"failed": 3, "missing_artifact": 2, "degraded": 2, "disabled_by_config": 1, "ready": 0}
+        if severity.get(status, 2) > severity.get(entry["status"], 0):
+            entry["status"] = status
+        if reason and not entry["sample_reason"]:
+            entry["sample_reason"] = reason
+
+    raw_status = diag.get("channel_status")
+    if isinstance(raw_status, dict):
+        for ch, info in raw_status.items():
+            if not ch:
+                continue
+            if isinstance(info, dict):
+                status = str(info.get("status") or "ready")
+                reason = str(info.get("reason") or "")
+            else:
+                status = str(info or "ready")
+                reason = ""
+            _record(str(ch), status, reason)
+
+    raw_degraded = diag.get("degraded")
+    if isinstance(raw_degraded, dict):
+        for ch, info in raw_degraded.items():
+            if not ch:
+                continue
+            if isinstance(info, dict):
+                status = str(info.get("status") or "failed")
+                reason = str(info.get("reason") or "")
+            else:
+                status = "failed"
+                reason = str(info or "")
+            _record(str(ch), status, reason)
+    elif isinstance(raw_degraded, (list, tuple, set)):
+        for item in raw_degraded:
+            if item:
+                _record(str(item), "failed", str(item))
+    elif isinstance(raw_degraded, str) and raw_degraded:
+        _record(raw_degraded, "failed", raw_degraded)
+
+
+def _build_ranked_videos(
+    preds: list[dict[str, Any]],
+    raw_ranked_videos: Any = None,
+) -> list[str]:
+    """Build deduplicated video ranking (best representative score + stable tie-break)."""
+    if isinstance(raw_ranked_videos, (list, tuple)) and raw_ranked_videos:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in raw_ranked_videos:
+            vid = str(item["video_id"] if isinstance(item, dict) else getattr(item, "video_id", item))
+            if vid and vid not in seen:
+                seen.add(vid)
+                ordered.append(vid)
+        if ordered:
+            return ordered
+
+    best_by_vid: dict[str, tuple[float, int]] = {}
+    for idx, p in enumerate(preds):
+        vid = str(p["video_id"])
+        score = float(p.get("ranking_score", 0.0))
+        if vid not in best_by_vid or score > best_by_vid[vid][0]:
+            best_by_vid[vid] = (score, idx)
+    ranked = sorted(best_by_vid.items(), key=lambda kv: (-kv[1][0], kv[1][1], kv[0]))
+    return [vid for vid, _ in ranked]
+
+
 def evaluate_query_set(
     runner: MultimodalBenchmarkRunner,
     queries: list[dict[str, Any]],
@@ -391,11 +513,14 @@ def evaluate_query_set(
     mom_map_range: list[float] = []
     boundary_errors: list[float] = []
 
-    # Branch Recall@K (E8)
+    # Branch & Stage Recall@K (E8 / 3.1)
     vis_rec30: list[int] = []
     vis_rec120: list[int] = []
     lex_rec30: list[int] = []
+    union_rec: list[int] = []
+    shortlist_rec: list[int] = []
     fused_rec10: list[int] = []
+    shortlist_not_top1_count = 0
 
     # Timings (C3)
     latencies_total: list[float] = []
@@ -405,9 +530,12 @@ def evaluate_query_set(
     latencies_fusion: list[float] = []
     latencies_boundary: list[float] = []
 
+    pure_asr_top1_count = 0
     pure_asr_fp_top1_count = 0
+    oof_applied_count = 0
+    oof_fallback_count = 0
     taxonomy_counts: dict[str, int] = defaultdict(int)
-    degraded_channels: set[str] = set()
+    channel_agg: dict[str, dict[str, Any]] = {}
     ltr_ranker = getattr(getattr(runner, "pipeline", None), "ltr_ranker", None)
     orig_ltr_state = _snapshot_ltr_ranker_state(ltr_ranker) if (ltr_ranker is not None and fold_query_map) else None
 
@@ -434,8 +562,11 @@ def evaluate_query_set(
             qid_str = str(q["query_id"])
             if qid_str in fold_query_map:
                 _apply_ltr_fold_payload(ltr_ranker, fold_query_map[qid_str])
-            elif orig_ltr_state is not None:
-                _restore_ltr_ranker_state(ltr_ranker, orig_ltr_state)
+                oof_applied_count += 1
+            else:
+                oof_fallback_count += 1
+                if orig_ltr_state is not None:
+                    _restore_ltr_ranker_state(ltr_ranker, orig_ltr_state)
 
         try:
             preds = runner.search_multimodal(q_text, top_k=10, ablation_config=ablation_config)
@@ -444,11 +575,7 @@ def evaluate_query_set(
                 _restore_ltr_ranker_state(ltr_ranker, orig_ltr_state)
         timings = runner.timings
         diag = runner.diagnostics
-        raw_degraded = diag.get("degraded") or []
-        if isinstance(raw_degraded, (list, tuple, set)):
-            degraded_channels.update(str(d) for d in raw_degraded if d)
-        elif isinstance(raw_degraded, str) and raw_degraded:
-            degraded_channels.add(raw_degraded)
+        _collect_channel_diagnostics(diag, channel_agg)
 
         required_timings = {"t_total_ms", "t_non_neural_ms", "t_faiss_ms", "t_fts5_ms",
                             "t_fusion_ms", "t_boundary_ms"}
@@ -468,14 +595,12 @@ def evaluate_query_set(
         ds_stats[ds]["latencies"].append(t_total)
         ds_stats[ds]["latencies_non_neural"].append(t_non_neural)
 
-        # Deduplicate video IDs preserving order for Global Pool evaluation
-        seen_vids: set[str] = set()
-        dedup_pred_vids: list[str] = []
-        for p in preds:
-            v = p["video_id"]
-            if v not in seen_vids:
-                seen_vids.add(v)
-                dedup_pred_vids.append(v)
+        # Separate ranked_videos (for Video@K/MRR/nDCG) from ranked_moments (for Moment@K/mAP/tIoU)
+        ranked_moments = preds[:10]
+        dedup_pred_vids = _build_ranked_videos(
+            preds,
+            getattr(runner, "ranked_videos", None) or diag.get("ranked_videos"),
+        )
 
         h1 = 1 if any(v in target_vids for v in dedup_pred_vids[:1]) else 0
         h5 = 1 if any(v in target_vids for v in dedup_pred_vids[:5]) else 0
@@ -542,22 +667,38 @@ def evaluate_query_set(
         ds_stats[ds]["in_ds_mrrs"].append(irr)
         ds_stats[ds]["in_ds_ndcgs10"].append(indcg10)
 
-        # Branch Recall@K (E8)
-        v30 = 1 if (target_vids & diag.get("visual_top30_vids", set())) else 0
-        v120 = 1 if (target_vids & diag.get("visual_top120_vids", set())) else 0
-        l30 = 1 if (target_vids & diag.get("lexical_top30_vids", set())) else 0
+        # Branch & Stage Recall@K (E8 / Section 3.1)
+        vis30_set = set(diag.get("visual_top30_vids", set()))
+        vis120_set = set(diag.get("visual_top120_vids", set()))
+        lex30_set = set(diag.get("lexical_top30_vids", set()))
+        union_set = set(diag.get("union_dedup_vids") or diag.get("union_vids") or (vis120_set | lex30_set))
+        shortlist_set = set(
+            diag.get("shortlist_before_rerank_vids")
+            or diag.get("shortlist_vids")
+            or {getattr(m, "video_id", m.get("video_id") if isinstance(m, dict) else "") for m in all_cand_moments}
+            or diag.get("fused_top10_vids", set())
+        )
+        v30 = 1 if (target_vids & vis30_set) else 0
+        v120 = 1 if (target_vids & vis120_set) else 0
+        l30 = 1 if (target_vids & lex30_set) else 0
+        u_rec = 1 if (target_vids & union_set) else 0
+        s_rec = 1 if (target_vids & shortlist_set) else 0
         f10 = 1 if (target_vids & diag.get("fused_top10_vids", set())) else 0
+        if s_rec == 1 and h1 == 0:
+            shortlist_not_top1_count += 1
 
         vis_rec30.append(v30)
         vis_rec120.append(v120)
         lex_rec30.append(l30)
+        union_rec.append(u_rec)
+        shortlist_rec.append(s_rec)
         fused_rec10.append(f10)
         ds_stats[ds]["vis_rec30"].append(v30)
         ds_stats[ds]["vis_rec120"].append(v120)
         ds_stats[ds]["lex_rec30"].append(l30)
         ds_stats[ds]["fused_rec10"].append(f10)
 
-        # Moment Localization Metrics (E7)
+        # Moment Localization Metrics (E7) using ranked_moments with unrounded timestamps
         m_hit03: int | str = ""
         m_hit05: int | str = ""
         m_hit07: int | str = ""
@@ -571,16 +712,16 @@ def evaluate_query_set(
             m_hit03 = 0
             m_hit05 = 0
             m_hit07 = 0
-            for p in preds[:1]:
+            for p in ranked_moments[:1]:
                 if p["video_id"] in target_vids:
-                    p_s, p_e = p["start_sec"], p["end_sec"]
+                    p_s, p_e = float(p["start_sec"]), float(p["end_sec"])
                     best_iou = -1.0
                     best_window = None
                     for gt_s, gt_e in target_wins:
-                        iou = temporal_iou(p_s, p_e, gt_s, gt_e)
+                        iou = temporal_iou(p_s, p_e, float(gt_s), float(gt_e))
                         if iou > best_iou:
                             best_iou = iou
-                            best_window = (gt_s, gt_e)
+                            best_window = (float(gt_s), float(gt_e))
                         if iou >= 0.3:
                             m_hit03 = 1
                         if iou >= 0.5:
@@ -600,11 +741,11 @@ def evaluate_query_set(
             ds_stats[ds]["mom_hits07"].append(int(m_hit07))
 
             gt_windows_formatted = [(q["target_videos"][0], float(w[0]), float(w[1])) for w in target_wins]
-            m_ndcg5 = compute_graded_moment_ndcg_at_k(preds, gt_windows_formatted, 5)
-            m_ndcg10 = compute_graded_moment_ndcg_at_k(preds, gt_windows_formatted, 10)
-            ap05 = compute_moment_ap_at_iou(preds, gt_windows_formatted, 0.50)
-            ap075 = compute_moment_ap_at_iou(preds, gt_windows_formatted, 0.75)
-            map_rng = compute_moment_map_range(preds, gt_windows_formatted)
+            m_ndcg5 = compute_graded_moment_ndcg_at_k(ranked_moments, gt_windows_formatted, 5)
+            m_ndcg10 = compute_graded_moment_ndcg_at_k(ranked_moments, gt_windows_formatted, 10)
+            ap05 = compute_moment_ap_at_iou(ranked_moments, gt_windows_formatted, 0.50)
+            ap075 = compute_moment_ap_at_iou(ranked_moments, gt_windows_formatted, 0.75)
+            map_rng = compute_moment_map_range(ranked_moments, gt_windows_formatted)
 
             mom_ndcgs5.append(m_ndcg5)
             mom_ndcgs10.append(m_ndcg10)
@@ -623,9 +764,11 @@ def evaluate_query_set(
             mom_ap05_val = round(ap05, 4)
             mom_map_val = round(map_rng, 4)
 
-        top1 = preds[0] if preds else {"video_id": "NONE", "start_sec": 0, "end_sec": 0, "modality_attribution": "none"}
-        if h1 == 0 and top1["modality_attribution"] == "asr":
-            pure_asr_fp_top1_count += 1
+        top1 = ranked_moments[0] if ranked_moments else {"video_id": "NONE", "start_sec": 0.0, "end_sec": 0.0, "modality_attribution": "none"}
+        if top1["modality_attribution"] == "asr":
+            pure_asr_top1_count += 1
+            if h1 == 0:
+                pure_asr_fp_top1_count += 1
 
         failure_tag = classify_query_failure(
             hit_at_1=h1,
@@ -638,14 +781,16 @@ def evaluate_query_set(
         taxonomy_counts[failure_tag] += 1
 
         res_record = {
+            "schema_version": 2,
             "query_id": q["query_id"],
             "dataset": ds,
             "query_text": q_text,
-            "ranked_predictions": json.dumps(preds, ensure_ascii=False),
+            "ranked_videos": json.dumps(dedup_pred_vids[:10], ensure_ascii=False),
+            "ranked_predictions": json.dumps(ranked_moments, ensure_ascii=False),
             "target_videos": "|".join(target_vids),
             "target_windows": json.dumps(target_wins),
             "predicted_top1_video": top1["video_id"],
-            "predicted_top1_moment": f"[{top1['start_sec']}-{top1['end_sec']}]",
+            "predicted_top1_moment": f"[{round(float(top1['start_sec']), 2)}-{round(float(top1['end_sec']), 2)}]",
             "hit_at_1": h1,
             "hit_at_5": h5,
             "hit_at_10": h10,
@@ -681,10 +826,25 @@ def evaluate_query_set(
     m05_mean, m05_ci_l, m05_ci_h = compute_bootstrap_ci(mom_hits05) if mom_hits05 else (0.0, 0.0, 0.0)
     mndcg5_mean, mndcg5_ci_l, mndcg5_ci_h = compute_bootstrap_ci(mom_ndcgs5) if mom_ndcgs5 else (0.0, 0.0, 0.0)
 
+    degraded_channels = sorted(
+        ch for ch, info in channel_agg.items()
+        if info["status"] not in {"ready", "disabled_by_config"}
+    )
+    disabled_channels = sorted(
+        ch for ch, info in channel_agg.items()
+        if info["status"] == "disabled_by_config"
+    )
+    degraded_channel_details = {ch: channel_agg[ch] for ch in degraded_channels}
+
     summary: dict[str, Any] = {
         "split_name": split_label,
         "ablation_config": ablation_config,
         "total_queries_evaluated": len(queries),
+        "oof_stats": {
+            "applied_count": oof_applied_count,
+            "fallback_count": oof_fallback_count,
+            "total_queries": len(queries),
+        },
         "metrics_overall": {
             "video_hit_at_1": round(sum(hits1) / total_n, 4),
             "video_hit_at_1_ci95": [round(h1_ci_l, 4), round(h1_ci_h, 4)],
@@ -701,6 +861,7 @@ def evaluate_query_set(
             "within_dataset_hit_at_10": round(sum(in_ds_hits10) / total_n, 4),
             "within_dataset_mrr": round(sum(in_ds_mrrs) / total_n, 4),
             "within_dataset_ndcg_at_10": round(sum(in_ds_ndcgs10) / total_n, 4),
+            "moment_labeled_n": len(mom_hits05),
             "moment_hit_at_1_iou03": round(sum(mom_hits03) / max(1, len(mom_hits03)), 4),
             "moment_hit_at_1_iou05": round(sum(mom_hits05) / max(1, len(mom_hits05)), 4),
             "moment_hit_at_1_iou05_ci95": [round(m05_ci_l, 4), round(m05_ci_h, 4)],
@@ -714,14 +875,23 @@ def evaluate_query_set(
             "mean_boundary_mae_sec": round(sum(boundary_errors) / len(boundary_errors), 2) if boundary_errors else None,
             "boundary_mae_scope": "top1_correct_video_iou_at_least_0.5",
             "boundary_mae_n": len(boundary_errors),
+            "pure_asr_top1_count": pure_asr_top1_count,
             "pure_asr_fp_top1_count": pure_asr_fp_top1_count,
+            "pure_asr_fp_top1_rate": round(pure_asr_fp_top1_count / pure_asr_top1_count, 4) if pure_asr_top1_count else 0.0,
             "branch_recall": {
                 "visual_recall_at_30": round(sum(vis_rec30) / total_n, 4),
                 "visual_recall_at_120": round(sum(vis_rec120) / total_n, 4),
                 "lexical_recall_at_30": round(sum(lex_rec30) / total_n, 4),
+                "union_recall": round(sum(union_rec) / total_n, 4),
+                "shortlist_recall": round(sum(shortlist_rec) / total_n, 4),
                 "fused_recall_at_10": round(sum(fused_rec10) / total_n, 4),
+                "shortlist_not_top1_count": shortlist_not_top1_count,
+                "shortlist_not_top1_rate": round(shortlist_not_top1_count / total_n, 4),
             },
             "failure_taxonomy": dict(taxonomy_counts),
+            "end_to_end_latency_mean_ms": round(float(np.mean(latencies_total)), 2),
+            "end_to_end_latency_p50_ms": round(float(np.median(latencies_total)), 2),
+            "end_to_end_latency_p95_ms": round(float(np.percentile(latencies_total, 95)), 2),
             "latency_mean_ms": round(float(np.mean(latencies_total)), 2),
             "latency_p50_ms": round(float(np.median(latencies_total)), 2),
             "latency_p95_ms": round(float(np.percentile(latencies_total, 95)), 2),
@@ -736,7 +906,10 @@ def evaluate_query_set(
             },
         },
         "per_dataset_metrics": {},
-        "degraded_channels": sorted(degraded_channels),
+        "degraded_channels": degraded_channels,
+        "disabled_channels": disabled_channels,
+        "degraded_channel_details": degraded_channel_details,
+        "channel_status": channel_agg,
         "_raw_arrays": {
             "hits1": hits1,
             "mrrs": mrrs,
@@ -764,6 +937,7 @@ def evaluate_query_set(
             "within_dataset_hit_at_10": round(sum(st["in_ds_hits10"]) / n_ds, 4),
             "within_dataset_mrr": round(sum(st["in_ds_mrrs"]) / n_ds, 4),
             "within_dataset_ndcg_at_10": round(sum(st["in_ds_ndcgs10"]) / n_ds, 4),
+            "moment_labeled_n": len(st["mom_hits05"]),
             "moment_hit_at_1_iou03": round(sum(st["mom_hits03"]) / len(st["mom_hits03"]), 4) if st["mom_hits03"] else 0.0,
             "moment_hit_at_1_iou05": round(sum(st["mom_hits05"]) / len(st["mom_hits05"]), 4) if st["mom_hits05"] else 0.0,
             "moment_hit_at_1_iou07": round(sum(st["mom_hits07"]) / len(st["mom_hits07"]), 4) if st["mom_hits07"] else 0.0,
@@ -805,13 +979,18 @@ def run_benchmark(
     max_msrvtt: int = 100,
     run_all_splits: bool = True,
     allow_insample_eval: bool = False,
-    ltr_model_path: Path = Path("models/ranking/videntra_ltr_v1.json"),
+    ltr_model_path: Path | None = Path("models/ranking/videntra_ltr_v1.json"),
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
     ltr_info = load_ltr_model_info(ltr_model_path)
+    if ltr_model_path is not None and (not ltr_info.get("exists") or ltr_info.get("error")):
+        raise RuntimeError(
+            f"Invalid LTR model artifact ({ltr_model_path}): {ltr_info.get('error') or 'missing_artifact'}"
+        )
+
     src_videntra_files = [
         p for p in sorted(Path("src/videntra").rglob("*"))
         if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
@@ -826,12 +1005,25 @@ def run_benchmark(
         Path("data/processed/faiss_index.bin"),
         Path("data/processed/faiss_text_e5_384.bin"),
         Path("data/processed/e5_text_manifest.json"),
-        ltr_model_path,
+        Path("data/processed/faiss_e5_caption_384.bin"),
+        Path("data/processed/e5_caption_manifest.json"),
+        *( [ltr_model_path] if ltr_model_path is not None else [] ),
         Path("models/siglip2"),
         Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
     ]
     input_hashes = hash_paths(input_paths)
-    runner = MultimodalBenchmarkRunner()
+    runner = MultimodalBenchmarkRunner(ltr_model_path=ltr_model_path)
+    if ltr_model_path is not None:
+        ranker = getattr(getattr(runner, "pipeline", None), "ltr_ranker", None)
+        if ranker is not None:
+            ranker_path = getattr(ranker, "model_path", None)
+            if ranker_path is not None and Path(ranker_path).resolve() != Path(ltr_model_path).resolve():
+                raise RuntimeError(
+                    f"LTR model path mismatch: requested {Path(ltr_model_path).resolve()}, "
+                    f"loaded {Path(ranker_path).resolve()}"
+                )
+            if not getattr(ranker, "is_loaded", False):
+                raise RuntimeError(f"LTR ranker failed to load artifact: {ltr_model_path}")
 
     def _can_use_oof(queries_list: list[dict[str, Any]]) -> bool:
         if not ltr_info.get("has_fold_weights"):
@@ -844,6 +1036,23 @@ def run_benchmark(
     used_oof_splits: set[str] = set()
     split_query_ids: dict[str, list[str]] = {}
     all_degraded_channels: set[str] = set()
+    all_disabled_channels: set[str] = set()
+    all_channel_status: dict[str, dict[str, Any]] = {}
+    oof_stats_by_split: dict[str, dict[str, int]] = {}
+
+    def _merge_summary_channels(s_obj: dict[str, Any], split_key: str) -> None:
+        all_degraded_channels.update(s_obj.get("degraded_channels", []))
+        all_disabled_channels.update(s_obj.get("disabled_channels", []))
+        for ch, info in (s_obj.get("channel_status") or {}).items():
+            prev = all_channel_status.get(ch)
+            if prev is None:
+                all_channel_status[ch] = dict(info)
+            else:
+                prev["affected_queries"] = int(prev.get("affected_queries", 0)) + int(info.get("affected_queries", 0))
+                if not prev.get("sample_reason") and info.get("sample_reason"):
+                    prev["sample_reason"] = info["sample_reason"]
+        if "oof_stats" in s_obj:
+            oof_stats_by_split[split_key] = dict(s_obj["oof_stats"])
 
     print("\n2. Đang thu thập câu truy vấn cho các tập đánh giá (dev_150, dev_full_859, heldout_test_201)...")
     queries_dev150 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=max_msrvtt)
@@ -864,7 +1073,7 @@ def run_benchmark(
         show_progress=True,
         fold_query_map=dev150_fold_map,
     )
-    all_degraded_channels.update(dev150_summary.get("degraded_channels", []))
+    _merge_summary_channels(dev150_summary, "dev_150")
 
     ablation_summaries: dict[str, dict[str, Any]] = {}
     multi_split_summaries: dict[str, dict[str, Any]] = {
@@ -882,7 +1091,7 @@ def run_benchmark(
                 show_progress=True,
                 fold_query_map=dev150_fold_map,
             )
-            all_degraded_channels.update(s_cfg.get("degraded_channels", []))
+            _merge_summary_channels(s_cfg, f"ablation_{cfg}")
             ablation_summaries[cfg] = s_cfg
             with (out_dir / f"ablation_{cfg}_evaluation.jsonl").open("w", encoding="utf-8") as stream:
                 for record in cfg_records:
@@ -916,7 +1125,7 @@ def run_benchmark(
             show_progress=True,
             fold_query_map=dev859_fold_map,
         )
-        all_degraded_channels.update(dev859_summary.get("degraded_channels", []))
+        _merge_summary_channels(dev859_summary, "dev_full_859")
         multi_split_summaries["dev_full_859"] = {k: v for k, v in dev859_summary.items() if k != "_raw_arrays"}
         with (out_dir / "dev_full_evaluation.jsonl").open("w", encoding="utf-8") as stream:
             for record in dev859_records:
@@ -930,7 +1139,7 @@ def run_benchmark(
             test201_summary, test201_records = evaluate_query_set(
                 runner, queries_test201, split_label="heldout_test_201", ablation_config="A5", show_progress=True
             )
-            all_degraded_channels.update(test201_summary.get("degraded_channels", []))
+            _merge_summary_channels(test201_summary, "heldout_test_201")
             multi_split_summaries["heldout_test_201"] = {k: v for k, v in test201_summary.items() if k != "_raw_arrays"}
             with open(out_dir / "heldout_test_201_evaluation.jsonl", "w", encoding="utf-8") as f:
                 for r in test201_records:
@@ -985,23 +1194,45 @@ def run_benchmark(
         "max_msrvtt": max_msrvtt,
         "run_all_splits": run_all_splits,
         "allow_insample_eval": allow_insample_eval,
-        "ltr_model_path": str(ltr_model_path),
+        "ltr_model_path": str(ltr_model_path) if ltr_model_path is not None else None,
+        "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
         "ablation_config": "A5",
+        "cutoffs": {
+            "top_k": 10,
+            "ranking_mode": "diverse_video",
+            "max_msrvtt": max_msrvtt,
+        },
     }
 
     git_sha = get_git_sha()
+    git_worktree = get_git_worktree_status()
+    hardware_info = get_hardware_info(device=getattr(runner, "device", "cpu"))
+    snapshot_artifacts = {
+        k: v for k, v in input_hashes.items()
+        if any(tok in k for tok in ("metadata.db", "faiss_", "manifest", "videntra_ltr", "siglip2"))
+    }
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
     final_summary = {
         "status": "completed_leakage_free" if gate["leakage_free"] else "fit_all_leakage_detected",
         "run_id": run_id,
         "benchmark_timestamp": ts_str,
         "git_sha": git_sha,
+        "git_worktree": git_worktree,
         "ltr_model_sha256": gate["ltr_model_sha256"],
+        "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
+        "ltr_feature_schema": gate.get("ltr_feature_schema"),
+        "manifest_hash": gate.get("manifest_hash"),
+        "source_group_rule": gate.get("source_group_rule"),
         "eval_mode": gate["eval_mode"],
         "overlap_with_eval": gate["overlap_with_eval"],
+        "oof_stats": oof_stats_by_split,
         "degraded_channels": gate["degraded_channels"],
+        "disabled_channels": sorted(all_disabled_channels),
+        "channel_status": all_channel_status,
         "leakage_free": gate["leakage_free"],
         "config": run_config,
+        "hardware": hardware_info,
+        "snapshot_artifact_hashes": snapshot_artifacts,
         "total_queries_evaluated": len(queries_dev150),
         "metrics_overall": dev150_summary["metrics_overall"],
         "per_dataset_metrics": dev150_summary["per_dataset_metrics"],
@@ -1037,8 +1268,16 @@ def run_benchmark(
     provenance = {
         "run_id": run_id,
         "git_sha": git_sha,
+        "git_worktree": git_worktree,
         "ltr_model_sha256": gate["ltr_model_sha256"],
+        "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
+        "ltr_feature_schema": gate.get("ltr_feature_schema"),
         "ltr_trained_on": gate["ltr_trained_on"],
+        "manifest_hash": gate.get("manifest_hash"),
+        "source_group_rule": gate.get("source_group_rule"),
+        "oof_validation_errors": gate.get("oof_validation_errors", []),
+        "fold_summary": gate.get("fold_summary", []),
+        "oof_stats": oof_stats_by_split,
         "overlap_with_eval": gate["overlap_with_eval"],
         "eval_mode": gate["eval_mode"],
         "eval_mode_by_split": gate["eval_mode_by_split"],
@@ -1046,6 +1285,10 @@ def run_benchmark(
         "allow_insample_eval": gate["allow_insample_eval"],
         "gate_passed": gate["gate_passed"],
         "degraded_channels": gate["degraded_channels"],
+        "disabled_channels": sorted(all_disabled_channels),
+        "channel_status": all_channel_status,
+        "hardware": hardware_info,
+        "snapshot_artifact_hashes": snapshot_artifacts,
         "input_sha256": input_hashes,
         "output_sha256": output_hashes,
         "inputs_unchanged": inputs_unchanged,
@@ -1054,14 +1297,14 @@ def run_benchmark(
             "python": sys.version,
             "platform": platform.platform(),
             "numpy": np.__version__,
-            "device": runner.device,
+            "device": getattr(runner, "device", "cpu"),
             "argv": sys.argv,
             "disk_cache": False,
         },
         "config": run_config,
         "limitations": [
             "Hashes identify local files, not media rights or independently verified model license.",
-            "No source-video duplicate grouping or pinned snapshot ID is established.",
+            "Cold query latency and process RAM profiling may be NOT_MEASURED unless explicitly collected.",
         ],
     }
     (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1076,7 +1319,7 @@ def run_benchmark(
 
     # E9: Save immutable provenance snapshot in work/experiments/<timestamp>_<split>_<git_sha>/
     exp_stamp = time.strftime("%Y%m%d_%H%M%S")
-    exp_dir = Path("work") / "experiments" / f"{exp_stamp}_all_splits_{git_sha}"
+    exp_dir = Path("work") / "experiments" / f"{exp_stamp}_all_splits_{git_sha}_{run_id[:8]}"
     exp_dir.mkdir(parents=True, exist_ok=False)
     for src_f in out_dir.iterdir():
         if src_f.is_file():
@@ -1112,6 +1355,11 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
     pds = summary["per_dataset_metrics"]
     msplits = summary.get("multi_split_evaluation", {})
     ablation = summary.get("ablation_matrix_dev150", {})
+
+    def fmt_opt(val: Any, unit: str = "") -> str:
+        if val is None:
+            return "NOT_MEASURED"
+        return f"{val}{unit}"
 
     baseline_p3 = {
         "video_hit_at_1": 0.5133,
@@ -1157,15 +1405,34 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
 
     tax = ov.get("failure_taxonomy", {})
     br = ov.get("branch_recall", {})
+    mom_n = ov.get("moment_labeled_n")
+    if mom_n is None:
+        mom_n = sum(1 for r in records if r.get("moment_hit_iou05") not in ("", None)) or ov.get("boundary_mae_n", 0)
+    asr_top1_n = ov.get("pure_asr_top1_count")
+    if asr_top1_n is None:
+        asr_top1_n = sum(1 for r in records if r.get("modality_attribution") == "asr")
+    asr_fp = ov.get("pure_asr_fp_top1_count", 0)
+    total_q = summary.get("total_queries_evaluated", len(records))
+
+    pval_h1 = ov.get("pvalue_vs_a0_hit1")
+    pval_mrr = ov.get("pvalue_vs_a0_mrr")
+    if pval_h1 is None or pval_mrr is None:
+        pval_str = "NOT_MEASURED"
+        pval_verdict = "NOT_MEASURED"
+    else:
+        pval_str = f"$p(\\text{{Hit@1}}) = {pval_h1:.5f}$, $p(\\text{{MRR}}) = {pval_mrr:.5f}$"
+        pval_verdict = "PASS" if (float(pval_h1) < 0.05 and float(pval_mrr) < 0.05) else "FAIL"
 
     content = f"""# Báo Cáo Kiểm Toán & Đánh Giá Toàn Diện Hệ Thống Tìm Kiếm Đa Phương Thức VIDENTRA (P0–P4)
 
-**Thời điểm thực thi:** {summary['benchmark_timestamp']} | **Run ID:** `{summary.get('run_id', 'unknown')}` | **Git SHA:** `{summary.get('git_sha', 'HEAD')}`  
+**Thời điểm thực thi:** {summary['benchmark_timestamp']} | **Run ID:** `{summary.get('run_id', 'unknown')}` | **Git SHA:** `{summary.get('git_sha', 'HEAD')}` (Dirty: `{summary.get('git_worktree', {}).get('git_dirty', 'unknown')}`)  
 **LTR Model SHA256:** `{summary.get('ltr_model_sha256', 'none')}` | **Eval Mode:** `{summary.get('eval_mode', 'unknown')}` | **Leakage Free:** `{summary.get('leakage_free', 'unknown')}`  
-**Overlap With Eval:** `{json.dumps(summary.get('overlap_with_eval', {}), ensure_ascii=False)}` | **Degraded Channels:** `{json.dumps(summary.get('degraded_channels', []), ensure_ascii=False)}`  
+**Overlap With Eval:** `{json.dumps(summary.get('overlap_with_eval', {}), ensure_ascii=False)}` | **OOF Stats:** `{json.dumps(summary.get('oof_stats', {}), ensure_ascii=False)}`  
+**Degraded Channels:** `{json.dumps(summary.get('degraded_channels', []), ensure_ascii=False)}` | **Disabled Channels:** `{json.dumps(summary.get('disabled_channels', []), ensure_ascii=False)}`  
+**Channel Status:** `{json.dumps(summary.get('channel_status', {}), ensure_ascii=False)}`  
 **Config:** `{json.dumps(summary.get('config', {}), ensure_ascii=False)}`  
+**Hardware:** `{json.dumps(summary.get('hardware', {}), ensure_ascii=False)}`  
 **Kiến trúc:** `UnifiedMultimodalSearchPipeline` (Single Source of Truth — SSOT 7-Stage Pipeline)  
-**Cơ sở dữ liệu và phần cứng:** chưa được thu thập tự động cho báo cáo này.  
 **Giới hạn:** các số lịch sử bên dưới chưa được xác minh lại và không dùng để nghiệm thu.  
 
 ---
@@ -1174,16 +1441,17 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
 
 | Hạng Mục Nghiệm Thu (Acceptance Criterion) | Ngưỡng Mục Tiêu (Target) | Kết Quả Đạt Được (`dev_150`) | Khoảng Tin Cậy 95% CI | Trạng Thái |
 | :--- | :---: | :---: | :---: | :---: |
-| **Video Hit@1 (`dev_150`)** | $\\ge 59.33\\%$ ($\\ge 89/150$) | **{ov['video_hit_at_1']*100:.2f}%** ({int(round(ov['video_hit_at_1']*summary['total_queries_evaluated']))}/{summary['total_queries_evaluated']}) | `[{ov['video_hit_at_1_ci95'][0]*100:.2f}%, {ov['video_hit_at_1_ci95'][1]*100:.2f}%]` | **{verdicts.get('video_hit_at_1', 'NOT_MEASURED')}** |
-| **Mean Reciprocal Rank (MRR)** | $\\ge 0.6450$ | **{ov['mean_reciprocal_rank_mrr']:.4f}** | `[{ov['mrr_ci95'][0]:.4f}, {ov['mrr_ci95'][1]:.4f}]` | **{verdicts.get('mean_reciprocal_rank_mrr', 'NOT_MEASURED')}** |
-| **Video nDCG@10** | $\\ge 0.6750$ | **{ov['video_ndcg_at_10']:.4f}** | `[{ov['video_ndcg_at_10_ci95'][0]:.4f}, {ov['video_ndcg_at_10_ci95'][1]:.4f}]` | **{verdicts.get('video_ndcg_at_10', 'NOT_MEASURED')}** |
-| **Moment Hit@1 (tIoU $\\ge 0.5$)** | $\\ge 72.73\\%$ ($\\ge 16/22$) | **{ov['moment_hit_at_1_iou05']*100:.2f}%** (số nhãn moment xem dữ liệu run) | `[{ov['moment_hit_at_1_iou05_ci95'][0]*100:.2f}%, {ov['moment_hit_at_1_iou05_ci95'][1]*100:.2f}%]` | **{verdicts.get('moment_hit_at_1_iou05', 'NOT_MEASURED')}** |
-| **Moment nDCG@5 (Graded 4-Level)** | $\\ge 0.5300$ | **{ov['moment_ndcg_at_5']:.4f}** | `[{ov['moment_ndcg_at_5_ci95'][0]:.4f}, {ov['moment_ndcg_at_5_ci95'][1]:.4f}]` | **{verdicts.get('moment_ndcg_at_5', 'NOT_MEASURED')}** |
-| **Pure-ASR False Positive Top-1** | $\\le 1$ ca sai | **{ov['pure_asr_fp_top1_count']} ca sai** | — | **{verdicts.get('pure_asr_fp_top1_count', 'NOT_MEASURED')}** |
-| **Non-Neural Latency ($p_{{50}} / p_{{95}}$)** | $\\le 20\\text{{ ms}} / \\le 45\\text{{ ms}}$ | **{ov['non_neural_latency_p50_ms']} ms / {ov['non_neural_latency_p95_ms']} ms** | — | **{verdicts.get('non_neural_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('non_neural_latency_p95_ms', 'NOT_MEASURED')}** |
-| **Cold Query Latency ($p_{{50}} / p_{{95}}$)** | $\\le 220\\text{{ ms}} / \\le 420\\text{{ ms}}$ | **{ov['cold_latency_p50_ms']} ms / {ov['cold_latency_p95_ms']} ms** | — | **{verdicts.get('cold_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('cold_latency_p95_ms', 'NOT_MEASURED')}** |
-| **Peak RAM Footprint** | $< 4,000\\text{{ MB}}$ ($4.0\\text{{ GB}}$) | **{ov['ram_peak_mb']} MB** (RSS: {ov['ram_rss_mb']} MB) | — | **{verdicts.get('ram_peak_mb', 'NOT_MEASURED')}** |
-| **Ý nghĩa thống kê ($p$-value vs `A0`)** | $p < 0.05$ | **$p(\\text{{Hit@1}}) = {ov.get('pvalue_vs_a0_hit1', float('nan')):.5f}$, $p(\\text{{MRR}}) = {ov.get('pvalue_vs_a0_mrr', float('nan')):.5f}$** | Paired Sign Test | **{'NOT_MEASURED'}** |
+| **Video Hit@1 (`dev_150`)** | $\\ge 59.33\\%$ ($\\ge 89/150$) | **{ov['video_hit_at_1']*100:.2f}%** ({int(round(ov['video_hit_at_1']*total_q))}/{total_q}) | `[{ov['video_hit_at_1_ci95'][0]*100:.2f}%, {ov['video_hit_at_1_ci95'][1]*100:.2f}%]` | **{verdicts.get('video_hit_at_1', 'NOT_MEASURED')}** |
+| **Mean Reciprocal Rank (MRR)** | $\\ge 0.6450$ | **{ov['mean_reciprocal_rank_mrr']:.4f}** (N={total_q}) | `[{ov['mrr_ci95'][0]:.4f}, {ov['mrr_ci95'][1]:.4f}]` | **{verdicts.get('mean_reciprocal_rank_mrr', 'NOT_MEASURED')}** |
+| **Video nDCG@10** | $\\ge 0.6750$ | **{ov['video_ndcg_at_10']:.4f}** (N={total_q}) | `[{ov['video_ndcg_at_10_ci95'][0]:.4f}, {ov['video_ndcg_at_10_ci95'][1]:.4f}]` | **{verdicts.get('video_ndcg_at_10', 'NOT_MEASURED')}** |
+| **Moment Hit@1 (tIoU $\\ge 0.5$)** | $\\ge 72.73\\%$ ($\\ge 16/22$) | **{ov['moment_hit_at_1_iou05']*100:.2f}%** (N={mom_n}) | `[{ov['moment_hit_at_1_iou05_ci95'][0]*100:.2f}%, {ov['moment_hit_at_1_iou05_ci95'][1]*100:.2f}%]` | **{verdicts.get('moment_hit_at_1_iou05', 'NOT_MEASURED')}** |
+| **Moment nDCG@5 (Graded 4-Level)** | $\\ge 0.5300$ | **{ov['moment_ndcg_at_5']:.4f}** (N={mom_n}) | `[{ov['moment_ndcg_at_5_ci95'][0]:.4f}, {ov['moment_ndcg_at_5_ci95'][1]:.4f}]` | **{verdicts.get('moment_ndcg_at_5', 'NOT_MEASURED')}** |
+| **Pure-ASR False Positive Top-1** | $\\le 1$ ca sai | **{asr_fp}/{asr_top1_n} pure-ASR** (N={total_q} total) | — | **{verdicts.get('pure_asr_fp_top1_count', 'NOT_MEASURED')}** |
+| **Non-Neural Latency ($p_{{50}} / p_{{95}}$)** | $\\le 20\\text{{ ms}} / \\le 45\\text{{ ms}}$ | **{fmt_opt(ov.get('non_neural_latency_p50_ms'), ' ms')} / {fmt_opt(ov.get('non_neural_latency_p95_ms'), ' ms')}** | — | **{verdicts.get('non_neural_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('non_neural_latency_p95_ms', 'NOT_MEASURED')}** |
+| **End-to-End Latency ($p_{{50}} / p_{{95}}$)** | — | **{fmt_opt(ov.get('end_to_end_latency_p50_ms', ov.get('latency_p50_ms')), ' ms')} / {fmt_opt(ov.get('end_to_end_latency_p95_ms', ov.get('latency_p95_ms')), ' ms')}** | — | — |
+| **Cold Query Latency ($p_{{50}} / p_{{95}}$)** | $\\le 220\\text{{ ms}} / \\le 420\\text{{ ms}}$ | **{fmt_opt(ov.get('cold_latency_p50_ms'), ' ms')} / {fmt_opt(ov.get('cold_latency_p95_ms'), ' ms')}** | — | **{verdicts.get('cold_latency_p50_ms', 'NOT_MEASURED') + ' / ' + verdicts.get('cold_latency_p95_ms', 'NOT_MEASURED')}** |
+| **Peak RAM Footprint** | $< 4,000\\text{{ MB}}$ ($4.0\\text{{ GB}}$) | **{fmt_opt(ov.get('ram_peak_mb'), ' MB')}** (RSS: {fmt_opt(ov.get('ram_rss_mb'), ' MB')}) | — | **{verdicts.get('ram_peak_mb', 'NOT_MEASURED')}** |
+| **Ý nghĩa thống kê ($p$-value vs `A0`)** | $p < 0.05$ | **{pval_str}** | Paired Sign Test | **{pval_verdict}** |
 
 ---
 
@@ -1278,11 +1546,14 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
 
 ## 6. Phân Rã Branch Recall@K (`E8`), Modality Attribution & Automated Failure Taxonomy (`E10`)
 
-### 6.1. Độ Phủ Nhánh Truy Xuất Trước Hợp Nhất (Branch Recall@K trên `dev_150`)
+### 6.1. Độ Phủ Nhánh Truy Xuất Trước Hợp Nhất (Branch & Stage Recall@K trên `dev_150`)
 - **`Visual Recall@30`**: **{br.get('visual_recall_at_30', 0.0)*100:.2f}%**
 - **`Visual Recall@120`**: **{br.get('visual_recall_at_120', 0.0)*100:.2f}%**
 - **`Lexical Recall@30 (OCR + ASR)`**: **{br.get('lexical_recall_at_30', 0.0)*100:.2f}%**
+- **`Union Recall (Visual + Lexical)`**: **{br.get('union_recall', 0.0)*100:.2f}%**
+- **`Shortlist Recall (Pre-Rerank)`**: **{br.get('shortlist_recall', 0.0)*100:.2f}%**
 - **`Fused Recall@10`**: **{br.get('fused_recall_at_10', 0.0)*100:.2f}%**
+- **`Target in Shortlist but Not Top-1`**: **{br.get('shortlist_not_top1_count', 0)}** ({br.get('shortlist_not_top1_rate', 0.0)*100:.2f}%)
 
 ### 6.2. Phân Bổ Đóng Góp Phương Thức Top-1 (Modality Attribution)
 
@@ -1316,12 +1587,14 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
 
 ## 7. Hồ Sơ Hiệu Năng Hệ Thống Trên CPU (`C1`, `C2`, `C3`)
 
-- **Cold query latency: NOT_MEASURED** (phép đo cũ không đại diện end-to-end):
-  - Trung bình (`Mean`): **{ov.get('cold_latency_mean_ms', 0.0)} ms** | Trung vị (`p50`): **{ov.get('cold_latency_p50_ms', 0.0)} ms** | Ngưỡng `p95`: **{ov.get('cold_latency_p95_ms', 0.0)} ms**
+- **Cold query latency:** {'NOT_MEASURED' if ov.get('cold_latency_p50_ms') is None else 'Measured'} (phép đo cũ không đại diện end-to-end):
+  - Trung bình (`Mean`): **{fmt_opt(ov.get('cold_latency_mean_ms'), ' ms')}** | Trung vị (`p50`): **{fmt_opt(ov.get('cold_latency_p50_ms'), ' ms')}** | Ngưỡng `p95`: **{fmt_opt(ov.get('cold_latency_p95_ms'), ' ms')}**
+- **Độ trễ End-to-End Online (Query Encoding + Retrieval + Rerank + Boundary):**
+  - Trung bình (`Mean`): **{fmt_opt(ov.get('end_to_end_latency_mean_ms', ov.get('latency_mean_ms')), ' ms')}** | Trung vị (`p50`): **{fmt_opt(ov.get('end_to_end_latency_p50_ms', ov.get('latency_p50_ms')), ' ms')}** | Ngưỡng `p95`: **{fmt_opt(ov.get('end_to_end_latency_p95_ms', ov.get('latency_p95_ms')), ' ms')}**
 - **Độ trễ truy xuất phi nơ-ron (Non-Neural Retrieval Latency = FAISS + FTS5 + Clustering + Fusion + Boundary):**
-  - Trung bình (`Mean`): **{ov.get('non_neural_latency_mean_ms', 0.0)} ms** | Trung vị (`p50`): **{ov.get('non_neural_latency_p50_ms', 0.0)} ms** | Ngưỡng `p95`: **{ov.get('non_neural_latency_p95_ms', 0.0)} ms**
+  - Trung bình (`Mean`): **{fmt_opt(ov.get('non_neural_latency_mean_ms'), ' ms')}** | Trung vị (`p50`): **{fmt_opt(ov.get('non_neural_latency_p50_ms'), ' ms')}** | Ngưỡng `p95`: **{fmt_opt(ov.get('non_neural_latency_p95_ms'), ' ms')}**
   - Phân rã trung vị từng chặng (`p50`): FAISS 864d IP: `{st_lat.get('faiss_ms', 0.0)} ms`, SQLite FTS5: `{st_lat.get('fts5_ms', 0.0)} ms`, Multimodal Fusion: `{st_lat.get('fusion_ms', 0.0)} ms`, Boundary Expansion: `{st_lat.get('boundary_ms', 0.0)} ms`.
-- **Bộ nhớ tiêu thụ (Memory Footprint):** RSS = **{ov.get('ram_rss_mb', 0.0)} MB**, Peak Working Set = **{ov.get('ram_peak_mb', 0.0)} MB** (xem verdict ở bảng nghiệm thu).
+- **Bộ nhớ tiêu thụ (Memory Footprint):** RSS = **{fmt_opt(ov.get('ram_rss_mb'), ' MB')}**, Peak Working Set = **{fmt_opt(ov.get('ram_peak_mb'), ' MB')}** (xem verdict ở bảng nghiệm thu).
 """
 
     with open(report_path, "w", encoding="utf-8") as f:
@@ -1336,6 +1609,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-msrvtt", type=int, default=100)
     parser.add_argument("--single-split-only", action="store_true")
     parser.add_argument("--allow-insample-eval", action="store_true")
+    parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
+    parser.add_argument("--no-ltr", action="store_true")
     args = parser.parse_args()
 
     run_benchmark(
@@ -1345,4 +1620,5 @@ if __name__ == "__main__":
         max_msrvtt=args.max_msrvtt,
         run_all_splits=not args.single_split_only,
         allow_insample_eval=args.allow_insample_eval,
+        ltr_model_path=None if args.no_ltr else args.ltr_model_path,
     )

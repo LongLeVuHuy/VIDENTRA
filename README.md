@@ -2,7 +2,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-864D%20Subspace%20%2B%20Small--LLM%20%2B%2024D%20Residual%20CrossLTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
-[![Test Suite](https://img.shields.io/badge/Pytest-501%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
+[![Test Suite](https://img.shields.io/badge/Pytest-507%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
 [![Hardware](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20%7C%20CPU--Ready-orange.svg)](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 
 ---
@@ -264,7 +264,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 ### 5.4. Chạy Kiểm thử Tự động (`pytest`) và Chạy Đánh giá Benchmark
 
 ```powershell
-# 1. Chạy toàn bộ 501 bài kiểm thử đơn vị và tích hợp
+# 1. Chạy toàn bộ 507 bài kiểm thử đơn vị và tích hợp
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 
 # 2. Chạy đánh giá nhanh trên tập dev_150
@@ -278,15 +278,15 @@ for rank, moment in enumerate(response["moments"], start=1):
 
 ## 6. Kết Quả Benchmark Thực Nghiệm
 
-> **Run tham chiếu chính thức:** `run_id = a2b3d80668124f38bfc2b0361066d7ea` (`benchmark_timestamp: 2026-11-15 13:59:35`, `eval_mode = "oof"`, `leakage_free = true`, `gate_passed = true`, `degraded_channels = []`, chi tiết tại [benchmark/benchmark_summary.json](file:///C:/Users/DELL/Desktop/VIDENTRA/benchmark/benchmark_summary.json)).
+> **Run tham chiếu chính thức:** `run_id = 08626d79ef744e3080c2fb24c4761cad` (`eval_mode = "oof"` chuẩn hóa theo canonical `source_group`, `leakage_free = true`, `gate_passed = true`, `degraded_channels = ["e5_caption_index", "spatial_patches"]`, chi tiết tại `work/experiments/20261115_153141_all_splits_dffdf8a_08626d79/provenance.json`).
 
 ### 6.1. Bảng Kết Quả Tổng Hợp Đa Tập Dữ Liệu (`dev_150`, `dev_full_859`, `heldout_test_201`)
 
 | Tập Đánh Giá | Số Queries | Chế Độ Đánh Giá | Video Hit@1 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 | Non-Neural Latency (`p50 / p95`) | Pure-ASR FP Top-1 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`dev_150` (Validation Core)** | 150 | **OOF** (95% CI) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73%`** | **`0.5121`** | **`64.32 / 246.13 ms`** | **`0`** |
-| **`dev_full_859` (Full Validation 80%)** | 859 | **OOF** | **`41.56%`** | **`0.5010`** | **`0.5459`** | — | — | **`64.32 / 246.13 ms`** | **`0`** |
-| **`heldout_test_201` (Blind Test 20%)** | 201 | **`clean_disjoint`** (`overlap=0`) | **`38.81%`** | **`0.4745`** | **`0.5226`** | — | — | **`64.32 / 246.13 ms`** | **`0`** |
+| **`dev_150` (Validation Core)** | 150 | **OOF** (95% CI) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73%`** | **`0.5121`** | **`40.47 / 122.49 ms`** | **`0`** |
+| **`dev_full_859` (Full Validation 80%)** | 859 | **OOF** | **`41.56%`** | **`0.5010`** | **`0.5459`** | — | — | **`40.47 / 122.49 ms`** | **`0`** |
+| **`heldout_test_201` (Blind Test 20%)** | 201 | **`clean_disjoint`** (`overlap=0`) | **`38.81%`** | **`0.4755`** | **`0.5255`** | — | — | **`40.47 / 122.49 ms`** | **`0`** |
 
 ---
 
@@ -311,7 +311,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 | **`A4`** | `+` Mở rộng biên tương phản thích ứng (**`Adaptive Contrast Boundary Expansion`**) | `61.33%` | `74.67%` | `0.6540` | `0.6763` | **`72.73%`** | **`0.5182`** |
 | **`A5` (Full VIDENTRA — OOF)** | `+` Đề xuất đa đỉnh **`NMS-MultiPeak`** + **`24d Residual CrossLTR (OOF)`** + **`Partial OT (T-SOT)`** + **`Attention Coherence`** | **`61.33%`** | `74.00%` | **`0.6515`** | **`0.6727`** | **`72.73%`** | **`0.5121`** |
 
-> **Ý nghĩa thống kê:** So với baseline thuần `SigLIP2` (`A0`), kiến trúc đầy đủ của VIDENTRA (`A5`) giúp tăng **`+14.66%` tuyệt đối về `Video Hit@1`** (`46.67%` $\to$ `61.33%`), **`+0.1114` về `MRR`** và tăng **`+68.18%` tuyệt đối về `Moment Hit@1 (tIoU >= 0.5)`** (`4.55%` $\to$ `72.73%`), với độ trễ phi nơ-ron trung vị **`64.32 ms / p95 = 246.13 ms`** trên CPU ở run `a2b3d80668124f38bfc2b0361066d7ea`.
+> **Ý nghĩa thống kê:** So với baseline thuần `SigLIP2` (`A0`), kiến trúc đầy đủ của VIDENTRA (`A5`) giúp tăng **`+14.66%` tuyệt đối về `Video Hit@1`** (`46.67%` $\to$ `61.33%`), **`+0.1114` về `MRR`** và tăng **`+68.18%` tuyệt đối về `Moment Hit@1 (tIoU >= 0.5)`** (`4.55%` $\to$ `72.73%`), với độ trễ phi nơ-ron trung vị **`40.47 ms / p95 = 122.49 ms`** trên CPU ở run `08626d79ef744e3080c2fb24c4761cad`.
 
 ---
 
@@ -322,7 +322,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 2. **Về mặt định vị khoảnh khắc thời gian:** Việc thay thế cơ chế cửa sổ trượt cứng nhắc bằng **Sổ cái thời gian giải mã chính xác (`PTS Ledger`) + Mở rộng biên tương phản thích ứng (`Adaptive Boundary Contrast`) + Quy hoạch động sự kiện (`SE-Viterbi`)** giúp nâng độ chính xác định vị khoảnh khắc `Moment Hit@1 (tIoU >= 0.5)` lên tới **`72.73%`**.
 
 ### 7.2. Định hướng nghiên cứu phát triển tiếp theo
-Phần khung mã nguồn cho **Residual Pairwise LTR 24d (OOF)**, **Unbalanced/Partial OT (`T-SOT`)**, **Query-Guided Temporal Attention Pooler (#23)**, **nối kênh `fts_vlm_caption` + `rrf_vis_caption` (#24)** và **Kaggle `--mode ocr_asr` / `--mode p85`** đã được hoàn thiện và kiểm chứng qua `501` tests. Các bước mở rộng tiếp theo (chi tiết tại [VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md](file:///C:/Users/DELL/Desktop/VIDENTRA/VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md)):
+Phần khung mã nguồn cho **Residual Pairwise LTR 24d (Canonical OOF)**, **Unbalanced/Partial OT (`T-SOT`)**, **Query-Guided Temporal Attention Pooler (#23)**, **nối kênh `fts_vlm_caption` + `rrf_vis_caption` (#24)**, **bảo toàn ingest OCR/ASR & relation grounding**, và **Kaggle `--mode ocr_asr` / `--mode p85`** đã được hoàn thiện và kiểm chứng qua `507` tests. Các bước mở rộng tiếp theo (chi tiết tại [PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md](file:///C:/Users/DELL/Desktop/VIDENTRA/docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md)):
 1. **Chạy thực chiến trên Kaggle T4 GPU để nạp 4 kho tín hiệu còn chờ dữ liệu (`D1`):** Chạy `prewarm_llm_query_cache.py --split all_1060` (`Qwen2.5-1.5B-Instruct` thật), `--mode p85` (`spatial_patches_fp16.npy` $3\times 3$ cho `QAT-LateInteraction` + `Florence-2` VLM Captions & `faiss_e5_caption_384.bin`) và `--mode ocr_asr` (`VietOCR` + `PaddleOCR_en` + `PhoWhisper-small` + `Faster-Whisper`).
 2. **Nâng chất lượng thị giác tầng gốc (`D2`):** Lấy mẫu dày hơn quanh peak khi rerank Top-15, thử nghiệm cross-encoder video-text nhẹ hoặc LoRA projection `SigLIP2` trên `dev_full_859` theo group-split `source_video_id`.
 3. **Mở rộng bộ xếp hạng phi tuyến & định vị (`D3`–`D5`):** Thử nghiệm LightGBM LambdaMART (hiệu chỉnh isotonic) trên dữ liệu OOF, bổ sung lexicon gập dấu chịu lỗi chính tả OCR tiếng Việt cho FTS5, và kiểm chứng định vị khoảnh khắc trên tập QVHighlights quy mô lớn hơn.

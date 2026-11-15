@@ -163,17 +163,10 @@ def test_run_benchmark_writes_provenance_and_fails_on_insample_overlap(tmp_path,
         },
     )
 
-    class StubPipeline:
-        ltr_ranker = LearnedRankerLTR(model_path=None)
-
-        def close(self):
-            pass
-
     class StubRunner:
         indexed_videos = {"v1"}
         dataset_videos = {"synthetic": {"v1"}}
         device = "cpu"
-        pipeline = StubPipeline()
         timings = {
             "t_total_ms": 2.0,
             "t_non_neural_ms": 1.0,
@@ -184,6 +177,10 @@ def test_run_benchmark_writes_provenance_and_fails_on_insample_overlap(tmp_path,
         }
         diagnostics = {"degraded": ["ocr_fts_disabled"]}
 
+        def __init__(self, ltr_model_path=None):
+            ranker = LearnedRankerLTR(model_path=ltr_model_path)
+            self.pipeline = type("P", (), {"ltr_ranker": ranker, "close": lambda _s: None})()
+
         def search_multimodal(self, query, top_k, ablation_config):
             return [{
                 "video_id": "v1",
@@ -193,7 +190,7 @@ def test_run_benchmark_writes_provenance_and_fails_on_insample_overlap(tmp_path,
                 "modality_attribution": "visual",
             }]
 
-    monkeypatch.setattr(rvb, "MultimodalBenchmarkRunner", lambda: StubRunner())
+    monkeypatch.setattr(rvb, "MultimodalBenchmarkRunner", lambda **kwargs: StubRunner(**kwargs))
     monkeypatch.setattr(
         rvb,
         "load_validation_queries",
@@ -279,3 +276,210 @@ def test_oof_supports_eval_query_ids_schema_from_train_ltr_cv(tmp_path):
     rvb._apply_ltr_fold_payload(ranker, ltr_info["fold_query_map"]["q1"])
     assert ranker.model_type == "pairwise_logistic"
     assert ranker.is_loaded is True
+
+
+def test_oof_blocks_group_overlap_duplicate_missing_and_manifest_mismatch(tmp_path):
+    base_fold = {
+        "fold_id": 0,
+        "train_group_ids": ["g1"],
+        "eval_group_ids": ["g2"],
+        "eval_query_ids": ["q1"],
+        "weights": [0.1] * len(LTR_FEATURE_NAMES),
+    }
+
+    # 1. Train/eval group overlap
+    p_overlap = tmp_path / "ltr_group_overlap.json"
+    _write_ltr_artifact(
+        p_overlap,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["q1"],
+            "manifest_hash": "abc",
+            "fold_weights": [{**base_fold, "eval_group_ids": ["g1", "g2"]}],
+        },
+    )
+    gate_overlap = evaluate_provenance_gate(
+        load_ltr_model_info(p_overlap),
+        {"dev_150": ["q1"]},
+        used_oof_splits={"dev_150"},
+    )
+    assert gate_overlap["leakage_free"] is False
+    assert gate_overlap["gate_passed"] is False
+    assert any("train_eval_group_overlap" in e for e in gate_overlap["oof_validation_errors"])
+
+    # 2. Duplicate OOF query across folds
+    p_dup = tmp_path / "ltr_dup.json"
+    _write_ltr_artifact(
+        p_dup,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["q1"],
+            "fold_weights": [
+                base_fold,
+                {**base_fold, "fold_id": 1, "train_group_ids": ["g3"], "eval_group_ids": ["g4"]},
+            ],
+        },
+    )
+    gate_dup = evaluate_provenance_gate(
+        load_ltr_model_info(p_dup),
+        {"dev_150": ["q1"]},
+        used_oof_splits={"dev_150"},
+    )
+    assert gate_dup["leakage_free"] is False
+    assert any("duplicate_oof_query:q1" in e for e in gate_dup["oof_validation_errors"])
+
+    # 3. Missing OOF query
+    p_miss = tmp_path / "ltr_miss.json"
+    _write_ltr_artifact(
+        p_miss,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["q1", "q2"],
+            "fold_weights": [base_fold],
+        },
+    )
+    gate_miss = evaluate_provenance_gate(
+        load_ltr_model_info(p_miss),
+        {"dev_150": ["q1", "q2"]},
+        used_oof_splits={"dev_150"},
+    )
+    assert gate_miss["leakage_free"] is False
+    assert any("missing_oof_queries" in e for e in gate_miss["oof_validation_errors"])
+
+    # 4. Manifest hash mismatch
+    p_ok = tmp_path / "ltr_ok.json"
+    _write_ltr_artifact(
+        p_ok,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["q1"],
+            "manifest_hash": "hash_v1",
+            "fold_weights": [base_fold],
+        },
+    )
+    gate_mm = evaluate_provenance_gate(
+        load_ltr_model_info(p_ok),
+        {"dev_150": ["q1"]},
+        used_oof_splits={"dev_150"},
+        expected_manifest_hash="hash_v2",
+    )
+    assert gate_mm["leakage_free"] is False
+    assert any("manifest_hash_mismatch" in e for e in gate_mm["oof_validation_errors"])
+
+
+def test_custom_ltr_model_path_changes_score_and_provenance_across_cwd(tmp_path, monkeypatch):
+    ltr_a = tmp_path / "ltr_a.json"
+    ltr_b = tmp_path / "ltr_b.json"
+    sha_a = _write_ltr_artifact(
+        ltr_a,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [1.0] + [0.0] * (len(LTR_FEATURE_NAMES) - 1),
+            "trained_query_ids": ["train_only"],
+        },
+    )
+    sha_b = _write_ltr_artifact(
+        ltr_b,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [-1.0] + [0.0] * (len(LTR_FEATURE_NAMES) - 1),
+            "trained_query_ids": ["train_only"],
+        },
+    )
+    assert sha_a != sha_b
+
+    class ScoreRunner:
+        indexed_videos = {"v1"}
+        dataset_videos = {"synthetic": {"v1"}}
+        device = "cpu"
+        timings = {
+            "t_total_ms": 2.0, "t_non_neural_ms": 1.0, "t_faiss_ms": 0.5,
+            "t_fts5_ms": 0.1, "t_fusion_ms": 0.2, "t_boundary_ms": 0.2,
+        }
+        diagnostics = {
+            "degraded": {
+                "e5_text_index": {"status": "missing_artifact", "reason": "e5 missing"},
+                "e5_caption_index": {"status": "disabled_by_config", "reason": "disabled"},
+                "spatial_patches": {"status": "ready", "reason": ""},
+            }
+        }
+
+        def __init__(self, ltr_model_path=None):
+            self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
+            self.pipeline = type("P", (), {"ltr_ranker": self.ltr_ranker, "close": lambda _s: None})()
+
+        def search_multimodal(self, query, top_k, ablation_config):
+            w0 = float(self.ltr_ranker.weights[0])
+            return [{
+                "video_id": "v1", "start_sec": 0.0, "end_sec": 5.0,
+                "ranking_score": 0.5 + 0.1 * w0, "modality_attribution": "visual",
+            }]
+
+    monkeypatch.setattr(rvb, "MultimodalBenchmarkRunner", lambda ltr_model_path=None: ScoreRunner(ltr_model_path))
+    monkeypatch.setattr(
+        rvb,
+        "load_validation_queries",
+        lambda *_a, **_kw: [{"query_id": "eval_q", "query_text": "q", "dataset": "synthetic", "target_videos": ["v1"], "target_windows": []}],
+    )
+    monkeypatch.setattr(rvb, "hash_paths", lambda paths: {str(p): "stub" for p in paths})
+    monkeypatch.setattr(rvb, "verify_hashes", lambda _h: True)
+
+    val_dir = tmp_path / "val"
+    val_dir.mkdir()
+    workdir = tmp_path / "other_cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    out_a = tmp_path / "out_a"
+    out_b = tmp_path / "out_b"
+    rvb.run_benchmark(val_dir=val_dir, test_dir=tmp_path / "no_test", out_dir=out_a, run_all_splits=False, ltr_model_path=ltr_a)
+    rvb.run_benchmark(val_dir=val_dir, test_dir=tmp_path / "no_test", out_dir=out_b, run_all_splits=False, ltr_model_path=ltr_b)
+
+    prov_a = json.loads((out_a / "provenance.json").read_text(encoding="utf-8"))
+    prov_b = json.loads((out_b / "provenance.json").read_text(encoding="utf-8"))
+    sum_a = json.loads((out_a / "benchmark_summary.json").read_text(encoding="utf-8"))
+
+    assert prov_a["ltr_model_sha256"] == sha_a
+    assert prov_b["ltr_model_sha256"] == sha_b
+    assert prov_a["ltr_model_resolved_path"] == str(ltr_a.resolve())
+    assert sum_a["degraded_channels"] == ["e5_text_index"]
+    assert sum_a["disabled_channels"] == ["e5_caption_index"]
+    assert sum_a["channel_status"]["e5_text_index"]["status"] == "missing_artifact"
+    assert sum_a["channel_status"]["e5_caption_index"]["status"] == "disabled_by_config"
+    assert sum_a["channel_status"]["spatial_patches"]["status"] == "ready"
+
+    rec_a = json.loads((out_a / "per_query_evaluation.jsonl").read_text(encoding="utf-8").strip())
+    rec_b = json.loads((out_b / "per_query_evaluation.jsonl").read_text(encoding="utf-8").strip())
+    score_a = json.loads(rec_a["ranked_predictions"])[0]["ranking_score"]
+    score_b = json.loads(rec_b["ranked_predictions"])[0]["ranking_score"]
+    assert score_a > score_b
+
+
+def test_missing_or_corrupt_ltr_fails_early(tmp_path):
+    with pytest.raises(RuntimeError, match="Invalid LTR model artifact"):
+        rvb.run_benchmark(
+            val_dir=tmp_path,
+            out_dir=tmp_path / "out_missing",
+            run_all_splits=False,
+            ltr_model_path=tmp_path / "does_not_exist.json",
+        )
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{bad json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Invalid LTR model artifact"):
+        rvb.run_benchmark(
+            val_dir=tmp_path,
+            out_dir=tmp_path / "out_corrupt",
+            run_all_splits=False,
+            ltr_model_path=corrupt,
+        )

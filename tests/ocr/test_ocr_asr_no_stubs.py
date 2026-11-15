@@ -185,8 +185,9 @@ def test_kaggle_ocr_asr_worker_and_ingest_roundtrip(tmp_path: Path):
     assert (out_dir / "asr_segments.jsonl").is_file()
     assert (out_dir / "ocr_asr_receipt.json").is_file()
 
-    # Append a mock ASR segment to asr_segments.jsonl to test full OCR+ASR ingest + FTS5 rebuild
-    (out_dir / "asr_segments.jsonl").write_text(
+    # Append a mock ASR segment to asr_segments.jsonl and sync receipt sha256/line_count to test full OCR+ASR ingest + FTS5 rebuild
+    import hashlib
+    asr_payload = (
         json.dumps({
             "segment_id": "vid_001__asr_0",
             "video_id": "vid_001",
@@ -196,9 +197,17 @@ def test_kaggle_ocr_asr_worker_and_ingest_roundtrip(tmp_path: Path):
             "raw_text": "Xin chào các bạn",
             "language": "vi",
             "confidence": 0.90,
-        }) + "\n",
-        encoding="utf-8",
+        })
+        + "\n"
     )
+    (out_dir / "asr_segments.jsonl").write_text(asr_payload, encoding="utf-8")
+    receipt_data = json.loads((out_dir / "ocr_asr_receipt.json").read_text(encoding="utf-8"))
+    receipt_data["artifacts"]["asr_segments"] = {
+        "file": "asr_segments.jsonl",
+        "sha256": hashlib.sha256((out_dir / "asr_segments.jsonl").read_bytes()).hexdigest(),
+        "line_count": 1,
+    }
+    (out_dir / "ocr_asr_receipt.json").write_text(json.dumps(receipt_data, indent=2), encoding="utf-8")
 
     ingest_res = ingest_ocr_asr_artifacts(outputs_dir=out_dir, db_path=db_path)
     assert ingest_res["ocr_observations_ingested"] == 1
@@ -208,7 +217,7 @@ def test_kaggle_ocr_asr_worker_and_ingest_roundtrip(tmp_path: Path):
     with sqlite3.connect(str(db_path)) as conn:
         obs_ids = {r[0] for r in conn.execute("SELECT observation_id FROM OCRObservations").fetchall()}
         assert "existing_obs_0" in obs_ids
-        assert "vid_001__kf_00000__ocr_0" in obs_ids
+        assert any(oid.startswith("vid_001__kf_00000__ocr_") and oid.endswith("_00000") for oid in obs_ids)
 
         ocr_fts = conn.execute("SELECT video_id FROM fts_ocr WHERE fts_ocr MATCH 'khuyen'").fetchall()
         asr_fts = conn.execute("SELECT video_id FROM fts_asr WHERE fts_asr MATCH 'chao'").fetchall()

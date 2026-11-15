@@ -58,6 +58,7 @@ from videntra.retrieval.alignment import (
     temporal_sinkhorn_alignment_score,
     viterbi_subevent_localization,
 )
+from videntra.evidence.normalize import contains_text_phrase
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
 from videntra.ranking.calibration import calibrate_asr_confidence
@@ -1121,9 +1122,174 @@ class UnifiedMultimodalSearchPipeline:
             timings = deepcopy(self.last_timings)
             if verify_relations:
                 timings["t_relation_ms"] = (time.perf_counter() - verify_start) * 1000.0
-            return {"snapshot_id": snapshot_id, "moments": moments,
-                    "timings": timings,
-                    "diagnostics": deepcopy(self.last_diagnostics), "relation_assessments": relation_assessments}
+            cand_moments = self.last_diagnostics.get("all_candidate_moments", ())
+            top_k = int(kwargs.get("top_k", 10))
+            ranked_videos = self._build_ranked_videos(moments, cand_moments, top_k=top_k)
+            diagnostics = deepcopy(self.last_diagnostics)
+            diagnostics["ranked_videos"] = ranked_videos
+            return {
+                "snapshot_id": snapshot_id,
+                "moments": moments,
+                "ranked_moments": moments,
+                "ranked_videos": ranked_videos,
+                "timings": timings,
+                "diagnostics": diagnostics,
+                "relation_assessments": relation_assessments,
+            }
+
+    @staticmethod
+    def _build_ranked_videos(
+        moments: Sequence[RankedMoment],
+        candidate_moments: Sequence[RankedMoment] = (),
+        top_k: int | None = None,
+    ) -> list[RankedMoment]:
+        """Deduplicate scored moments by video_id keeping each video's best score with stable tie-break."""
+        best_by_vid: dict[str, RankedMoment] = {}
+        seen_in_primary: set[str] = set()
+        for m in moments:
+            seen_in_primary.add(m.video_id)
+            prev = best_by_vid.get(m.video_id)
+            if prev is None or float(m.ranking_score) > float(prev.ranking_score):
+                best_by_vid[m.video_id] = m
+        for m in candidate_moments:
+            if m.video_id in seen_in_primary:
+                continue
+            prev = best_by_vid.get(m.video_id)
+            if prev is None or float(m.ranking_score) > float(prev.ranking_score):
+                best_by_vid[m.video_id] = m
+        ranked = sorted(
+            best_by_vid.values(),
+            key=lambda m: (-float(m.ranking_score), str(m.video_id), float(m.moment_start_seconds)),
+        )
+        return ranked[:top_k] if top_k is not None else ranked
+
+    def _build_degraded_diagnostics(self, ablation_config: str) -> dict[str, dict[str, str]]:
+        """Build structured channel -> {status, reason} diagnostics."""
+        degraded: dict[str, dict[str, str]] = {}
+        if ablation_config in ("A0", "A1", "A2"):
+            degraded["e5_text_index"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
+            degraded["e5_caption_index"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
+            degraded["lexical_db"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
+        else:
+            if "e5_text_index" in self._degraded_channels:
+                degraded["e5_text_index"] = {"status": "failed", "reason": self._degraded_channels["e5_text_index"]}
+            elif self.e5_text_index is not None:
+                degraded["e5_text_index"] = {"status": "ready", "reason": "loaded"}
+            else:
+                degraded["e5_text_index"] = {"status": "missing_artifact", "reason": "e5_text_index_not_loaded"}
+
+            if "e5_caption_index" in self._degraded_channels:
+                degraded["e5_caption_index"] = {"status": "failed", "reason": self._degraded_channels["e5_caption_index"]}
+            elif self.e5_caption_index is not None:
+                degraded["e5_caption_index"] = {"status": "ready", "reason": "loaded"}
+            else:
+                degraded["e5_caption_index"] = {"status": "missing_artifact", "reason": "e5_caption_index_not_loaded"}
+
+            if self.db_conn is not None:
+                degraded["lexical_db"] = {"status": "ready", "reason": "connected"}
+            else:
+                degraded["lexical_db"] = {"status": "missing_artifact", "reason": "db_conn_none"}
+
+        if ablation_config in ("A0", "A1", "A2", "A3"):
+            degraded["spatial_patches"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
+        elif "spatial_patches" in self._degraded_channels:
+            degraded["spatial_patches"] = {"status": "failed", "reason": self._degraded_channels["spatial_patches"]}
+        elif self.spatial_patches is not None:
+            degraded["spatial_patches"] = {"status": "ready", "reason": "loaded"}
+        else:
+            degraded["spatial_patches"] = {"status": "missing_artifact", "reason": "spatial_patches_not_loaded"}
+
+        for ch, reason in self._degraded_channels.items():
+            if ch not in degraded:
+                degraded[ch] = {"status": "failed", "reason": str(reason)}
+        return degraded
+
+    def _build_clause_multimodal_curves(
+        self,
+        video_id: str,
+        cand_ts: Sequence[float],
+        sub_clauses: Sequence[str],
+        ocr_phrases: Sequence[str],
+        asr_phrases: Sequence[str],
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, str]]:
+        """Build per-clause OCR and ASR alignment curves over keyframe ledger timestamps."""
+        k_clauses = len(sub_clauses)
+        m_frames = len(cand_ts)
+        ocr_curves = np.zeros((k_clauses, m_frames), dtype=np.float32)
+        asr_curves = np.zeros((k_clauses, m_frames), dtype=np.float32)
+        availability: dict[str, str] = {
+            "visual": "available" if m_frames > 0 else "missing",
+            "ocr": "missing",
+            "asr": "missing",
+        }
+        if self.db_conn is None or k_clauses == 0 or m_frames == 0:
+            return ocr_curves, asr_curves, availability
+        if not ocr_phrases and not asr_phrases:
+            return ocr_curves, asr_curves, availability
+
+        # Map each clause to phrases it mentions (fall back to all phrases if none match a clause)
+        clause_ocr_phrases: list[list[str]] = []
+        for c in sub_clauses:
+            matched = [p for p in ocr_phrases if p and contains_text_phrase(c, p)]
+            clause_ocr_phrases.append(matched)
+        if ocr_phrases and not any(clause_ocr_phrases):
+            clause_ocr_phrases = [list(ocr_phrases) for _ in sub_clauses]
+
+        clause_asr_phrases: list[list[str]] = []
+        for c in sub_clauses:
+            matched = [p for p in asr_phrases if p and contains_text_phrase(c, p)]
+            clause_asr_phrases.append(matched)
+        if asr_phrases and not any(clause_asr_phrases):
+            clause_asr_phrases = [list(asr_phrases) for _ in sub_clauses]
+
+        ts_arr = np.asarray(cand_ts, dtype=np.float64)
+        try:
+            cursor = self.db_conn.cursor()
+            if ocr_phrases and _table_columns(cursor, "OCRObservations"):
+                ocr_rows = cursor.execute(
+                    "SELECT raw_text, timestamp_ms FROM OCRObservations WHERE video_id=?",
+                    (video_id,),
+                ).fetchall()
+                if ocr_rows:
+                    availability["ocr"] = "available"
+                    for raw_text, ts_ms in ocr_rows:
+                        if raw_text is None or ts_ms is None:
+                            continue
+                        t_obs = float(ts_ms) / 1000.0
+                        text_str = str(raw_text)
+                        for k_idx, phrases in enumerate(clause_ocr_phrases):
+                            if any(contains_text_phrase(text_str, ph) for ph in phrases):
+                                diffs = np.abs(ts_arr - t_obs)
+                                near_mask = diffs <= 2.5
+                                if np.any(near_mask):
+                                    scores = np.exp(-0.5 * (diffs[near_mask] / 1.5) ** 2).astype(np.float32)
+                                    ocr_curves[k_idx, near_mask] = np.maximum(ocr_curves[k_idx, near_mask], scores)
+
+            if asr_phrases and _table_columns(cursor, "ASRSegments"):
+                asr_rows = cursor.execute(
+                    "SELECT raw_text, start_ms, end_ms FROM ASRSegments WHERE video_id=? AND end_ms>start_ms",
+                    (video_id,),
+                ).fetchall()
+                if asr_rows:
+                    availability["asr"] = "available"
+                    for raw_text, s_ms, e_ms in asr_rows:
+                        if raw_text is None or s_ms is None or e_ms is None:
+                            continue
+                        s_sec = float(s_ms) / 1000.0
+                        e_sec = float(e_ms) / 1000.0
+                        text_str = str(raw_text)
+                        for k_idx, phrases in enumerate(clause_asr_phrases):
+                            if any(contains_text_phrase(text_str, ph) for ph in phrases):
+                                in_span = (ts_arr >= (s_sec - 0.5)) & (ts_arr <= (e_sec + 0.5))
+                                if np.any(in_span):
+                                    asr_curves[k_idx, in_span] = 1.0
+        except sqlite3.Error as exc:
+            availability["ocr"] = "failed"
+            availability["asr"] = "failed"
+            self._degraded_channels["viterbi_multimodal_curves"] = str(exc)
+            logger.warning("Failed to build multimodal Viterbi curves for %s: %s", video_id, exc)
+
+        return ocr_curves, asr_curves, availability
 
     def _collect_moment_evidence(self, video_id: str, start_ms: float, end_ms: float) -> list[dict[str, Any]]:
         """Collect schema-safe interval-contained OCR, calibrated ASR, and 2D FrameObjects evidence."""
@@ -1446,8 +1612,12 @@ class UnifiedMultimodalSearchPipeline:
             start_ms = moment.moment_start_seconds * 1000.0
             end_ms = moment.moment_end_seconds * 1000.0
             evidence = self._collect_moment_evidence(moment.video_id, start_ms, end_ms)
-            vid_intervals = self._last_event_intervals.get(moment.video_id)
-            match = matcher.match(graph, evidence, event_intervals=vid_intervals)
+            match = matcher.match(
+                graph,
+                evidence,
+                video_id=moment.video_id,
+                moment_window=(moment.moment_start_seconds, moment.moment_end_seconds),
+            )
             referenced = {ref for value in match.predicate_evaluations.values() for ref in value.evidence_refs}
             assessments.append({"status": match.overall_status,
                 "structural_score": match.structural_score,
@@ -1505,6 +1675,7 @@ class UnifiedMultimodalSearchPipeline:
 
         t_start = time.perf_counter()
         video_curve_cache: dict[str, tuple[list[float], np.ndarray]] = {}
+        viterbi_availability: dict[str, dict[str, str]] = {}
         self._last_event_intervals = {}
 
         # =========================================================================
@@ -1773,9 +1944,19 @@ class UnifiedMultimodalSearchPipeline:
                     if use_se_viterbi:
                         w_ocr_v = 0.7 if routing_plan.has_explicit_ocr_intent else 0.4
                         w_asr_v = 0.7 if routing_plan.has_explicit_asr_intent else 0.4
+                        ocr_curves, asr_curves, modal_avail = self._build_clause_multimodal_curves(
+                            cvid,
+                            cand_ts,
+                            sub_clauses,
+                            routing_plan.ocr_phrases,
+                            routing_plan.asr_phrases,
+                        )
+                        viterbi_availability[cvid] = modal_avail
                         vit_res = viterbi_subevent_localization(
                             timestamps_sec=cand_ts,
                             event_vis_curves=clause_frame_sims,
+                            event_ocr_curves=ocr_curves,
+                            event_asr_curves=asr_curves,
                             event_weights=[(1.0, w_ocr_v, w_asr_v)] * len(sub_q_864),
                             max_gap_sec=35.0,
                         )
@@ -1800,17 +1981,6 @@ class UnifiedMultimodalSearchPipeline:
                     video_seq_scores[cvid] = seq_score
                     if anchor_win is not None:
                         video_anchor_windows[cvid] = anchor_win
-                        if routing_plan is not None:
-                            action_preds = [
-                                p.id for p in routing_plan.query_graph.predicates
-                                if p.kind != "temporal"
-                            ]
-                            if len(action_preds) >= 2:
-                                t_mid = (anchor_win[0] + anchor_win[1]) / 2.0
-                                self._last_event_intervals[cvid] = {
-                                    action_preds[0]: (anchor_win[0], t_mid),
-                                    action_preds[1]: (t_mid, anchor_win[1]),
-                                }
 
             seq_weight = (
                 0.45
@@ -2925,13 +3095,19 @@ class UnifiedMultimodalSearchPipeline:
             "visual_top30_vids": set(vis_ordered_vids[:30]),
             "visual_top120_vids": set(vis_ordered_vids[:120]),
             "lexical_top30_vids": set(lex_ordered_vids[:30]),
+            "ocr_vids": list(dict.fromkeys(c["video_id"] for c in ocr_candidates)),
+            "asr_vids": list(dict.fromkeys(c["video_id"] for c in asr_candidates)),
+            "union_dedup_vids": list(dict.fromkeys([*vis_ordered_vids, *lex_ordered_vids])),
+            "shortlist_before_rerank_vids": list(dict.fromkeys(m.video_id for m in cand_moments)),
+            "visual_frame_depth": len(visual_candidates),
             "fused_top10_vids": {m.video_id for m in cand_moments[:10]},
             "all_candidate_moments": cand_moments,
             "visual_candidates": visual_candidates[:30],
             "ocr_candidates": ocr_candidates[:15],
             "asr_candidates": asr_candidates[:15],
             "candidate_ltr_features": cand_ltr_features,
-            "degraded": dict(self._degraded_channels),
+            "viterbi_modality_availability": viterbi_availability,
+            "degraded": self._build_degraded_diagnostics(ablation_config),
         }
 
         # =========================================================================

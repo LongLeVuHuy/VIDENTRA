@@ -577,8 +577,103 @@ def test_b6_e5_caption_decoupled_and_b11_degraded_diagnostics(tmp_path: Path, ca
     assert len(e5_calls) == 1
     assert "degraded" in resp["diagnostics"]
     assert "spatial_patches" in resp["diagnostics"]["degraded"]
+    assert resp["diagnostics"]["degraded"]["spatial_patches"]["status"] == "failed"
+    assert resp["diagnostics"]["degraded"]["e5_caption_index"]["status"] == "failed"
+    assert resp["diagnostics"]["degraded"]["e5_text_index"]["status"] == "missing_artifact"
+    assert pipeline._build_degraded_diagnostics("A0")["e5_text_index"]["status"] == "disabled_by_config"
     ltr_v1 = resp["diagnostics"]["candidate_ltr_features"].get("v1", {})
     assert ltr_v1.get("rrf_vis_caption", 0.0) > 0.0
     assert "temporal_attention_coherence" in ltr_v1
+
+
+def test_ranked_videos_vs_ranked_moments_dedup_and_tie_break():
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+    from videntra.retrieval.visual import RankedMoment
+
+    def _m(vid: str, score: float, start: float = 0.0, mid_suffix: str = "") -> RankedMoment:
+        return RankedMoment(
+            moment_id=f"{vid}_{start}_{start + 4.0}{mid_suffix}",
+            video_id=vid,
+            moment_start_seconds=start,
+            moment_end_seconds=start + 4.0,
+            start_original_frame_index=0,
+            end_original_frame_index=10,
+            representative_original_frame_index=5,
+            representative_timestamp_seconds=start + 2.0,
+            ranking_score=score,
+        )
+
+    # 11 candidate moments: v1 has 2 proposals at the top; target v10 is the 10th distinct video
+    cand_moments = [
+        _m("v1", 0.99, 0.0),
+        _m("v1", 0.95, 20.0, "_win2"),
+        _m("v2", 0.90),
+        _m("v3", 0.89),
+        _m("v4", 0.88),
+        _m("v5", 0.87),
+        _m("v6", 0.86),
+        _m("v7", 0.85),
+        _m("v8", 0.84),
+        _m("v9", 0.83),
+        _m("v10", 0.82),
+    ]
+    top10_moments = cand_moments[:10]
+    ranked_videos = UnifiedMultimodalSearchPipeline._build_ranked_videos(
+        top10_moments, cand_moments, top_k=10
+    )
+    assert [m.video_id for m in ranked_videos] == [f"v{i}" for i in range(1, 11)]
+    assert len({m.video_id for m in ranked_videos}) == 10
+    assert "v10" in {m.video_id for m in ranked_videos}
+    # Both v1 moments remain in top10_moments
+    assert sum(1 for m in top10_moments if m.video_id == "v1") == 2
+
+    # Corpus < K and stable tie-break by video_id
+    tied = [_m("v_b", 0.50), _m("v_a", 0.50), _m("v_b", 0.40, 10.0)]
+    ranked_tied = UnifiedMultimodalSearchPipeline._build_ranked_videos(tied, top_k=10)
+    assert [m.video_id for m in ranked_tied] == ["v_a", "v_b"]
+
+
+def test_build_clause_multimodal_curves_availability_and_values():
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE OCRObservations (observation_id TEXT, video_id TEXT, raw_text TEXT, model_id TEXT, timestamp_ms REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE ASRSegments (segment_id TEXT, video_id TEXT, raw_text TEXT, model_id TEXT, start_ms REAL, end_ms REAL)"
+    )
+    conn.execute(
+        "INSERT INTO OCRObservations VALUES ('o1', 'v1', 'BIG SALE', 'rapidocr', 2000.0)"
+    )
+    conn.execute(
+        "INSERT INTO ASRSegments VALUES ('a1', 'v1', 'thank you very much', 'whisper', 6000.0, 8000.0)"
+    )
+    pipe = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipe.db_conn = conn
+
+    ocr_c, asr_c, avail = pipe._build_clause_multimodal_curves(
+        "v1",
+        [0.0, 2.0, 4.0, 7.0, 10.0],
+        ["sign says BIG SALE", "speaker says thank you"],
+        ["BIG SALE"],
+        ["thank you"],
+    )
+    assert avail == {"visual": "available", "ocr": "available", "asr": "available"}
+    assert ocr_c.shape == (2, 5)
+    assert asr_c.shape == (2, 5)
+    assert ocr_c[0, 1] > 0.9 and ocr_c[1, 1] == 0.0
+    assert asr_c[1, 3] == 1.0 and asr_c[0, 3] == 0.0
+
+    # Missing evidence video
+    _, _, avail_missing = pipe._build_clause_multimodal_curves(
+        "v_missing",
+        [0.0, 2.0],
+        ["sign says BIG SALE", "speaker says thank you"],
+        ["BIG SALE"],
+        ["thank you"],
+    )
+    assert avail_missing == {"visual": "available", "ocr": "missing", "asr": "missing"}
+    conn.close()
 
 
