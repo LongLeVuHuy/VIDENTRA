@@ -267,6 +267,8 @@ def evaluate_provenance_gate(
     allow_insample_eval: bool = False,
     degraded_channels: Iterable[str] = (),
     expected_manifest_hash: str | None = None,
+    feature_flags: dict[str, Any] | None = None,
+    selected_splits: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate leakage-free provenance gate and return structured provenance metadata."""
     overlap_with_eval = compute_split_overlaps(ltr_info, split_query_ids)
@@ -333,4 +335,6 @@ def evaluate_provenance_gate(
         "allow_insample_eval": bool(allow_insample_eval),
         "gate_passed": gate_passed,
         "degraded_channels": sorted({str(c) for c in degraded_channels if c}),
+        "feature_flags": dict(feature_flags) if feature_flags is not None else {},
+        "selected_splits": [str(s) for s in selected_splits] if selected_splits is not None else sorted(split_query_ids.keys()),
     }

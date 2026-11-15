@@ -244,6 +244,178 @@ def test_temporal_grounding_min_max_gap_and_after_operator() -> None:
     res_far = GraphMatcher().match(graph_gap, ev_far)
     assert res_far.predicate_evaluations["p_temp"].state == MatchState.CONTRADICTED
 
+    # Gap too small (200ms < min_gap_ms 500ms) -> CONTRADICTED
+    ev_close = [
+        {"kind": "asr_segment", "evidence_id": "asr_1", "text": "thank you", "start_seconds": 1.0, "end_seconds": 2.0},
+        {"kind": "ocr_observation", "evidence_id": "ocr_1", "text": "BIG SALE", "timestamp_seconds": 2.2},
+    ]
+    res_close = GraphMatcher().match(graph_gap, ev_close)
+    assert res_close.predicate_evaluations["p_temp"].state == MatchState.CONTRADICTED
+
+
+def test_temporal_grounding_case_a_wrong_caller_window_vs_refs_only() -> None:
+    graph = QueryGraph(
+        original_query="sign A before sign B",
+        language="en",
+        entities=[
+            Entity(id="s1", type="text_region", mention="ALPHA"),
+            Entity(id="s2", type="text_region", mention="BETA"),
+        ],
+        predicates=[
+            Predicate(id="p_a", kind="ocr", operator="exact_text", roles={"text_entity": "s1"}, value="ALPHA"),
+            Predicate(id="p_b", kind="ocr", operator="exact_text", roles={"text_entity": "s2"}, value="BETA"),
+            Predicate(id="p_t", kind="temporal", operator="before", roles={"event_a": "p_a", "event_b": "p_b"}),
+        ],
+        logic=[LogicNode(id="root", op="AND", children=["p_a", "p_b", "p_t"])],
+        root_id="root",
+    )
+    ev = [
+        {"kind": "ocr_observation", "evidence_id": "ocr_a", "video_id": "v1", "timeline_revision": "tl1", "text": "ALPHA", "timestamp_ms": 6000.0},
+        {"kind": "ocr_observation", "evidence_id": "ocr_b", "video_id": "v1", "timeline_revision": "tl1", "text": "BETA", "timestamp_ms": 2000.0},
+    ]
+    # Refs only: A=6s, B=2s -> CONTRADICTED
+    res_refs = GraphMatcher().match(graph, ev, video_id="v1", timeline_revision="tl1")
+    assert res_refs.predicate_evaluations["p_t"].state == MatchState.CONTRADICTED
+    assert set(res_refs.predicate_evaluations["p_t"].evidence_refs) == {"ocr_a", "ocr_b"}
+
+    # Wrong caller event_intervals (1,2) / (4,5) filters out refs -> UNKNOWN (not SUPPORTED!)
+    wrong_win = {"p_a": (1.0, 2.0), "p_b": (4.0, 5.0)}
+    snapshot = dict(wrong_win)
+    res_filtered = GraphMatcher().match(graph, ev, event_intervals=wrong_win, video_id="v1", timeline_revision="tl1")
+    assert res_filtered.predicate_evaluations["p_t"].state == MatchState.UNKNOWN
+    assert res_filtered.predicate_evaluations["p_t"].evidence_refs == []
+    assert wrong_win == snapshot
+
+    # Valid filter window still uses real ref timestamps (6s vs 2s) -> CONTRADICTED
+    valid_win = {"p_a": (5.0, 7.0), "p_b": (1.0, 3.0)}
+    res_valid_win = GraphMatcher().match(graph, ev, event_intervals=valid_win, video_id="v1", timeline_revision="tl1")
+    assert res_valid_win.predicate_evaluations["p_t"].state == MatchState.CONTRADICTED
+
+
+def test_temporal_grounding_case_b_identical_point_timestamps_and_touching_intervals() -> None:
+    from videntra.relations.temporal import evaluate_temporal_order
+
+    graph = QueryGraph(
+        original_query="sign ALPHA before sign BETA",
+        language="en",
+        entities=[
+            Entity(id="s1", type="text_region", mention="ALPHA"),
+            Entity(id="s2", type="text_region", mention="BETA"),
+        ],
+        predicates=[
+            Predicate(id="p_a", kind="ocr", operator="exact_text", roles={"text_entity": "s1"}, value="ALPHA"),
+            Predicate(id="p_b", kind="ocr", operator="exact_text", roles={"text_entity": "s2"}, value="BETA"),
+            Predicate(id="p_t", kind="temporal", operator="before", roles={"event_a": "p_a", "event_b": "p_b"}),
+        ],
+        logic=[LogicNode(id="root", op="AND", children=["p_a", "p_b", "p_t"])],
+        root_id="root",
+    )
+    ev_same_ts = [
+        {"kind": "ocr_observation", "evidence_id": "ocr_a", "video_id": "v1", "timeline_revision": "tl1", "text": "ALPHA", "timestamp_ms": 5000.0},
+        {"kind": "ocr_observation", "evidence_id": "ocr_b", "video_id": "v1", "timeline_revision": "tl1", "text": "BETA", "timestamp_ms": 5000.0},
+    ]
+    res_same = GraphMatcher().match(graph, ev_same_ts, video_id="v1", timeline_revision="tl1")
+    assert res_same.predicate_evaluations["p_t"].state == MatchState.PARTIAL
+    assert set(res_same.predicate_evaluations["p_t"].evidence_refs) == {"ocr_a", "ocr_b"}
+
+    # Touching-boundary non-point intervals (0, 1000) & (1000, 2000) remain SUPPORTED
+    p_touch = Predicate(id="p_t", kind="temporal", operator="before", roles={"event_a": "a", "event_b": "b"})
+    res_touch = evaluate_temporal_order(p_touch, {"a": (0.0, 1000.0), "b": (1000.0, 2000.0)})
+    assert res_touch.state == MatchState.SUPPORTED
+
+
+def test_temporal_grounding_multi_occurrence_conflicting_and_filtered() -> None:
+    graph = _ocr_asr_temporal_graph()
+    ev_multi = [
+        {"kind": "ocr_observation", "evidence_id": "ocr_1", "track_id": "trk_1", "video_id": "v1", "text": "BIG SALE", "timestamp_seconds": 2.0},
+        {"kind": "ocr_observation", "evidence_id": "ocr_2", "track_id": "trk_2", "video_id": "v1", "text": "BIG SALE", "timestamp_seconds": 8.0},
+        {"kind": "asr_segment", "evidence_id": "asr_1", "segment_id": "seg_1", "video_id": "v1", "text": "thank you", "start_seconds": 5.0, "end_seconds": 6.0},
+    ]
+    # Unfiltered: trk_1 (2s) < seg_1 (5-6s) SUPPORTED, trk_2 (8s) > seg_1 (5-6s) CONTRADICTED -> PARTIAL
+    res_multi = GraphMatcher().match(graph, ev_multi, video_id="v1")
+    assert res_multi.predicate_evaluations["p_temp"].state == MatchState.PARTIAL
+    assert set(res_multi.predicate_evaluations["p_temp"].evidence_refs) == {"ocr_1", "ocr_2", "asr_1"}
+
+    # Filtered to first occurrence window -> SUPPORTED
+    res_first = GraphMatcher().match(graph, ev_multi, event_intervals={"p_ocr": (0.0, 4.0)}, video_id="v1")
+    assert res_first.predicate_evaluations["p_temp"].state == MatchState.SUPPORTED
+    assert set(res_first.predicate_evaluations["p_temp"].evidence_refs) == {"ocr_1", "asr_1"}
+
+    # Filtered to second occurrence window -> CONTRADICTED
+    res_second = GraphMatcher().match(graph, ev_multi, event_intervals={"p_ocr": (7.0, 10.0)}, video_id="v1")
+    assert res_second.predicate_evaluations["p_temp"].state == MatchState.CONTRADICTED
+    assert set(res_second.predicate_evaluations["p_temp"].evidence_refs) == {"ocr_2", "asr_1"}
+
+
+def test_temporal_grounding_timeline_revision_mismatch_preserves_standalone() -> None:
+    graph = _ocr_asr_temporal_graph()
+    ev = [
+        {"kind": "ocr_observation", "evidence_id": "ocr_1", "video_id": "v1", "timeline_revision": "tl_v1", "text": "BIG SALE", "timestamp_seconds": 2.0},
+        {"kind": "asr_segment", "evidence_id": "asr_1", "video_id": "v1", "timeline_revision": "tl_v2", "text": "thank you", "start_seconds": 5.0, "end_seconds": 6.0},
+    ]
+    res = GraphMatcher().match(graph, ev, video_id="v1", timeline_revision="tl_v1")
+    assert res.predicate_evaluations["p_ocr"].state == MatchState.SUPPORTED
+    assert res.predicate_evaluations["p_temp"].state == MatchState.UNKNOWN
+
+
+def test_search_with_metadata_verify_relations_window_scoping() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE OCRObservations (observation_id TEXT, video_id TEXT, raw_text TEXT, model_id TEXT, timestamp_ms REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE ASRSegments (segment_id TEXT, video_id TEXT, raw_text TEXT, model_id TEXT, start_ms REAL, end_ms REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE FrameObjects (detection_id TEXT, video_id TEXT, class_name TEXT, timestamp_ms REAL)"
+    )
+    conn.execute(
+        "INSERT INTO OCRObservations VALUES ('ocr_w1', 'v1', 'BIG SALE', 'rapidocr', 2000.0)"
+    )
+    conn.execute(
+        "INSERT INTO ASRSegments VALUES ('asr_w1', 'v1', 'thank you', 'whisper', 5000.0, 7000.0)"
+    )
+
+    pipe = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipe.db_conn = conn
+    moments = [
+        RankedMoment(
+            moment_id="v1_0.0_10.0",
+            video_id="v1",
+            moment_start_seconds=0.0,
+            moment_end_seconds=10.0,
+            start_original_frame_index=0,
+            end_original_frame_index=10,
+            representative_original_frame_index=5,
+            representative_timestamp_seconds=5.0,
+            ranking_score=0.9,
+        ),
+        RankedMoment(
+            moment_id="v1_20.0_30.0",
+            video_id="v1",
+            moment_start_seconds=20.0,
+            moment_end_seconds=30.0,
+            start_original_frame_index=20,
+            end_original_frame_index=30,
+            representative_original_frame_index=25,
+            representative_timestamp_seconds=25.0,
+            ranking_score=0.8,
+        ),
+    ]
+    pipe.search = lambda **kwargs: moments  # type: ignore[method-assign]
+    out = pipe.search_with_metadata(
+        snapshot_id="snap_test",
+        verify_relations=True,
+        query="sign BIG SALE before speaker says thank you",
+    )
+    assessments = out["relation_assessments"]
+    assert len(assessments) == 2
+    assert assessments[0]["predicates"]["temporal_order"]["status"] == "supported"
+    assert set(assessments[0]["predicates"]["temporal_order"]["evidence_refs"]) == {"ocr_w1", "asr_w1"}
+    assert assessments[1]["predicates"]["temporal_order"]["status"] == "unknown"
+    assert assessments[1]["predicates"]["temporal_order"]["evidence_refs"] == []
+    conn.close()
+
 
 def test_vfr_timestamps_and_se_viterbi_multimodal_curves() -> None:
     # Non-uniform VFR PTS timestamps

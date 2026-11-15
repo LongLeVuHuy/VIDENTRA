@@ -136,10 +136,11 @@ def frame_time_seconds(frame: Any, stream: Any, origin_pts: int = 0) -> float:
 
 
 def ensure_output_files_absent(out_dir: Path) -> None:
-    names = ("frame_embeddings.npy", "spatial_patches_fp16.npy", "faiss_text_e5_384.bin",
-             "e5_text_manifest.json", "keyframe_captions.json", "faiss_e5_caption_384.bin",
-             "e5_caption_manifest.json", "videos.json", "keyframe_manifest.json",
-             "frame_objects.json", "ocr_observations.json", "asr_segments.json", "summary.json")
+    names = ("frame_embeddings.npy", "spatial_patches_fp16.npy", "spatial_patches_map.jsonl",
+             "p85_receipt.json", "faiss_text_e5_384.bin", "e5_text_manifest.json",
+             "keyframe_captions.json", "faiss_e5_caption_384.bin", "e5_caption_manifest.json",
+             "videos.json", "keyframe_manifest.json", "frame_objects.json",
+             "ocr_observations.json", "asr_segments.json", "summary.json")
     existing = [name for name in names if (out_dir / name).exists()]
     if existing:
         raise FileExistsError(f"Output artifacts already exist: {existing}")
@@ -617,11 +618,17 @@ def run_p85_keyframe_backfill(
     florence2_batch_size: int = 16,
     enable_florence2: bool = True,
     dry_run: bool = False,
+    allow_subset: bool = False,
+    visual_index_path: Path | None = None,
+    siglip_processor: Any = None,
+    siglip_model: Any = None,
 ) -> dict[str, Any]:
     """P8-5 Kaggle GPU backfill over packaged keyframes_manifest.jsonl + images/.
 
     Produces:
-    - spatial_patches_fp16.npy (N, 9, 768) float16
+    - spatial_patches_fp16.npy (N, 9, 768) float16 aligned by row_index / faiss_id
+    - spatial_patches_map.jsonl (row_index, faiss_id, keyframe_id, video_id, timeline_revision, image_sha256)
+    - p85_receipt.json (artifact SHA-256s and input provenance)
     - keyframe_captions.json
     - faiss_e5_caption_384.bin + e5_caption_manifest.json
     - summary.json
@@ -645,6 +652,7 @@ def run_p85_keyframe_backfill(
             "num_keyframes": len(records),
             "out_dir": str(out_dir),
             "enable_florence2": enable_florence2,
+            "allow_subset": allow_subset,
             "dry_run": True,
         }
 
@@ -654,67 +662,154 @@ def run_p85_keyframe_backfill(
 
     import torch
     from PIL import Image
-    from huggingface_hub import hf_hub_download
-    from transformers import AutoModel, AutoProcessor
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log(f"P8-5 Backfill Device: {device} | Keyframes: {len(records)}")
 
-    # Prepare caption/image records
+    # Prepare and validate keyframe records before running GPU inference
+    has_explicit_faiss = any("faiss_id" in rec and rec["faiss_id"] is not None for rec in records)
+    seen_kf_ids: set[str] = set()
+    seen_faiss_ids: set[int] = set()
     kf_inputs: list[dict[str, Any]] = []
+
     for idx, rec in enumerate(records):
+        if "video_id" not in rec:
+            raise ValueError(f"Manifest record {idx} missing video_id")
+        if has_explicit_faiss and ("faiss_id" not in rec or rec["faiss_id"] is None):
+            raise ValueError(f"Manifest record {idx} missing faiss_id while other records specify it")
+
+        fid = int(rec["faiss_id"]) if has_explicit_faiss else idx
+        if fid < 0:
+            raise ValueError(f"Manifest record {idx} has negative faiss_id: {fid}")
+        if fid in seen_faiss_ids:
+            raise ValueError(f"Duplicate faiss_id in keyframes_manifest: {fid}")
+        seen_faiss_ids.add(fid)
+
+        kf_id = str(rec.get("keyframe_id") or rec.get("sampled_frame_id") or f"kf_{idx:05d}")
+        if kf_id in seen_kf_ids:
+            raise ValueError(f"Duplicate keyframe_id in keyframes_manifest: {kf_id}")
+        seen_kf_ids.add(kf_id)
+
         img_file = rec.get("image_file")
         kf_path = Path(str(rec["keyframe_path"])) if rec.get("keyframe_path") else (img_root / str(img_file))
+        if not kf_path.is_file():
+            raise FileNotFoundError(f"Keyframe image not found for {kf_id}: {kf_path}")
+
         ts_ms = rec.get("timestamp_ms")
         if ts_ms is None:
             ts_ms = int(round(float(rec.get("timestamp_seconds", 0.0)) * 1000.0))
+
         kf_inputs.append({
-            "faiss_id": int(rec.get("faiss_id", idx)),
-            "keyframe_id": str(rec.get("keyframe_id") or rec.get("sampled_frame_id") or f"kf_{idx:05d}"),
+            "faiss_id": fid,
+            "keyframe_id": kf_id,
             "video_id": str(rec["video_id"]),
             "timestamp_ms": int(ts_ms),
+            "timeline_revision": rec.get("timeline_revision"),
             "keyframe_path": str(kf_path),
+            "image_sha256": _sha256_file_if_exists(kf_path),
         })
 
-    # Stage 1: SigLIP 2 3x3 spatial patches (unload before Florence-2 to avoid T4 OOM)
-    weights_path = Path(hf_hub_download(SIGLIP_MODEL_ID, "model.safetensors", revision=SIGLIP_REVISION))
-    weights_hash = verify_weights(weights_path)
-    siglip_proc = AutoProcessor.from_pretrained(SIGLIP_MODEL_ID, revision=SIGLIP_REVISION)
-    siglip_model = AutoModel.from_pretrained(
-        SIGLIP_MODEL_ID,
-        revision=SIGLIP_REVISION,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    ).to(device)
-    siglip_model.eval()
+    # Verify contiguous dense faiss_ids [0..N-1] unless explicit subset mode is requested
+    sorted_fids = sorted(item["faiss_id"] for item in kf_inputs)
+    is_contiguous_dense = sorted_fids == list(range(len(kf_inputs)))
+    if kf_inputs and not allow_subset and not is_contiguous_dense:
+        raise ValueError(
+            f"Non-contiguous faiss_ids in dense P8-5 backfill (count={len(kf_inputs)}, "
+            f"min={sorted_fids[0]}, max={sorted_fids[-1]}); pass allow_subset=True for explicit subset mapping"
+        )
 
-    patch_chunks: list[np.ndarray] = []
+    # Sort canonically by faiss_id and assign row_index (equals faiss_id in dense mode)
+    kf_inputs.sort(key=lambda item: item["faiss_id"])
+    for row_idx, item in enumerate(kf_inputs):
+        item["row_index"] = row_idx
+
+    # Stage 1: SigLIP 2 3x3 spatial patches (unload before Florence-2 to avoid T4 OOM)
+    if siglip_processor is None or siglip_model is None:
+        from huggingface_hub import hf_hub_download
+        from transformers import AutoModel, AutoProcessor
+
+        weights_path = Path(hf_hub_download(SIGLIP_MODEL_ID, "model.safetensors", revision=SIGLIP_REVISION))
+        weights_hash = verify_weights(weights_path)
+        siglip_proc = AutoProcessor.from_pretrained(SIGLIP_MODEL_ID, revision=SIGLIP_REVISION)
+        siglip_mdl = AutoModel.from_pretrained(
+            SIGLIP_MODEL_ID,
+            revision=SIGLIP_REVISION,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        ).to(device)
+        siglip_mdl.eval()
+        owns_siglip = True
+    else:
+        weights_hash = "injected"
+        siglip_proc = siglip_processor
+        siglip_mdl = siglip_model
+        owns_siglip = False
+
+    n_rows = len(kf_inputs)
+    final_spatial_patches = np.empty((n_rows, 9, 768), dtype=np.float16)
+    written_rows = np.zeros(n_rows, dtype=bool)
     bs_siglip = max(1, int(siglip_batch_size))
-    for st in range(0, len(kf_inputs), bs_siglip):
+
+    for st in range(0, n_rows, bs_siglip):
         batch = kf_inputs[st : st + bs_siglip]
         pil_batch: list[Image.Image] = []
         for rec in batch:
             with Image.open(rec["keyframe_path"]) as im:
                 pil_batch.append(im.convert("RGB"))
-        inputs = siglip_proc(images=pil_batch, return_tensors="pt").to(device)
-        if device == "cuda":
-            inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}
+        inputs = siglip_proc(images=pil_batch, return_tensors="pt")
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        elif isinstance(inputs, dict):
+            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        if device == "cuda" and isinstance(inputs, dict):
+            inputs = {k: v.half() if hasattr(v, "dtype") and v.dtype == torch.float32 else v for k, v in inputs.items()}
         with torch.no_grad():
-            if hasattr(siglip_model, "vision_model") and "pixel_values" in inputs:
-                raw_out = siglip_model.vision_model(pixel_values=inputs["pixel_values"])
+            if hasattr(siglip_mdl, "vision_model") and isinstance(inputs, dict) and "pixel_values" in inputs:
+                raw_out = siglip_mdl.vision_model(pixel_values=inputs["pixel_values"])
             else:
-                raw_out = siglip_model(**inputs)
-            if getattr(raw_out, "last_hidden_state", None) is not None:
-                patch_chunks.append(extract_spatial_patches_3x3(raw_out.last_hidden_state))
+                raw_out = siglip_mdl(**inputs)
+            last_hidden = getattr(raw_out, "last_hidden_state", None)
+            if last_hidden is None:
+                batch_kfs = [rec["keyframe_id"] for rec in batch]
+                raise ValueError(
+                    f"SigLIP model output missing last_hidden_state for batch starting at {st}: {batch_kfs}"
+                )
+            batch_patches = extract_spatial_patches_3x3(last_hidden)
+        if batch_patches.shape != (len(batch), 9, 768):
+            raise ValueError(
+                f"Unexpected spatial patch batch shape {batch_patches.shape} (expected {(len(batch), 9, 768)})"
+            )
+        if not np.all(np.isfinite(batch_patches)):
+            raise ValueError(f"Non-finite spatial patches produced in batch starting at {st}")
+        for offset, rec in enumerate(batch):
+            r_idx = int(rec["row_index"])
+            final_spatial_patches[r_idx] = batch_patches[offset]
+            written_rows[r_idx] = True
 
-    final_spatial_patches = (
-        np.vstack(patch_chunks) if patch_chunks else np.empty((0, 9, 768), dtype=np.float16)
-    )
-    np.save(str(out_dir / "spatial_patches_fp16.npy"), final_spatial_patches)
+    if not np.all(written_rows):
+        missing_rows = np.where(~written_rows)[0].tolist()
+        raise ValueError(f"Missing spatial patch rows after inference: {missing_rows}")
 
-    del siglip_model, siglip_proc
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    patches_path = out_dir / "spatial_patches_fp16.npy"
+    np.save(str(patches_path), final_spatial_patches)
+
+    map_path = out_dir / "spatial_patches_map.jsonl"
+    with map_path.open("w", encoding="utf-8") as map_fh:
+        for rec in kf_inputs:
+            map_entry = {
+                "row_index": int(rec["row_index"]),
+                "faiss_id": int(rec["faiss_id"]),
+                "keyframe_id": rec["keyframe_id"],
+                "video_id": rec["video_id"],
+                "timeline_revision": rec["timeline_revision"],
+                "image_sha256": rec["image_sha256"],
+            }
+            map_fh.write(json.dumps(map_entry, ensure_ascii=False) + "\n")
+
+    if owns_siglip:
+        del siglip_mdl, siglip_proc
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     # Stage 2: Florence-2-base captions + Stage 3: E5 caption FAISS index
     captions: list[dict[str, Any]] = []
@@ -741,18 +836,80 @@ def run_p85_keyframe_backfill(
         )
         e5_caption_status = {"available": True, **e5_cap_info}
 
+    resolved_visual_idx = visual_index_path
+    if resolved_visual_idx is None:
+        for candidate in (keyframes_manifest.parent / "faiss_index.bin", out_dir / "faiss_index.bin"):
+            if candidate.is_file():
+                resolved_visual_idx = candidate
+                break
+
+    receipt_artifacts: dict[str, Any] = {
+        "spatial_patches_fp16": {
+            "filename": "spatial_patches_fp16.npy",
+            "sha256": _sha256_file_if_exists(patches_path),
+            "shape": list(final_spatial_patches.shape),
+            "dtype": str(final_spatial_patches.dtype),
+            "row_count": int(final_spatial_patches.shape[0]),
+        },
+        "spatial_patches_map": {
+            "filename": "spatial_patches_map.jsonl",
+            "sha256": _sha256_file_if_exists(map_path),
+            "line_count": len(kf_inputs),
+        },
+    }
+    if resolved_visual_idx is not None and resolved_visual_idx.is_file():
+        receipt_artifacts["visual_index"] = {
+            "filename": resolved_visual_idx.name,
+            "sha256": _sha256_file_if_exists(resolved_visual_idx),
+        }
+    if (out_dir / "keyframe_captions.json").is_file():
+        receipt_artifacts["keyframe_captions"] = {
+            "filename": "keyframe_captions.json",
+            "sha256": _sha256_file_if_exists(out_dir / "keyframe_captions.json"),
+            "count": len(captions),
+        }
+    if (out_dir / "faiss_e5_caption_384.bin").is_file():
+        receipt_artifacts["faiss_e5_caption_384"] = {
+            "filename": "faiss_e5_caption_384.bin",
+            "sha256": _sha256_file_if_exists(out_dir / "faiss_e5_caption_384.bin"),
+        }
+    if (out_dir / "e5_caption_manifest.json").is_file():
+        receipt_artifacts["e5_caption_manifest"] = {
+            "filename": "e5_caption_manifest.json",
+            "sha256": _sha256_file_if_exists(out_dir / "e5_caption_manifest.json"),
+        }
+
+    receipt = {
+        "receipt_version": "1.0",
+        "status": "success",
+        "mode": "p85_keyframe_backfill",
+        "inputs": {
+            "keyframes_manifest_sha256": _sha256_file_if_exists(keyframes_manifest),
+            "num_keyframes": len(kf_inputs),
+            "contiguous_faiss_ids": is_contiguous_dense,
+            "allow_subset": allow_subset,
+        },
+        "artifacts": receipt_artifacts,
+        "siglip": {"model_id": SIGLIP_MODEL_ID, "revision": SIGLIP_REVISION, "weights_sha256": weights_hash},
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    receipt_path = out_dir / "p85_receipt.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8")
+
     summary = {
         "status": "success",
         "mode": "p85_keyframe_backfill",
         "total_keyframes": len(kf_inputs),
         "spatial_patches_shape": list(final_spatial_patches.shape),
+        "spatial_patches_map": str(map_path),
+        "p85_receipt": str(receipt_path),
         "total_keyframe_captions": len(captions),
         "e5_caption_index": e5_caption_status,
         "siglip": {"model_id": SIGLIP_MODEL_ID, "revision": SIGLIP_REVISION, "weights_sha256": weights_hash},
         "florence2": {"model_id": FLORENCE2_MODEL_ID, "revision": FLORENCE2_REVISION, "enabled": enable_florence2},
         "e5_text": {"model_id": E5_MODEL_ID, "revision": E5_REVISION, "embedding_dim": E5_EMBEDDING_DIM},
         "elapsed_seconds": round(time.time() - start_time, 2),
-        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "completed_at": receipt["completed_at"],
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary

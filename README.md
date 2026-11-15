@@ -1,8 +1,8 @@
-﻿# VIDENTRA — Hệ Thống Truy Xuất Video Đa Phương Thức & Định Vị Khoảnh Khắc Chính Xác Cao
+# VIDENTRA — Hệ Thống Truy Xuất Video Đa Phương Thức & Định Vị Khoảnh Khắc Chính Xác Cao
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-864D%20Subspace%20%2B%20Small--LLM%20%2B%2024D%20Residual%20CrossLTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
-[![Test Suite](https://img.shields.io/badge/Pytest-507%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
+[![Test Suite](https://img.shields.io/badge/Pytest-522%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
 [![Hardware](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20%7C%20CPU--Ready-orange.svg)](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 
 ---
@@ -264,7 +264,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 ### 5.4. Chạy Kiểm thử Tự động (`pytest`) và Chạy Đánh giá Benchmark
 
 ```powershell
-# 1. Chạy toàn bộ 507 bài kiểm thử đơn vị và tích hợp
+# 1. Chạy toàn bộ 522 bài kiểm thử đơn vị và tích hợp
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 
 # 2. Chạy đánh giá nhanh trên tập dev_150
@@ -272,21 +272,24 @@ for rank, moment in enumerate(response["moments"], start=1):
 
 # 3. Chạy đánh giá đầy đủ trên cả 3 tập (dev_150, dev_full_859, heldout_test_201)
 .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py
+
+# 4. Chạy tuning/ablation trên tập dev cụ thể với Temporal Rerank Challenger
+.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits dev_150,dev_full_859 --temporal-rerank-mode mean_top2 --temporal-rerank-lambda 0.10
 ```
 
 ---
 
 ## 6. Kết Quả Benchmark Thực Nghiệm
 
-> **Run tham chiếu** `08626d79ef744e3080c2fb24c4761cad`. Dev dùng OOF theo canonical `source_group` cho các query thuộc tập train LTR. Kênh dense caption và spatial patches thiếu artifact trong run này. [Báo cáo benchmark](benchmark/benchmark_report.md) · [Số liệu JSON](benchmark/benchmark_summary.json)
+> **Run tham chiếu** `8c40e943d7104f21badda4a3fd62f623`. Dev dùng OOF theo canonical `source_group` cho các query thuộc tập train LTR. Kênh dense caption và spatial patches thiếu artifact trong run này (`temporal_rerank` ở trạng thái `disabled_by_config` với `lambda=0.0`). [Báo cáo benchmark](benchmark/benchmark_report.md) · [Số liệu JSON](benchmark/benchmark_summary.json)
 
 ### 6.1. Bảng Kết Quả Tổng Hợp Đa Tập Dữ Liệu (`dev_150`, `dev_full_859`, `heldout_test_201`)
 
 | Tập Đánh Giá | Số Queries | Chế Độ Đánh Giá | Video Hit@1 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 | Non-Neural Latency (`p50 / p95`) | Pure-ASR FP Top-1 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`dev_150` (Validation Core)** | 150 | **OOF** (129/150) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73% (16/22)`** | **`0.5121`** | **`40.47 / 122.49 ms`** | **`0/2`** |
-| **`dev_full_859` (Full Validation)** | 859 | **OOF** (742/859) | **`41.56%`** | **`0.5010`** | **`0.5459`** | **`72.73% (16/22)`** | **`0.5121`** | **`41.45 / 117.53 ms`** | **`0/2`** |
-| **`heldout_test_201` (held-out lịch sử)** | 201 | **`clean_disjoint`** (0 query ID trùng train LTR) | **`38.81%`** | **`0.4755`** | **`0.5255`** | **`0.00% (0/2)`** | **`0.3155`** | **`39.87 / 76.51 ms`** | **`0/1`** |
+| **`dev_150` (Validation Core)** | 150 | **OOF** (129/150) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73% (16/22)`** | **`0.5121`** | **`41.12 / 113.03 ms`** | **`0/2`** |
+| **`dev_full_859` (Full Validation)** | 859 | **OOF** (742/859) | **`41.56%`** | **`0.5010`** | **`0.5459`** | **`72.73% (16/22)`** | **`0.5121`** | **`42.35 / 111.83 ms`** | **`0/2`** |
+| **`heldout_test_201` (held-out lịch sử)** | 201 | **`clean_disjoint`** (0 query ID trùng train LTR) | **`38.81%`** | **`0.4755`** | **`0.5255`** | **`0.00% (0/2)`** | **`0.3155`** | **`42.46 / 77.35 ms`** | **`0/1`** |
 
 ---
 

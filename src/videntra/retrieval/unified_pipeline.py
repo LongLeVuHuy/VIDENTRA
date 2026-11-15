@@ -53,6 +53,7 @@ from videntra.indexing.augmented_vector import (
 )
 from videntra.retrieval.alignment import (
     align_sequential_keyframe_clauses,
+    compute_temporal_pool_score,
     query_guided_temporal_attention_score,
     shot_aware_graph_diffusion,
     temporal_sinkhorn_alignment_score,
@@ -517,6 +518,16 @@ class UnifiedMultimodalSearchPipeline:
         lazy_load: bool = False,
         ltr_model_path: Path | str | None = DEFAULT_LTR_MODEL_PATH,
         ltr_blend_weight: float = 0.015,
+        enable_spatial_patches: bool = True,
+        enable_vlm_caption_lexical: bool = True,
+        enable_vlm_caption_dense: bool = True,
+        enable_temporal_rerank: bool = False,
+        temporal_rerank_mode: str = "attention",
+        temporal_rerank_lambda: float = 0.0,
+        temporal_rerank_top_k: int = 10,
+        temporal_rerank_window_sec: float = 3.0,
+        temporal_rerank_max_frames: int = 5,
+        temporal_rerank_tau: float = 12.0,
         # Optional pre-injected objects for lightweight testing or server sharing:
         tokenizer: Any | None = None,
         text_model: Any | None = None,
@@ -569,6 +580,8 @@ class UnifiedMultimodalSearchPipeline:
         self.cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.cache_path) if use_disk_cache else None
         self.e5_cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.e5_cache_path) if use_disk_cache else None
         self._degraded_channels: dict[str, str] = {}
+        self._channel_mismatches: dict[str, str] = {}
+        self._spatial_patch_row_by_fid: dict[int, int] | None = None
         if self.cache is not None and self.cache.last_error:
             self._degraded_channels["text_cache"] = self.cache.last_error
         if self.e5_cache is not None and self.e5_cache.last_error:
@@ -576,6 +589,26 @@ class UnifiedMultimodalSearchPipeline:
         self.last_timings: dict[str, float] = {}
         self.last_diagnostics: dict[str, Any] = {}
         self._search_lock = threading.RLock()
+
+        # Feature flags & Section 3.1 temporal reranker config
+        if temporal_rerank_mode not in ("mean", "mean_top2", "mean_top3", "attention"):
+            raise ValueError(f"Unsupported temporal_rerank_mode: {temporal_rerank_mode!r}")
+        if temporal_rerank_top_k < 1:
+            raise ValueError("temporal_rerank_top_k must be >= 1")
+        if temporal_rerank_max_frames < 1:
+            raise ValueError("temporal_rerank_max_frames must be >= 1")
+        if temporal_rerank_window_sec < 0.0:
+            raise ValueError("temporal_rerank_window_sec must be >= 0.0")
+        self.enable_spatial_patches = bool(enable_spatial_patches)
+        self.enable_vlm_caption_lexical = bool(enable_vlm_caption_lexical)
+        self.enable_vlm_caption_dense = bool(enable_vlm_caption_dense)
+        self.enable_temporal_rerank = bool(enable_temporal_rerank)
+        self.temporal_rerank_mode = str(temporal_rerank_mode)
+        self.temporal_rerank_lambda = float(temporal_rerank_lambda)
+        self.temporal_rerank_top_k = int(temporal_rerank_top_k)
+        self.temporal_rerank_window_sec = float(temporal_rerank_window_sec)
+        self.temporal_rerank_max_frames = int(temporal_rerank_max_frames)
+        self.temporal_rerank_tau = float(temporal_rerank_tau)
 
         # Phase 7.2 / 7.3 / 7.4 components (fail-safe when local models/artifacts are absent)
         self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
@@ -1127,6 +1160,8 @@ class UnifiedMultimodalSearchPipeline:
             ranked_videos = self._build_ranked_videos(moments, cand_moments, top_k=top_k)
             diagnostics = deepcopy(self.last_diagnostics)
             diagnostics["ranked_videos"] = ranked_videos
+            if self.last_diagnostics:
+                diagnostics["ranked_video_ids"] = [m.video_id for m in ranked_videos]
             return {
                 "snapshot_id": snapshot_id,
                 "moments": moments,
@@ -1163,12 +1198,39 @@ class UnifiedMultimodalSearchPipeline:
         )
         return ranked[:top_k] if top_k is not None else ranked
 
+    def _is_spatial_patches_enabled(self, ablation_config: str) -> tuple[bool, str]:
+        if not self.enable_spatial_patches:
+            return False, "disabled_by_flag"
+        if ablation_config in ("A0", "A1", "A2", "A3"):
+            return False, f"ablation_{ablation_config}"
+        return True, "enabled"
+
+    def _is_vlm_caption_lexical_enabled(self, ablation_config: str) -> tuple[bool, str]:
+        if not self.enable_vlm_caption_lexical:
+            return False, "disabled_by_flag"
+        if ablation_config in ("A0", "A1", "A2"):
+            return False, f"ablation_{ablation_config}"
+        return True, "enabled"
+
+    def _is_vlm_caption_dense_enabled(self, ablation_config: str) -> tuple[bool, str]:
+        if not self.enable_vlm_caption_dense:
+            return False, "disabled_by_flag"
+        if ablation_config in ("A0", "A1", "A2"):
+            return False, f"ablation_{ablation_config}"
+        return True, "enabled"
+
+    def _is_temporal_rerank_enabled(self, ablation_config: str) -> tuple[bool, str]:
+        if not self.enable_temporal_rerank:
+            return False, "disabled_by_flag"
+        if ablation_config in ("A0", "A1"):
+            return False, f"ablation_{ablation_config}"
+        return True, "enabled"
+
     def _build_degraded_diagnostics(self, ablation_config: str) -> dict[str, dict[str, str]]:
         """Build structured channel -> {status, reason} diagnostics."""
         degraded: dict[str, dict[str, str]] = {}
         if ablation_config in ("A0", "A1", "A2"):
             degraded["e5_text_index"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
-            degraded["e5_caption_index"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
             degraded["lexical_db"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
         else:
             if "e5_text_index" in self._degraded_channels:
@@ -1178,20 +1240,36 @@ class UnifiedMultimodalSearchPipeline:
             else:
                 degraded["e5_text_index"] = {"status": "missing_artifact", "reason": "e5_text_index_not_loaded"}
 
-            if "e5_caption_index" in self._degraded_channels:
-                degraded["e5_caption_index"] = {"status": "failed", "reason": self._degraded_channels["e5_caption_index"]}
-            elif self.e5_caption_index is not None:
-                degraded["e5_caption_index"] = {"status": "ready", "reason": "loaded"}
-            else:
-                degraded["e5_caption_index"] = {"status": "missing_artifact", "reason": "e5_caption_index_not_loaded"}
-
             if self.db_conn is not None:
                 degraded["lexical_db"] = {"status": "ready", "reason": "connected"}
             else:
                 degraded["lexical_db"] = {"status": "missing_artifact", "reason": "db_conn_none"}
 
-        if ablation_config in ("A0", "A1", "A2", "A3"):
-            degraded["spatial_patches"] = {"status": "disabled_by_config", "reason": f"ablation_{ablation_config}"}
+        cap_dense_enabled, cap_dense_reason = self._is_vlm_caption_dense_enabled(ablation_config)
+        if not cap_dense_enabled:
+            degraded["e5_caption_index"] = {"status": "disabled_by_config", "reason": cap_dense_reason}
+        elif "e5_caption_index" in self._channel_mismatches:
+            degraded["e5_caption_index"] = {"status": "mismatch", "reason": self._channel_mismatches["e5_caption_index"]}
+        elif "e5_caption_index" in self._degraded_channels:
+            degraded["e5_caption_index"] = {"status": "failed", "reason": self._degraded_channels["e5_caption_index"]}
+        elif self.e5_caption_index is not None:
+            degraded["e5_caption_index"] = {"status": "ready", "reason": "loaded"}
+        else:
+            degraded["e5_caption_index"] = {"status": "missing_artifact", "reason": "e5_caption_index_not_loaded"}
+
+        cap_lex_enabled, cap_lex_reason = self._is_vlm_caption_lexical_enabled(ablation_config)
+        if not cap_lex_enabled:
+            degraded["vlm_caption_lexical"] = {"status": "disabled_by_config", "reason": cap_lex_reason}
+        elif self.has_vlm_caption_fts and self.db_conn is not None:
+            degraded["vlm_caption_lexical"] = {"status": "ready", "reason": "connected"}
+        else:
+            degraded["vlm_caption_lexical"] = {"status": "missing_artifact", "reason": "fts_vlm_caption_not_available"}
+
+        sp_enabled, sp_reason = self._is_spatial_patches_enabled(ablation_config)
+        if not sp_enabled:
+            degraded["spatial_patches"] = {"status": "disabled_by_config", "reason": sp_reason}
+        elif "spatial_patches" in self._channel_mismatches:
+            degraded["spatial_patches"] = {"status": "mismatch", "reason": self._channel_mismatches["spatial_patches"]}
         elif "spatial_patches" in self._degraded_channels:
             degraded["spatial_patches"] = {"status": "failed", "reason": self._degraded_channels["spatial_patches"]}
         elif self.spatial_patches is not None:
@@ -1199,6 +1277,22 @@ class UnifiedMultimodalSearchPipeline:
         else:
             degraded["spatial_patches"] = {"status": "missing_artifact", "reason": "spatial_patches_not_loaded"}
 
+        tr_enabled, tr_reason = self._is_temporal_rerank_enabled(ablation_config)
+        if not tr_enabled:
+            degraded["temporal_rerank"] = {"status": "disabled_by_config", "reason": tr_reason}
+        elif (self.all_embeddings is not None and len(self.all_embeddings) > 0) or (
+            self.augmented_embeddings is not None and len(self.augmented_embeddings) > 0
+        ):
+            degraded["temporal_rerank"] = {
+                "status": "ready",
+                "reason": f"mode={self.temporal_rerank_mode},lambda={self.temporal_rerank_lambda}",
+            }
+        else:
+            degraded["temporal_rerank"] = {"status": "missing_artifact", "reason": "embeddings_not_loaded"}
+
+        for ch, reason in self._channel_mismatches.items():
+            if ch not in degraded:
+                degraded[ch] = {"status": "mismatch", "reason": str(reason)}
         for ch, reason in self._degraded_channels.items():
             if ch not in degraded:
                 degraded[ch] = {"status": "failed", "reason": str(reason)}
@@ -1408,21 +1502,101 @@ class UnifiedMultimodalSearchPipeline:
             raise RuntimeError("Relation evidence lookup failed") from exc
         return evidence
 
+    class _ArtifactMismatchError(Exception):
+        """Raised when an optional artifact fails snapshot/sidecar/receipt verification."""
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def load_optional_phase74_artifacts(self, base_dir: Path | str = Path("data/processed")) -> dict[str, bool]:
         """Load optional Phase 7.4 / P8-5 offline artifacts (spatial patches, E5 text & caption indexes) if present."""
+        import json as _json
+
         root = Path(base_dir)
         loaded = {"spatial_patches": False, "e5_text_index": False}
+        self._spatial_patch_row_by_fid = None
         patches_path = root / "spatial_patches_fp16.npy"
         if patches_path.is_file():
             try:
-                self.spatial_patches = np.load(str(patches_path), mmap_mode="r")
+                patches = np.load(str(patches_path), mmap_mode="r")
+                if patches.ndim != 3 or patches.shape[1:] != (9, 768) or patches.dtype != np.float16:
+                    raise self._ArtifactMismatchError(
+                        f"spatial_patches shape/dtype mismatch: got shape={patches.shape}, dtype={patches.dtype}"
+                    )
+                if not bool(np.isfinite(patches).all()):
+                    raise self._ArtifactMismatchError("spatial_patches contains non-finite values")
+
+                sidecar_path = root / "spatial_patches_map.jsonl"
+                receipt_path = root / "p85_receipt.json"
+                if receipt_path.is_file():
+                    receipt = _json.loads(receipt_path.read_text(encoding="utf-8"))
+                    expected_patch_sha = receipt.get("spatial_patches_sha256") or receipt.get("patches_sha256")
+                    if expected_patch_sha and self._sha256_file(patches_path) != str(expected_patch_sha):
+                        raise self._ArtifactMismatchError("spatial_patches_sha256 mismatch against p85_receipt.json")
+                    expected_map_sha = receipt.get("spatial_patches_map_sha256") or receipt.get("map_sha256")
+                    if expected_map_sha:
+                        if not sidecar_path.is_file():
+                            raise self._ArtifactMismatchError("spatial_patches_map.jsonl missing while required by p85_receipt.json")
+                        if self._sha256_file(sidecar_path) != str(expected_map_sha):
+                            raise self._ArtifactMismatchError("spatial_patches_map_sha256 mismatch against p85_receipt.json")
+                    expected_idx_sha = receipt.get("visual_index_sha256")
+                    if expected_idx_sha and self.faiss_path.is_file():
+                        if self._sha256_file(self.faiss_path) != str(expected_idx_sha):
+                            raise self._ArtifactMismatchError("visual_index_sha256 mismatch against p85_receipt.json")
+
+                if sidecar_path.is_file():
+                    row_by_fid: dict[int, int] = {}
+                    rows_count = 0
+                    with sidecar_path.open("r", encoding="utf-8") as fh:
+                        for idx, line in enumerate(fh):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            rec = _json.loads(line)
+                            row_idx = int(rec.get("row_index", idx))
+                            if row_idx != idx:
+                                raise self._ArtifactMismatchError(f"spatial_patches_map row_index mismatch at {idx}: {row_idx}")
+                            fid = int(rec["faiss_id"])
+                            if fid in row_by_fid:
+                                raise self._ArtifactMismatchError(f"duplicate faiss_id {fid} in spatial_patches_map.jsonl")
+                            if self.keyframe_map and fid in self.keyframe_map:
+                                expected_vid = str(self.keyframe_map[fid].get("video_id", ""))
+                                got_vid = str(rec.get("video_id", ""))
+                                if got_vid and expected_vid and got_vid != expected_vid:
+                                    raise self._ArtifactMismatchError(
+                                        f"spatial_patches_map video_id mismatch for faiss_id={fid}: "
+                                        f"got {got_vid!r}, expected {expected_vid!r}"
+                                    )
+                            row_by_fid[fid] = row_idx
+                            rows_count += 1
+                    if rows_count != patches.shape[0]:
+                        raise self._ArtifactMismatchError(
+                            f"spatial_patches_map row count {rows_count} != patches rows {patches.shape[0]}"
+                        )
+                    self._spatial_patch_row_by_fid = row_by_fid
+                elif self.keyframe_map and max(self.keyframe_map) >= patches.shape[0]:
+                    raise self._ArtifactMismatchError(
+                        f"spatial_patches rows {patches.shape[0]} < max keyframe_map faiss_id {max(self.keyframe_map)}"
+                    )
+
+                self.spatial_patches = patches
+                self._channel_mismatches.pop("spatial_patches", None)
                 loaded["spatial_patches"] = True
+            except self._ArtifactMismatchError as exc:
+                self.spatial_patches = None
+                self._spatial_patch_row_by_fid = None
+                self._channel_mismatches["spatial_patches"] = str(exc)
+                logger.warning("Spatial patches verification mismatch %s: %s", patches_path, exc)
             except Exception as exc:
                 self.spatial_patches = None
+                self._spatial_patch_row_by_fid = None
                 self._degraded_channels["spatial_patches"] = str(exc)
                 logger.warning("Failed to load spatial patches %s: %s", patches_path, exc, exc_info=True)
-
-        import json as _json
 
         e5_idx_path = root / "faiss_text_e5_384.bin"
         e5_manifest_path = root / "e5_text_manifest.json"
@@ -1464,12 +1638,13 @@ class UnifiedMultimodalSearchPipeline:
         kf_list = self.video_keyframes.get(vid, [])
         if not kf_list:
             return 0.0
-        fids = [
-            int(k["faiss_id"])
-            for k in kf_list
-            if start_sec <= float(k.get("pts_time", 0.0)) <= end_sec
-            and int(k["faiss_id"]) < len(self.spatial_patches)
-        ]
+        fids: list[int] = []
+        for k in kf_list:
+            if start_sec <= float(k.get("pts_time", 0.0)) <= end_sec:
+                fid = int(k["faiss_id"])
+                row_idx = self._spatial_patch_row_by_fid.get(fid) if self._spatial_patch_row_by_fid is not None else fid
+                if row_idx is not None and 0 <= row_idx < len(self.spatial_patches):
+                    fids.append(row_idx)
         if not fids:
             return 0.0
         try:
@@ -1479,6 +1654,118 @@ class UnifiedMultimodalSearchPipeline:
             self._degraded_channels["late_interaction"] = str(exc)
             logger.warning("Late interaction scoring failed for video %s: %s", vid, exc, exc_info=True)
             return 0.0
+
+    def _apply_temporal_rerank(
+        self,
+        cand_moments: list[RankedMoment],
+        query_vec_768: np.ndarray | None,
+    ) -> tuple[list[RankedMoment], dict[str, Any]]:
+        """Apply Section 3.1 NumPy temporal rerank challenger to Top-K base videos."""
+        if not cand_moments or query_vec_768 is None:
+            return cand_moments, {"scored_count": 0, "reason": "missing_query_or_candidates"}
+
+        if self.all_embeddings is not None and len(self.all_embeddings) > 0:
+            emb_mat = self.all_embeddings
+        elif self.augmented_embeddings is not None and len(self.augmented_embeddings) > 0 and self.augmented_embeddings.shape[1] >= 768:
+            emb_mat = self.augmented_embeddings[:, :768]
+        else:
+            return cand_moments, {"scored_count": 0, "reason": "missing_embeddings"}
+
+        q_vec = np.asarray(query_vec_768, dtype=np.float32).reshape(-1)
+        top_k = min(self.temporal_rerank_top_k, len(cand_moments))
+        head_moments = cand_moments[:top_k]
+
+        raw_pools: list[tuple[int, float, float, bool, int]] = []
+        per_video_stats: dict[str, dict[str, Any]] = {}
+        for idx, m in enumerate(head_moments):
+            vid = m.video_id
+            anchor_t = float(m.representative_timestamp_seconds)
+            kf_list = self.video_keyframes.get(vid, [])
+            if not kf_list:
+                per_video_stats[vid] = {"used_fallback": True, "num_frames": 0, "skipped": True}
+                continue
+            in_win = [
+                k for k in kf_list
+                if abs(float(k.get("pts_time", 0.0)) - anchor_t) <= self.temporal_rerank_window_sec
+            ]
+            if in_win:
+                selected_kfs = sorted(
+                    in_win,
+                    key=lambda k: (abs(float(k.get("pts_time", 0.0)) - anchor_t), int(k["faiss_id"])),
+                )[: self.temporal_rerank_max_frames]
+                used_fallback = False
+            else:
+                selected_kfs = sorted(
+                    kf_list,
+                    key=lambda k: (abs(float(k.get("pts_time", 0.0)) - anchor_t), int(k["faiss_id"])),
+                )[: self.temporal_rerank_max_frames]
+                used_fallback = True
+
+            valid_fids = [int(k["faiss_id"]) for k in selected_kfs if 0 <= int(k["faiss_id"]) < len(emb_mat)]
+            if not valid_fids:
+                per_video_stats[vid] = {"used_fallback": used_fallback, "num_frames": 0, "skipped": True}
+                continue
+            pool_sc, spike_gap = compute_temporal_pool_score(
+                q_vec,
+                emb_mat[valid_fids],
+                mode=self.temporal_rerank_mode,
+                tau=self.temporal_rerank_tau,
+            )
+            raw_pools.append((idx, pool_sc, spike_gap, used_fallback, len(valid_fids)))
+
+        if len(raw_pools) < 2:
+            return cand_moments, {"scored_count": len(raw_pools), "reason": "insufficient_pool_candidates", "per_video": per_video_stats}
+
+        base_scores = np.array([float(m.ranking_score) for m in head_moments], dtype=np.float64)
+        scale_base = float(np.std(base_scores))
+        pool_arr = np.array([row[1] for row in raw_pools], dtype=np.float64)
+        mu_pool = float(np.mean(pool_arr))
+        std_pool = float(np.std(pool_arr))
+        if scale_base <= 1e-9 or std_pool <= 1e-9:
+            return cand_moments, {"scored_count": len(raw_pools), "reason": "degenerate_variance", "per_video": per_video_stats}
+
+        updated = list(cand_moments)
+        lam = float(self.temporal_rerank_lambda)
+        for idx, pool_sc, spike_gap, used_fallback, n_frames in raw_pools:
+            m = updated[idx]
+            z_pool = (pool_sc - mu_pool) / std_pool
+            z_clipped = float(np.clip(z_pool, -2.0, 2.0))
+            base_sc = float(m.ranking_score)
+            new_sc = base_sc + lam * scale_base * z_clipped
+            per_video_stats[m.video_id] = {
+                "pool_score": round(pool_sc, 6),
+                "z_pool": round(z_pool, 6),
+                "z_clipped": round(z_clipped, 6),
+                "spike_gap": round(spike_gap, 6),
+                "used_fallback": used_fallback,
+                "num_frames": n_frames,
+                "base_score": round(base_sc, 6),
+                "new_score": round(new_sc, 6),
+            }
+            updated[idx] = RankedMoment(
+                moment_id=m.moment_id,
+                video_id=m.video_id,
+                moment_start_seconds=m.moment_start_seconds,
+                moment_end_seconds=m.moment_end_seconds,
+                start_original_frame_index=m.start_original_frame_index,
+                end_original_frame_index=m.end_original_frame_index,
+                representative_original_frame_index=m.representative_original_frame_index,
+                representative_timestamp_seconds=m.representative_timestamp_seconds,
+                ranking_score=new_sc,
+                score_type=m.score_type,
+                match_status=m.match_status,
+                evidence_frame_indices=m.evidence_frame_indices,
+                unresolved_predicates=m.unresolved_predicates,
+                structural_score=m.structural_score,
+            )
+
+        return updated, {
+            "scored_count": len(raw_pools),
+            "scale_base": round(scale_base, 6),
+            "mode": self.temporal_rerank_mode,
+            "lambda": lam,
+            "per_video": per_video_stats,
+        }
 
     def _ensure_e5_encoder(self) -> bool:
         """Lazy-load intfloat/multilingual-e5-small locally without network calls."""
@@ -2193,10 +2480,9 @@ class UnifiedMultimodalSearchPipeline:
             and sparse_lexical_yield
             and has_lexical_modality_intent
         )
-        need_e5_caption = (
-            self.e5_caption_index is not None
-            and ablation_config not in ("A0", "A1", "A2")
-        )
+        cap_dense_enabled, _ = self._is_vlm_caption_dense_enabled(ablation_config)
+        cap_lex_enabled, _ = self._is_vlm_caption_lexical_enabled(ablation_config)
+        need_e5_caption = cap_dense_enabled and (self.e5_caption_index is not None)
         if need_e5_text or need_e5_caption:
             t_e5_start = time.perf_counter()
             q_e5_384 = self.encode_e5_query(query)
@@ -2244,10 +2530,23 @@ class UnifiedMultimodalSearchPipeline:
                             "is_dense_e5": True,
                         })
 
+        # Snapshot visual-only branch BEFORE P8-5 caption hits can augment visual_candidates
+        visual_frame_depth = len(visual_candidates)
+        visual_candidate_ids: list[str] = list(
+            dict.fromkeys(
+                c["video_id"]
+                for c in sorted(visual_candidates, key=lambda x: float(x["score"]), reverse=True)
+            )
+        )
+        visual_distinct_videos = len(visual_candidate_ids)
+
         # P8-5: VLM keyframe caption FTS5 + optional dense E5 caption index recall
-        if ablation_config not in ("A0", "A1", "A2"):
+        caption_ordered_vids: list[str] = []
+        vlm_caption_lexical_hits = 0
+        vlm_caption_dense_hits = 0
+        if cap_lex_enabled or cap_dense_enabled:
             vlm_caption_hits: list[dict[str, Any]] = []
-            if self.has_vlm_caption_fts and fts_query and self.db_conn is not None:
+            if cap_lex_enabled and self.has_vlm_caption_fts and fts_query and self.db_conn is not None:
                 try:
                     cursor = self.db_conn.cursor()
                     cursor.execute(
@@ -2256,6 +2555,7 @@ class UnifiedMultimodalSearchPipeline:
                         (fts_query,),
                     )
                     for rank_idx, (vid, fid, ts_ms, _bm25_rank, norm_text) in enumerate(cursor.fetchall(), 1):
+                        vlm_caption_lexical_hits += 1
                         vlm_caption_hits.append({
                             "video_id": str(vid),
                             "faiss_id": int(fid) if fid is not None else None,
@@ -2266,11 +2566,12 @@ class UnifiedMultimodalSearchPipeline:
                 except sqlite3.Error:
                     pass
 
-            if q_e5_384 is not None and self.e5_caption_index is not None:
+            if cap_dense_enabled and q_e5_384 is not None and self.e5_caption_index is not None:
                 for rank_idx, hit in enumerate(self._search_e5_caption_index(q_e5_384, top_k=30), 1):
                     vid = str(hit.get("video_id", ""))
                     if not vid:
                         continue
+                    vlm_caption_dense_hits += 1
                     vlm_caption_hits.append({
                         "video_id": vid,
                         "faiss_id": int(hit["faiss_id"]) if hit.get("faiss_id") is not None else None,
@@ -2280,6 +2581,7 @@ class UnifiedMultimodalSearchPipeline:
                     })
 
             if vlm_caption_hits:
+                caption_ordered_vids = list(dict.fromkeys(h["video_id"] for h in vlm_caption_hits))
                 vis_by_fid: dict[int, dict[str, Any]] = {}
                 vis_by_vid: dict[str, list[dict[str, Any]]] = defaultdict(list)
                 for vc in visual_candidates:
@@ -2656,6 +2958,8 @@ class UnifiedMultimodalSearchPipeline:
             if prev is None or float(cl["visual_sim"]) > float(prev["visual_sim"]):
                 vid_best_cluster[vid_c] = cl
 
+        sp_enabled, _ = self._is_spatial_patches_enabled(ablation_config)
+        late_interaction_scored_candidates = 0
         cand_moments: list[RankedMoment] = []
         cand_ltr_features: dict[str, dict[str, Any]] = {}
         for vid, vid_items in by_video_raw.items():
@@ -2791,7 +3095,8 @@ class UnifiedMultimodalSearchPipeline:
                         np.dot(self.temporal_context_768[int(rep_fid)], primary_q_768.reshape(-1))
                     )
 
-            if self.spatial_patches is not None and len(self.spatial_patches) > 0:
+            if sp_enabled and self.spatial_patches is not None and len(self.spatial_patches) > 0:
+                late_interaction_scored_candidates += 1
                 late_int_sc = self._score_late_interaction_window(
                     vid, best_st - 2.0, best_et + 2.0, primary_q_768
                 )
@@ -2880,6 +3185,13 @@ class UnifiedMultimodalSearchPipeline:
                 match_status=branch_attribution,
             ))
 
+        # Section 2.2: Capture pre-rerank video IDs after Stage 5 base fusion, BEFORE LTR or temporal rerank
+        pre_rerank_sorted = sorted(
+            cand_moments,
+            key=lambda m: (-float(m.ranking_score), str(m.video_id)),
+        )
+        pre_rerank_video_ids: list[str] = list(dict.fromkeys(m.video_id for m in pre_rerank_sorted))
+
         if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
             ltr_matrix = np.vstack([
                 extract_ltr_features_24d(cand_ltr_features[m.video_id], z_stats=z_stats)
@@ -2906,7 +3218,25 @@ class UnifiedMultimodalSearchPipeline:
                 for m, ltr_sc in zip(cand_moments, ltr_scores.tolist())
             ]
 
-        cand_moments.sort(key=lambda m: float(m.ranking_score), reverse=True)
+        cand_moments.sort(key=lambda m: (-float(m.ranking_score), str(m.video_id)))
+
+        # Section 3.1: NumPy Temporal Rerank Challenger on fixed Top-K base videos
+        tr_enabled, _ = self._is_temporal_rerank_enabled(ablation_config)
+        temporal_rerank_stats: dict[str, Any] = {}
+        temporal_rerank_scored_candidates = 0
+        if tr_enabled:
+            reranker_input_ids: list[str] = list(
+                dict.fromkeys(m.video_id for m in cand_moments)
+            )[: self.temporal_rerank_top_k]
+            if float(self.temporal_rerank_lambda) != 0.0 and cand_moments:
+                cand_moments, temporal_rerank_stats = self._apply_temporal_rerank(
+                    cand_moments, primary_q_768
+                )
+                temporal_rerank_scored_candidates = int(temporal_rerank_stats.get("scored_count", 0))
+                cand_moments.sort(key=lambda m: (-float(m.ranking_score), str(m.video_id)))
+        else:
+            reranker_input_ids = list(pre_rerank_video_ids)
+
         aggregated_moments = cand_moments[:top_k]
         t_fusion_end = time.perf_counter()
 
@@ -3090,23 +3420,53 @@ class UnifiedMultimodalSearchPipeline:
             "t_non_neural_ms": t_non_neural_ms,
             "t_total_ms": t_total_ms,
         }
+        union_candidate_ids = list(dict.fromkeys([*visual_candidate_ids, *lex_ordered_vids, *caption_ordered_vids]))
+        ranked_video_ids_default = [
+            m.video_id for m in self._build_ranked_videos(cand_moments, cand_moments, top_k=top_k)
+        ]
         self.last_diagnostics = {
             "lexical_status": "complete" if fts_query and self.db_conn is not None and ablation_config not in ("A0", "A1", "A2") else "not_run",
-            "visual_top30_vids": set(vis_ordered_vids[:30]),
-            "visual_top120_vids": set(vis_ordered_vids[:120]),
+            "visual_top30_vids": set(visual_candidate_ids[:30]),
+            "visual_top120_vids": set(visual_candidate_ids[:120]),
             "lexical_top30_vids": set(lex_ordered_vids[:30]),
             "ocr_vids": list(dict.fromkeys(c["video_id"] for c in ocr_candidates)),
             "asr_vids": list(dict.fromkeys(c["video_id"] for c in asr_candidates)),
-            "union_dedup_vids": list(dict.fromkeys([*vis_ordered_vids, *lex_ordered_vids])),
-            "shortlist_before_rerank_vids": list(dict.fromkeys(m.video_id for m in cand_moments)),
-            "visual_frame_depth": len(visual_candidates),
-            "fused_top10_vids": {m.video_id for m in cand_moments[:10]},
+            "caption_vids": caption_ordered_vids,
+            "visual_candidate_ids": visual_candidate_ids,
+            "visual_frame_depth": visual_frame_depth,
+            "visual_distinct_videos": visual_distinct_videos,
+            "union_candidate_ids": union_candidate_ids,
+            "union_dedup_vids": union_candidate_ids,
+            "pre_rerank_video_ids": pre_rerank_video_ids,
+            "shortlist_before_rerank_vids": pre_rerank_video_ids,
+            "reranker_input_ids": reranker_input_ids,
+            "ranked_video_ids": ranked_video_ids_default,
+            "fused_top10_vids": set(pre_rerank_video_ids[:10]),
             "all_candidate_moments": cand_moments,
             "visual_candidates": visual_candidates[:30],
             "ocr_candidates": ocr_candidates[:15],
             "asr_candidates": asr_candidates[:15],
             "candidate_ltr_features": cand_ltr_features,
             "viterbi_modality_availability": viterbi_availability,
+            "feature_flags": {
+                "enable_spatial_patches": self.enable_spatial_patches,
+                "enable_vlm_caption_lexical": self.enable_vlm_caption_lexical,
+                "enable_vlm_caption_dense": self.enable_vlm_caption_dense,
+                "enable_temporal_rerank": self.enable_temporal_rerank,
+                "temporal_rerank_mode": self.temporal_rerank_mode,
+                "temporal_rerank_lambda": self.temporal_rerank_lambda,
+                "temporal_rerank_top_k": self.temporal_rerank_top_k,
+                "temporal_rerank_window_sec": self.temporal_rerank_window_sec,
+                "temporal_rerank_max_frames": self.temporal_rerank_max_frames,
+                "temporal_rerank_tau": self.temporal_rerank_tau,
+            },
+            "feature_compute_counts": {
+                "late_interaction_scored_candidates": late_interaction_scored_candidates,
+                "vlm_caption_lexical_hits": vlm_caption_lexical_hits,
+                "vlm_caption_dense_hits": vlm_caption_dense_hits,
+                "temporal_rerank_scored_candidates": temporal_rerank_scored_candidates,
+            },
+            "temporal_rerank_stats": temporal_rerank_stats,
             "degraded": self._build_degraded_diagnostics(ablation_config),
         }
 

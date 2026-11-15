@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from videntra.retrieval.alignment import (
+    compute_temporal_pool_score,
     query_guided_temporal_attention_score,
     temporal_sinkhorn_alignment_score,
 )
@@ -196,3 +197,30 @@ def test_attention_pooler_edge_cases() -> None:
 
     with pytest.raises(ValueError):
         query_guided_temporal_attention_score(q, np.ones((2, 4)))
+
+
+def test_compute_temporal_pool_score_modes_and_spike_gap() -> None:
+    q = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    # Frame 0 has cos=0.9, frames 1..3 have cos=0.3 -> single-frame spike
+    frames = np.array(
+        [
+            [0.9, np.sqrt(1 - 0.81), 0.0],
+            [0.3, np.sqrt(1 - 0.09), 0.0],
+            [0.3, np.sqrt(1 - 0.09), 0.0],
+            [0.3, np.sqrt(1 - 0.09), 0.0],
+        ],
+        dtype=np.float32,
+    )
+    sc_mean, gap_mean = compute_temporal_pool_score(q, frames, mode="mean")
+    sc_top2, _ = compute_temporal_pool_score(q, frames, mode="mean_top2")
+    sc_top3, _ = compute_temporal_pool_score(q, frames, mode="mean_top3")
+    sc_att, _ = compute_temporal_pool_score(q, frames, mode="attention", tau=12.0)
+
+    assert sc_mean == pytest.approx(0.45, abs=1e-5)
+    assert sc_top2 == pytest.approx(0.60, abs=1e-5)
+    assert sc_top3 == pytest.approx(0.50, abs=1e-5)
+    assert gap_mean == pytest.approx(0.90 - 0.60, abs=1e-5)
+    assert sc_att > sc_mean
+
+    with pytest.raises(ValueError, match="Unsupported temporal pool mode"):
+        compute_temporal_pool_score(q, frames, mode="unknown_mode")

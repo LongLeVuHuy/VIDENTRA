@@ -158,3 +158,133 @@ def test_corpus_smaller_than_k_tie_break_and_unrounded_timestamps():
     top_moments = json.loads(records[0]["ranked_predictions"])
     assert top_moments[1]["start_sec"] == 0.004
     assert top_moments[1]["end_sec"] == 9.996
+
+
+def test_stage_recall_60_candidates_target_at_rank_21_and_dedup_order():
+    # 60 candidate videos in pre_rerank_video_ids, target at 1-based rank 21 (index 20)
+    cands_60 = [f"v{i:02d}" for i in range(60)]
+    cands_60[20] = "target"
+    # Include duplicate occurrences of v00 in visual/pre_rerank to verify multi-frame/multi-window dedup
+    pre_rerank_with_dups = ["v00", "v00"] + cands_60
+
+    class StageRunner:
+        indexed_videos = set(cands_60)
+        dataset_videos = {"msrvtt": indexed_videos}
+        timings = {
+            "t_total_ms": 4.0, "t_non_neural_ms": 2.0, "t_faiss_ms": 1.0,
+            "t_fts5_ms": 0.5, "t_fusion_ms": 0.5, "t_boundary_ms": 0.0,
+        }
+        diagnostics = {
+            "visual_candidate_ids": ["v00", "v00", "v01"],
+            "visual_frame_depth": 120,
+            "visual_distinct_videos": 2,
+            "union_candidate_ids": cands_60,
+            "pre_rerank_video_ids": pre_rerank_with_dups,
+            "reranker_input_ids": cands_60[:10],
+            "ranked_video_ids": ["target"] + cands_60[:9],
+        }
+
+        def search_multimodal(self, query, top_k, ablation_config):
+            return [
+                {"video_id": "target", "start_sec": 0.0, "end_sec": 10.0, "ranking_score": 0.9, "modality_attribution": "visual"}
+            ]
+
+    q = {"query_id": "m_21", "query_text": "q", "dataset": "msrvtt", "target_videos": ["target"], "target_windows": []}
+    summary, records = evaluate_query_set(StageRunner(), [q], show_progress=False)
+    rec = records[0]
+    assert rec["visual_hit"] == 0
+    assert rec["union_hit"] == 1
+    assert rec["shortlist_hit"] == 1
+    assert rec["shortlist_hit_at_10"] == 0
+    assert rec["shortlist_hit_at_20"] == 0
+    assert rec["shortlist_hit_at_50"] == 1
+    assert rec["target_rank_before"] == 21
+    assert rec["target_rank_after"] == 1
+    assert rec["pre_rerank_pool_size"] == 60
+    assert rec["visual_frame_depth"] == 120
+    assert rec["visual_distinct_videos"] == 2
+
+    br = summary["metrics_overall"]["branch_recall"]
+    assert br["union_recall"] == 1.0
+    assert br["shortlist_recall"] == 1.0
+    assert br["shortlist_recall_at_10"] == 0.0
+    assert br["shortlist_recall_at_20"] == 0.0
+    assert br["shortlist_recall_at_50"] == 1.0
+    assert br["reranker_input_recall"] == 0.0
+
+
+def test_missing_stage_trace_is_not_measured_while_empty_trace_is_zero():
+    class AbsentRunner(FakeRunner):
+        diagnostics = {}
+
+    class EmptyTraceRunner(FakeRunner):
+        diagnostics = {
+            "visual_candidate_ids": [],
+            "union_candidate_ids": [],
+            "pre_rerank_video_ids": [],
+            "reranker_input_ids": [],
+        }
+
+    sum_absent, rec_absent = evaluate_query_set(AbsentRunner(), [_query("a", "hit")], show_progress=False)
+    assert rec_absent[0]["shortlist_hit"] == "NOT_MEASURED"
+    assert rec_absent[0]["union_hit"] == "NOT_MEASURED"
+    assert sum_absent["metrics_overall"]["branch_recall"]["shortlist_recall"] == "NOT_MEASURED"
+    assert sum_absent["metrics_overall"]["branch_recall"]["union_recall"] == "NOT_MEASURED"
+
+    sum_empty, rec_empty = evaluate_query_set(EmptyTraceRunner(), [_query("a", "hit")], show_progress=False)
+    assert rec_empty[0]["shortlist_hit"] == 0
+    assert rec_empty[0]["union_hit"] == 0
+    assert sum_empty["metrics_overall"]["branch_recall"]["shortlist_recall"] == 0.0
+    assert sum_empty["metrics_overall"]["branch_recall"]["union_recall"] == 0.0
+
+
+def test_cutoff_ties_and_per_query_totals_match_dataset_and_summary():
+    # Query 1: target at rank 10 (cutoff@10 hit); Query 2: target at rank 11 (cutoff@10 miss, cutoff@20 hit)
+    pool_25 = [f"x{i:02d}" for i in range(25)]
+
+    class CutoffRunner:
+        indexed_videos = set(pool_25) | {"t1", "t2"}
+        dataset_videos = {"msrvtt": indexed_videos, "avc": indexed_videos}
+        timings = {
+            "t_total_ms": 2.0, "t_non_neural_ms": 1.0, "t_faiss_ms": 0.5,
+            "t_fts5_ms": 0.2, "t_fusion_ms": 0.3, "t_boundary_ms": 0.0,
+        }
+
+        def search_multimodal(self, query, top_k, ablation_config):
+            if query == "q_rank10":
+                pre = pool_25[:9] + ["t1"] + pool_25[9:20]
+                self.diagnostics = {
+                    "visual_candidate_ids": pre,
+                    "union_candidate_ids": pre,
+                    "pre_rerank_video_ids": pre,
+                    "reranker_input_ids": pre[:10],
+                    "ranked_video_ids": ["t1"] + pool_25[:9],
+                }
+                return [{"video_id": "t1", "start_sec": 0.0, "end_sec": 5.0, "ranking_score": 1.0, "modality_attribution": "visual"}]
+            pre = pool_25[:10] + ["t2"] + pool_25[10:20]
+            self.diagnostics = {
+                "visual_candidate_ids": pre,
+                "union_candidate_ids": pre,
+                "pre_rerank_video_ids": pre,
+                "reranker_input_ids": pre[:10],
+                "ranked_video_ids": pool_25[:10],
+            }
+            return [{"video_id": pool_25[0], "start_sec": 0.0, "end_sec": 5.0, "ranking_score": 1.0, "modality_attribution": "visual"}]
+
+    queries = [
+        {"query_id": "q1", "query_text": "q_rank10", "dataset": "msrvtt", "target_videos": ["t1"], "target_windows": []},
+        {"query_id": "q2", "query_text": "q_rank11", "dataset": "avc", "target_videos": ["t2"], "target_windows": []},
+    ]
+    summary, records = evaluate_query_set(CutoffRunner(), queries, show_progress=False)
+    assert len(records) == 2
+    assert records[0]["shortlist_hit_at_10"] == 1
+    assert records[1]["shortlist_hit_at_10"] == 0
+    assert records[1]["shortlist_hit_at_20"] == 1
+
+    # Verify per-query totals match summary and dataset_averages
+    assert summary["metrics_overall"]["video_hit_at_1"] == round(sum(r["hit_at_1"] for r in records) / 2, 4)
+    assert summary["metrics_overall"]["branch_recall"]["shortlist_recall_at_10"] == 0.5
+    assert summary["metrics_overall"]["branch_recall"]["shortlist_recall_at_20"] == 1.0
+    assert summary["dataset_averages"]["msrvtt"]["hit_at_1"] == 1.0
+    assert summary["dataset_averages"]["macro"]["video_hit_at_1"] == 0.5
+    assert summary["dataset_averages"]["micro"]["video_hit_at_1"] == 0.5

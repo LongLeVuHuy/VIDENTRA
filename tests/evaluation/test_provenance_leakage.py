@@ -177,7 +177,7 @@ def test_run_benchmark_writes_provenance_and_fails_on_insample_overlap(tmp_path,
         }
         diagnostics = {"degraded": ["ocr_fts_disabled"]}
 
-        def __init__(self, ltr_model_path=None):
+        def __init__(self, ltr_model_path=None, **_kwargs):
             ranker = LearnedRankerLTR(model_path=ltr_model_path)
             self.pipeline = type("P", (), {"ltr_ranker": ranker, "close": lambda _s: None})()
 
@@ -483,3 +483,105 @@ def test_missing_or_corrupt_ltr_fails_early(tmp_path):
             run_all_splits=False,
             ltr_model_path=corrupt,
         )
+
+
+def test_splits_excludes_heldout_and_records_feature_flags_in_config_and_provenance(tmp_path, monkeypatch):
+    ltr_path = tmp_path / "videntra_ltr_v1.json"
+    _write_ltr_artifact(
+        ltr_path,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["train_only"],
+        },
+    )
+
+    captured_runner_kwargs: list[dict] = []
+    loaded_dirs: list[Path] = []
+
+    class FlagRunner:
+        indexed_videos = {"v1"}
+        dataset_videos = {"msrvtt": {"v1"}}
+        device = "cpu"
+        timings = {
+            "t_total_ms": 2.0, "t_non_neural_ms": 1.0, "t_faiss_ms": 0.5,
+            "t_fts5_ms": 0.1, "t_fusion_ms": 0.2, "t_boundary_ms": 0.2,
+        }
+        diagnostics = {
+            "channel_status": {
+                "spatial_patches": {"status": "disabled_by_config", "reason": "disabled"},
+                "vlm_caption_lexical": {"status": "disabled_by_config", "reason": "disabled"},
+                "vlm_caption_dense": {"status": "disabled_by_config", "reason": "disabled"},
+            },
+            "visual_candidate_ids": ["v1"],
+            "union_candidate_ids": ["v1"],
+            "pre_rerank_video_ids": ["v1"],
+            "reranker_input_ids": ["v1"],
+            "ranked_video_ids": ["v1"],
+        }
+
+        def __init__(self, **kwargs):
+            captured_runner_kwargs.append(kwargs)
+            ranker = LearnedRankerLTR(model_path=kwargs.get("ltr_model_path"))
+            self.pipeline = type("P", (), {"ltr_ranker": ranker, "close": lambda _s: None})()
+
+        def search_multimodal(self, query, top_k, ablation_config):
+            return [{
+                "video_id": "v1", "start_sec": 0.0, "end_sec": 5.0,
+                "ranking_score": 0.8, "modality_attribution": "visual",
+            }]
+
+    def fake_load_queries(qdir, indexed, max_msrvtt=None):
+        loaded_dirs.append(Path(qdir))
+        return [{"query_id": f"q_{max_msrvtt}", "query_text": "q", "dataset": "msrvtt", "target_videos": ["v1"], "target_windows": []}]
+
+    monkeypatch.setattr(rvb, "MultimodalBenchmarkRunner", FlagRunner)
+    monkeypatch.setattr(rvb, "load_validation_queries", fake_load_queries)
+    monkeypatch.setattr(rvb, "hash_paths", lambda paths: {str(p): "stub" for p in paths})
+    monkeypatch.setattr(rvb, "verify_hashes", lambda _h: True)
+
+    val_dir = tmp_path / "val"
+    test_dir = tmp_path / "test_queries"
+    val_dir.mkdir()
+    test_dir.mkdir()
+    out_dir = tmp_path / "out_flags"
+    monkeypatch.chdir(tmp_path)
+
+    rvb.run_benchmark(
+        val_dir=val_dir,
+        test_dir=test_dir,
+        out_dir=out_dir,
+        ltr_model_path=ltr_path,
+        splits="dev_150,dev_full_859",
+        temporal_rerank_mode="mean_top2",
+        temporal_rerank_lambda=0.10,
+        temporal_rerank_top_k=10,
+        enable_spatial_patches=False,
+        enable_vlm_caption_lexical=False,
+        enable_vlm_caption_dense=False,
+    )
+
+    assert test_dir not in loaded_dirs
+    assert len(captured_runner_kwargs) == 1
+    kw = captured_runner_kwargs[0]
+    assert kw["temporal_rerank_mode"] == "mean_top2"
+    assert kw["temporal_rerank_lambda"] == 0.10
+    assert kw["temporal_rerank_top_k"] == 10
+    assert kw["enable_temporal_rerank"] is True
+    assert kw["enable_spatial_patches"] is False
+    assert kw["enable_vlm_caption_lexical"] is False
+    assert kw["enable_vlm_caption_dense"] is False
+
+    prov = json.loads((out_dir / "provenance.json").read_text(encoding="utf-8"))
+    summary = json.loads((out_dir / "benchmark_summary.json").read_text(encoding="utf-8"))
+    assert "heldout_test_201" not in summary["multi_split_evaluation"]
+    assert set(summary["multi_split_evaluation"].keys()) == {"dev_150", "dev_full_859"}
+    assert summary["degraded_channels"] == []
+    assert sorted(summary["disabled_channels"]) == ["spatial_patches", "vlm_caption_dense", "vlm_caption_lexical"]
+    assert summary["config"]["splits"] == ["dev_150", "dev_full_859"]
+    assert prov["selected_splits"] == ["dev_150", "dev_full_859"]
+    assert prov["feature_flags"] == summary["config"]["feature_flags"]
+    assert prov["feature_flags"]["temporal_rerank_mode"] == "mean_top2"
+    assert prov["feature_flags"]["temporal_rerank_lambda"] == 0.10
+    assert prov["feature_flags"]["enable_vlm_caption_dense"] is False

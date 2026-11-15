@@ -492,3 +492,66 @@ def query_guided_temporal_attention_score(
         return 0.0
     dispersion = max(0.0, 1.0 - v_norm)
     return float(mean_cos - float(disp_penalty) * dispersion)
+
+
+_VALID_TEMPORAL_POOL_MODES = ("mean", "mean_top2", "mean_top3", "attention")
+
+
+def compute_temporal_pool_score(
+    query_vec: np.ndarray,
+    frame_vecs: np.ndarray,
+    *,
+    mode: str = "attention",
+    tau: float = 12.0,
+    disp_penalty: float = 0.15,
+) -> tuple[float, float]:
+    """Compute a pooled temporal score and spike gap (max - mean_top2) over frame vectors.
+
+    Supported modes: ``mean``, ``mean_top2``, ``mean_top3``, ``attention``.
+    Returns ``(pool_score, spike_gap)``.
+    """
+    if mode not in _VALID_TEMPORAL_POOL_MODES:
+        raise ValueError(
+            f"Unsupported temporal pool mode {mode!r}; expected one of {_VALID_TEMPORAL_POOL_MODES}"
+        )
+    if query_vec is None or frame_vecs is None:
+        return 0.0, 0.0
+
+    q_arr = np.asarray(query_vec, dtype=np.float32).ravel()
+    f_arr = np.asarray(frame_vecs, dtype=np.float32)
+    if q_arr.size == 0 or f_arr.size == 0:
+        return 0.0, 0.0
+
+    if f_arr.ndim == 1:
+        f_arr = f_arr.reshape(1, -1)
+    elif f_arr.ndim != 2:
+        raise ValueError(f"frame_vecs must be 1D or 2D, got shape {f_arr.shape}")
+
+    if f_arr.shape[1] != q_arr.size:
+        raise ValueError(
+            f"Dimension mismatch: query_vec has {q_arr.size}, "
+            f"frame_vecs has {f_arr.shape[1]}"
+        )
+
+    q_norm = float(np.linalg.norm(q_arr))
+    if q_norm <= 1e-8:
+        return 0.0, 0.0
+    q_unit = (q_arr / q_norm).astype(np.float64)
+    f_unit = _l2_normalize_rows(f_arr).astype(np.float64)
+    cos_sims = f_unit @ q_unit
+
+    sorted_sims = np.sort(cos_sims)
+    top2_mean = float(np.mean(sorted_sims[-min(2, len(sorted_sims)):]))
+    spike_gap = float(sorted_sims[-1] - top2_mean)
+
+    if mode == "mean":
+        pool_score = float(np.mean(cos_sims))
+    elif mode == "mean_top2":
+        pool_score = top2_mean
+    elif mode == "mean_top3":
+        pool_score = float(np.mean(sorted_sims[-min(3, len(sorted_sims)):]))
+    else:
+        pool_score = query_guided_temporal_attention_score(
+            q_arr, f_arr, tau=tau, disp_penalty=disp_penalty
+        )
+    return float(pool_score), float(spike_gap)

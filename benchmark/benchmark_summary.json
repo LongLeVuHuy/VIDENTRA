@@ -1,37 +1,44 @@
 {
   "status": "completed_leakage_free",
-  "run_id": "08626d79ef744e3080c2fb24c4761cad",
-  "benchmark_timestamp": "2026-11-15 15:31:26",
-  "git_sha": "dffdf8a",
+  "run_id": "8c40e943d7104f21badda4a3fd62f623",
+  "benchmark_timestamp": "2026-11-15 17:17:27",
+  "git_sha": "e0d5d5f",
   "git_worktree": {
     "git_dirty": true,
-    "git_dirty_count": 21,
+    "git_dirty_count": 28,
     "git_dirty_files": [
       " M AGENTS.md",
-      " M models/ranking/videntra_ltr_v1.json",
+      " M README.md",
+      " D VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md",
+      " D VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md",
+      " M docs/PROGRESS.md",
+      " D docs/audit/BLENDER_A5_TIMELINE_DIAGNOSTIC_20261111.md",
+      " D docs/audit/BLENDER_LOCALIZATION_ABLATION_20261110.md",
+      " D docs/audit/BLENDER_VISUAL_PILOT_20261110.md",
+      " D docs/audit/COMPLETION_REVIEW.md",
+      " D docs/audit/FINAL_ACCEPTANCE_REPORT.md",
+      " D docs/audit/HUMAN_REVIEWED_CORPUS_OPTIONS_20261110.md",
+      " D docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md",
+      " D docs/audit/QVH_USAGE_EVIDENCE_20261110.md",
       " M scripts/ingest_kaggle_offline_results.py",
       " M scripts/kaggle_multimodal_offline_worker.py",
       " M scripts/run_validation_benchmark.py",
-      " M scripts/train_ltr_ranker_cv.py",
       " M src/videntra/evaluation/provenance.py",
-      " M src/videntra/query/rules.py",
       " M src/videntra/relations/matcher.py",
+      " M src/videntra/relations/temporal.py",
+      " M src/videntra/retrieval/alignment.py",
       " M src/videntra/retrieval/unified_pipeline.py",
-      " M src/videntra/storage/database.py",
-      " M tests/api/test_unified_parity.py",
-      " M tests/evaluation/test_benchmark_verdicts.py",
-      " M tests/evaluation/test_kaggle_ingest_safety.py",
       " M tests/evaluation/test_provenance_leakage.py",
-      " M tests/evaluation/test_split_lock.py",
       " M tests/evaluation/test_validation_benchmark_synthetic.py",
-      " M tests/ocr/test_ocr_asr_no_stubs.py",
-      " M tests/ranking/test_learned_ranker.py",
+      " M tests/indexing/test_kaggle_offline_pipeline.py",
+      " M tests/relations/test_bugfixes_relations_phase7.py",
+      " M tests/relations/test_temporal_relation_grounding.py",
       " M tests/retrieval/test_research_upgrades.py",
-      "?? tests/relations/test_temporal_relation_grounding.py"
+      " M tests/retrieval/test_tsot_and_attention.py"
     ]
   },
   "ltr_model_sha256": "432c2c831ec89ef1f9f3d4d796a756c60e4fcccf97b8812171cf8a1df21f8e00",
-  "ltr_model_resolved_path": "<repo-root>/models/ranking/videntra_ltr_v1.json",
+  "ltr_model_resolved_path": "<repo-root>\\models\\ranking\\videntra_ltr_v1.json",
   "ltr_feature_schema": {
     "model_type": "pairwise_logistic",
     "n_features": 24,
@@ -114,13 +121,16 @@
   },
   "degraded_channels": [
     "e5_caption_index",
-    "spatial_patches"
+    "spatial_patches",
+    "vlm_caption_lexical"
   ],
   "disabled_channels": [
     "e5_caption_index",
     "e5_text_index",
     "lexical_db",
-    "spatial_patches"
+    "spatial_patches",
+    "temporal_rerank",
+    "vlm_caption_lexical"
   ],
   "channel_status": {
     "e5_text_index": {
@@ -128,35 +138,68 @@
       "affected_queries": 1960,
       "sample_reason": "loaded"
     },
-    "e5_caption_index": {
-      "status": "missing_artifact",
-      "affected_queries": 1960,
-      "sample_reason": "e5_caption_index_not_loaded"
-    },
     "lexical_db": {
       "status": "ready",
       "affected_queries": 1960,
       "sample_reason": "connected"
     },
+    "e5_caption_index": {
+      "status": "missing_artifact",
+      "affected_queries": 1960,
+      "sample_reason": "e5_caption_index_not_loaded"
+    },
+    "vlm_caption_lexical": {
+      "status": "missing_artifact",
+      "affected_queries": 1960,
+      "sample_reason": "fts_vlm_caption_not_available"
+    },
     "spatial_patches": {
       "status": "missing_artifact",
       "affected_queries": 1960,
       "sample_reason": "spatial_patches_not_loaded"
+    },
+    "temporal_rerank": {
+      "status": "disabled_by_config",
+      "affected_queries": 1960,
+      "sample_reason": "disabled_by_flag"
     }
   },
   "leakage_free": true,
   "config": {
     "max_msrvtt": 100,
     "run_all_splits": true,
+    "splits": [
+      "dev_150",
+      "dev_full_859",
+      "heldout_test_201"
+    ],
     "allow_insample_eval": false,
     "ltr_model_path": "models\\ranking\\videntra_ltr_v1.json",
-    "ltr_model_resolved_path": "<repo-root>/models/ranking/videntra_ltr_v1.json",
+    "ltr_model_resolved_path": "<repo-root>\\models\\ranking\\videntra_ltr_v1.json",
     "ablation_config": "A5",
+    "feature_flags": {
+      "enable_spatial_patches": true,
+      "enable_vlm_caption_lexical": true,
+      "enable_vlm_caption_dense": true,
+      "enable_temporal_rerank": false,
+      "temporal_rerank_mode": "attention",
+      "temporal_rerank_lambda": 0.0,
+      "temporal_rerank_top_k": 10
+    },
     "cutoffs": {
       "top_k": 10,
       "ranking_mode": "diverse_video",
       "max_msrvtt": 100
     }
+  },
+  "feature_flags": {
+    "enable_spatial_patches": true,
+    "enable_vlm_caption_lexical": true,
+    "enable_vlm_caption_dense": true,
+    "enable_temporal_rerank": false,
+    "temporal_rerank_mode": "attention",
+    "temporal_rerank_lambda": 0.0,
+    "temporal_rerank_top_k": 10
   },
   "hardware": {
     "platform": "Windows-10-10.0.19045-SP0",
@@ -187,6 +230,7 @@
     "models\\siglip2\\tokenizer_config.json": "14afe629fe4959b9e0d51e1852b8d9f7ad074f90a1a7125a4fcdd17f06e78fc8",
     "data\\raw\\avc\\provenance\\data\\processed\\avc_1.8m\\manifests\\pilot_queries_eval_only.json": "f6b16914e958f9aae999ffa4576067e65b9f95bcb250930c4526c8e3ef609bcb"
   },
+  "primary_split": "dev_150",
   "total_queries_evaluated": 150,
   "metrics_overall": {
     "video_hit_at_1": 0.6133,
@@ -240,9 +284,20 @@
       "visual_recall_at_30": 0.7733,
       "visual_recall_at_120": 0.82,
       "lexical_recall_at_30": 0.3133,
+      "visual_candidate_recall": 0.82,
       "union_recall": 0.86,
       "shortlist_recall": 0.86,
+      "shortlist_recall_at_10": 0.74,
+      "shortlist_recall_at_20": 0.78,
+      "shortlist_recall_at_50": 0.8467,
+      "shortlist_recall_at_k": 0.86,
+      "reranker_input_recall": 0.86,
+      "ranked_recall": 0.74,
       "fused_recall_at_10": 0.74,
+      "mean_visual_pool_size": 44.8267,
+      "mean_union_pool_size": 65.04,
+      "mean_pre_rerank_pool_size": 65.04,
+      "mean_reranker_input_pool_size": 65.04,
       "shortlist_not_top1_count": 37,
       "shortlist_not_top1_rate": 0.2467
     },
@@ -253,20 +308,20 @@
       "F2_LEXICAL_DISTRACTOR_OVERTHROW": 8,
       "F1_VISUAL_CANDIDATE_MISS": 22
     },
-    "end_to_end_latency_mean_ms": 525.13,
-    "end_to_end_latency_p50_ms": 376.21,
-    "end_to_end_latency_p95_ms": 775.62,
-    "latency_mean_ms": 525.13,
-    "latency_p50_ms": 376.21,
-    "latency_p95_ms": 775.62,
-    "non_neural_latency_mean_ms": 48.48,
-    "non_neural_latency_p50_ms": 40.47,
-    "non_neural_latency_p95_ms": 122.49,
+    "end_to_end_latency_mean_ms": 510.89,
+    "end_to_end_latency_p50_ms": 379.37,
+    "end_to_end_latency_p95_ms": 785.42,
+    "latency_mean_ms": 510.89,
+    "latency_p50_ms": 379.37,
+    "latency_p95_ms": 785.42,
+    "non_neural_latency_mean_ms": 47.36,
+    "non_neural_latency_p50_ms": 41.12,
+    "non_neural_latency_p95_ms": 113.03,
     "stage_latencies_p50_ms": {
-      "faiss_ms": 4.49,
-      "fts5_ms": 3.16,
-      "fusion_ms": 28.93,
-      "boundary_ms": 2.38
+      "faiss_ms": 4.97,
+      "fts5_ms": 3.7,
+      "fusion_ms": 28.8,
+      "boundary_ms": 2.7
     },
     "pvalue_vs_a0_hit1": 0.0005,
     "pvalue_vs_a0_mrr": 0.0005,
@@ -312,8 +367,16 @@
       "visual_recall_at_120": 0.9545,
       "lexical_recall_at_30": 0.2727,
       "fused_recall_at_10": 0.9545,
-      "latency_p50_ms": 374.49,
-      "non_neural_latency_p50_ms": 37.28
+      "visual_candidate_recall": 0.9545,
+      "union_recall": 1.0,
+      "shortlist_recall": 1.0,
+      "shortlist_recall_at_10": 0.9545,
+      "shortlist_recall_at_20": 0.9545,
+      "shortlist_recall_at_50": 1.0,
+      "shortlist_recall_at_k": 1.0,
+      "reranker_input_recall": 1.0,
+      "latency_p50_ms": 379.31,
+      "non_neural_latency_p50_ms": 36.16
     },
     "avc": {
       "queries": 28,
@@ -350,8 +413,16 @@
       "visual_recall_at_120": 0.8214,
       "lexical_recall_at_30": 0.75,
       "fused_recall_at_10": 0.9286,
-      "latency_p50_ms": 369.96,
-      "non_neural_latency_p50_ms": 39.02
+      "visual_candidate_recall": 0.8214,
+      "union_recall": 0.9643,
+      "shortlist_recall": 0.9643,
+      "shortlist_recall_at_10": 0.9286,
+      "shortlist_recall_at_20": 0.9286,
+      "shortlist_recall_at_50": 0.9643,
+      "shortlist_recall_at_k": 0.9643,
+      "reranker_input_recall": 0.9643,
+      "latency_p50_ms": 375.93,
+      "non_neural_latency_p50_ms": 42.53
     },
     "msrvtt": {
       "queries": 100,
@@ -388,8 +459,80 @@
       "visual_recall_at_120": 0.79,
       "lexical_recall_at_30": 0.2,
       "fused_recall_at_10": 0.64,
-      "latency_p50_ms": 379.57,
-      "non_neural_latency_p50_ms": 43.39
+      "visual_candidate_recall": 0.79,
+      "union_recall": 0.8,
+      "shortlist_recall": 0.8,
+      "shortlist_recall_at_10": 0.64,
+      "shortlist_recall_at_20": 0.7,
+      "shortlist_recall_at_50": 0.78,
+      "shortlist_recall_at_k": 0.8,
+      "reranker_input_recall": 0.8,
+      "latency_p50_ms": 379.86,
+      "non_neural_latency_p50_ms": 41.01
+    }
+  },
+  "dataset_averages": {
+    "micro": {
+      "queries": 150,
+      "video_hit_at_1": 0.6133,
+      "video_hit_at_5": 0.7,
+      "video_hit_at_10": 0.74,
+      "mrr": 0.6515,
+      "shortlist_recall": 0.86
+    },
+    "macro": {
+      "datasets": 3,
+      "video_hit_at_1": 0.7541,
+      "video_hit_at_5": 0.8092,
+      "video_hit_at_10": 0.841,
+      "mrr": 0.7791,
+      "shortlist_recall": 0.9214
+    },
+    "msrvtt": {
+      "queries": 100,
+      "hit_at_1": 0.47,
+      "hit_at_1_ci95": [
+        0.37,
+        0.57
+      ],
+      "hit_at_5": 0.59,
+      "hit_at_10": 0.64,
+      "mrr": 0.5223,
+      "mrr_ci95": [
+        0.4291,
+        0.6168
+      ],
+      "video_ndcg_at_1": 0.47,
+      "video_ndcg_at_5": 0.5336,
+      "video_ndcg_at_10": 0.5505,
+      "within_dataset_hit_at_1": 0.49,
+      "within_dataset_hit_at_5": 0.61,
+      "within_dataset_hit_at_10": 0.67,
+      "within_dataset_mrr": 0.5436,
+      "within_dataset_ndcg_at_10": 0.5738,
+      "moment_labeled_n": 0,
+      "moment_hit_at_1_iou03": 0.0,
+      "moment_hit_at_1_iou05": 0.0,
+      "moment_hit_at_1_iou07": 0.0,
+      "moment_ndcg_at_5": 0.0,
+      "moment_ndcg_at_10": 0.0,
+      "moment_map_at_05": 0.0,
+      "moment_map_at_075": 0.0,
+      "moment_map_range_05_095": 0.0,
+      "visual_recall_at_30": 0.73,
+      "visual_recall_at_120": 0.79,
+      "lexical_recall_at_30": 0.2,
+      "fused_recall_at_10": 0.64,
+      "visual_candidate_recall": 0.79,
+      "union_recall": 0.8,
+      "shortlist_recall": 0.8,
+      "shortlist_recall_at_10": 0.64,
+      "shortlist_recall_at_20": 0.7,
+      "shortlist_recall_at_50": 0.78,
+      "shortlist_recall_at_k": 0.8,
+      "reranker_input_recall": 0.8,
+      "latency_p50_ms": 379.86,
+      "non_neural_latency_p50_ms": 41.01
     }
   },
   "multi_split_evaluation": {
@@ -454,9 +597,20 @@
           "visual_recall_at_30": 0.7733,
           "visual_recall_at_120": 0.82,
           "lexical_recall_at_30": 0.3133,
+          "visual_candidate_recall": 0.82,
           "union_recall": 0.86,
           "shortlist_recall": 0.86,
+          "shortlist_recall_at_10": 0.74,
+          "shortlist_recall_at_20": 0.78,
+          "shortlist_recall_at_50": 0.8467,
+          "shortlist_recall_at_k": 0.86,
+          "reranker_input_recall": 0.86,
+          "ranked_recall": 0.74,
           "fused_recall_at_10": 0.74,
+          "mean_visual_pool_size": 44.8267,
+          "mean_union_pool_size": 65.04,
+          "mean_pre_rerank_pool_size": 65.04,
+          "mean_reranker_input_pool_size": 65.04,
           "shortlist_not_top1_count": 37,
           "shortlist_not_top1_rate": 0.2467
         },
@@ -467,20 +621,20 @@
           "F2_LEXICAL_DISTRACTOR_OVERTHROW": 8,
           "F1_VISUAL_CANDIDATE_MISS": 22
         },
-        "end_to_end_latency_mean_ms": 525.13,
-        "end_to_end_latency_p50_ms": 376.21,
-        "end_to_end_latency_p95_ms": 775.62,
-        "latency_mean_ms": 525.13,
-        "latency_p50_ms": 376.21,
-        "latency_p95_ms": 775.62,
-        "non_neural_latency_mean_ms": 48.48,
-        "non_neural_latency_p50_ms": 40.47,
-        "non_neural_latency_p95_ms": 122.49,
+        "end_to_end_latency_mean_ms": 510.89,
+        "end_to_end_latency_p50_ms": 379.37,
+        "end_to_end_latency_p95_ms": 785.42,
+        "latency_mean_ms": 510.89,
+        "latency_p50_ms": 379.37,
+        "latency_p95_ms": 785.42,
+        "non_neural_latency_mean_ms": 47.36,
+        "non_neural_latency_p50_ms": 41.12,
+        "non_neural_latency_p95_ms": 113.03,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 4.49,
-          "fts5_ms": 3.16,
-          "fusion_ms": 28.93,
-          "boundary_ms": 2.38
+          "faiss_ms": 4.97,
+          "fts5_ms": 3.7,
+          "fusion_ms": 28.8,
+          "boundary_ms": 2.7
         },
         "pvalue_vs_a0_hit1": 0.0005,
         "pvalue_vs_a0_mrr": 0.0005,
@@ -526,8 +680,16 @@
           "visual_recall_at_120": 0.9545,
           "lexical_recall_at_30": 0.2727,
           "fused_recall_at_10": 0.9545,
-          "latency_p50_ms": 374.49,
-          "non_neural_latency_p50_ms": 37.28
+          "visual_candidate_recall": 0.9545,
+          "union_recall": 1.0,
+          "shortlist_recall": 1.0,
+          "shortlist_recall_at_10": 0.9545,
+          "shortlist_recall_at_20": 0.9545,
+          "shortlist_recall_at_50": 1.0,
+          "shortlist_recall_at_k": 1.0,
+          "reranker_input_recall": 1.0,
+          "latency_p50_ms": 379.31,
+          "non_neural_latency_p50_ms": 36.16
         },
         "avc": {
           "queries": 28,
@@ -564,8 +726,16 @@
           "visual_recall_at_120": 0.8214,
           "lexical_recall_at_30": 0.75,
           "fused_recall_at_10": 0.9286,
-          "latency_p50_ms": 369.96,
-          "non_neural_latency_p50_ms": 39.02
+          "visual_candidate_recall": 0.8214,
+          "union_recall": 0.9643,
+          "shortlist_recall": 0.9643,
+          "shortlist_recall_at_10": 0.9286,
+          "shortlist_recall_at_20": 0.9286,
+          "shortlist_recall_at_50": 0.9643,
+          "shortlist_recall_at_k": 0.9643,
+          "reranker_input_recall": 0.9643,
+          "latency_p50_ms": 375.93,
+          "non_neural_latency_p50_ms": 42.53
         },
         "msrvtt": {
           "queries": 100,
@@ -602,15 +772,26 @@
           "visual_recall_at_120": 0.79,
           "lexical_recall_at_30": 0.2,
           "fused_recall_at_10": 0.64,
-          "latency_p50_ms": 379.57,
-          "non_neural_latency_p50_ms": 43.39
+          "visual_candidate_recall": 0.79,
+          "union_recall": 0.8,
+          "shortlist_recall": 0.8,
+          "shortlist_recall_at_10": 0.64,
+          "shortlist_recall_at_20": 0.7,
+          "shortlist_recall_at_50": 0.78,
+          "shortlist_recall_at_k": 0.8,
+          "reranker_input_recall": 0.8,
+          "latency_p50_ms": 379.86,
+          "non_neural_latency_p50_ms": 41.01
         }
       },
       "degraded_channels": [
         "e5_caption_index",
-        "spatial_patches"
+        "spatial_patches",
+        "vlm_caption_lexical"
       ],
-      "disabled_channels": [],
+      "disabled_channels": [
+        "temporal_rerank"
+      ],
       "degraded_channel_details": {
         "e5_caption_index": {
           "status": "missing_artifact",
@@ -621,6 +802,11 @@
           "status": "missing_artifact",
           "affected_queries": 150,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 150,
+          "sample_reason": "fts_vlm_caption_not_available"
         }
       },
       "channel_status": {
@@ -629,20 +815,94 @@
           "affected_queries": 150,
           "sample_reason": "loaded"
         },
-        "e5_caption_index": {
-          "status": "missing_artifact",
-          "affected_queries": 150,
-          "sample_reason": "e5_caption_index_not_loaded"
-        },
         "lexical_db": {
           "status": "ready",
           "affected_queries": 150,
           "sample_reason": "connected"
         },
+        "e5_caption_index": {
+          "status": "missing_artifact",
+          "affected_queries": 150,
+          "sample_reason": "e5_caption_index_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 150,
+          "sample_reason": "fts_vlm_caption_not_available"
+        },
         "spatial_patches": {
           "status": "missing_artifact",
           "affected_queries": 150,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "temporal_rerank": {
+          "status": "disabled_by_config",
+          "affected_queries": 150,
+          "sample_reason": "disabled_by_flag"
+        }
+      },
+      "dataset_averages": {
+        "micro": {
+          "queries": 150,
+          "video_hit_at_1": 0.6133,
+          "video_hit_at_5": 0.7,
+          "video_hit_at_10": 0.74,
+          "mrr": 0.6515,
+          "shortlist_recall": 0.86
+        },
+        "macro": {
+          "datasets": 3,
+          "video_hit_at_1": 0.7541,
+          "video_hit_at_5": 0.8092,
+          "video_hit_at_10": 0.841,
+          "mrr": 0.7791,
+          "shortlist_recall": 0.9214
+        },
+        "msrvtt": {
+          "queries": 100,
+          "hit_at_1": 0.47,
+          "hit_at_1_ci95": [
+            0.37,
+            0.57
+          ],
+          "hit_at_5": 0.59,
+          "hit_at_10": 0.64,
+          "mrr": 0.5223,
+          "mrr_ci95": [
+            0.4291,
+            0.6168
+          ],
+          "video_ndcg_at_1": 0.47,
+          "video_ndcg_at_5": 0.5336,
+          "video_ndcg_at_10": 0.5505,
+          "within_dataset_hit_at_1": 0.49,
+          "within_dataset_hit_at_5": 0.61,
+          "within_dataset_hit_at_10": 0.67,
+          "within_dataset_mrr": 0.5436,
+          "within_dataset_ndcg_at_10": 0.5738,
+          "moment_labeled_n": 0,
+          "moment_hit_at_1_iou03": 0.0,
+          "moment_hit_at_1_iou05": 0.0,
+          "moment_hit_at_1_iou07": 0.0,
+          "moment_ndcg_at_5": 0.0,
+          "moment_ndcg_at_10": 0.0,
+          "moment_map_at_05": 0.0,
+          "moment_map_at_075": 0.0,
+          "moment_map_range_05_095": 0.0,
+          "visual_recall_at_30": 0.73,
+          "visual_recall_at_120": 0.79,
+          "lexical_recall_at_30": 0.2,
+          "fused_recall_at_10": 0.64,
+          "visual_candidate_recall": 0.79,
+          "union_recall": 0.8,
+          "shortlist_recall": 0.8,
+          "shortlist_recall_at_10": 0.64,
+          "shortlist_recall_at_20": 0.7,
+          "shortlist_recall_at_50": 0.78,
+          "shortlist_recall_at_k": 0.8,
+          "reranker_input_recall": 0.8,
+          "latency_p50_ms": 379.86,
+          "non_neural_latency_p50_ms": 41.01
         }
       }
     },
@@ -707,11 +967,22 @@
           "visual_recall_at_30": 0.787,
           "visual_recall_at_120": 0.844,
           "lexical_recall_at_30": 0.1991,
-          "union_recall": 0.865,
-          "shortlist_recall": 0.865,
+          "visual_candidate_recall": 0.844,
+          "union_recall": 0.8661,
+          "shortlist_recall": 0.8661,
+          "shortlist_recall_at_10": 0.688,
+          "shortlist_recall_at_20": 0.7602,
+          "shortlist_recall_at_50": 0.8522,
+          "shortlist_recall_at_k": 0.8661,
+          "reranker_input_recall": 0.8661,
+          "ranked_recall": 0.688,
           "fused_recall_at_10": 0.688,
-          "shortlist_not_top1_count": 386,
-          "shortlist_not_top1_rate": 0.4494
+          "mean_visual_pool_size": 46.0931,
+          "mean_union_pool_size": 64.2573,
+          "mean_pre_rerank_pool_size": 64.2573,
+          "mean_reranker_input_pool_size": 64.2573,
+          "shortlist_not_top1_count": 387,
+          "shortlist_not_top1_rate": 0.4505
         },
         "failure_taxonomy": {
           "PASS": 354,
@@ -720,20 +991,20 @@
           "F2_LEXICAL_DISTRACTOR_OVERTHROW": 83,
           "F1_VISUAL_CANDIDATE_MISS": 129
         },
-        "end_to_end_latency_mean_ms": 427.42,
-        "end_to_end_latency_p50_ms": 384.18,
-        "end_to_end_latency_p95_ms": 740.71,
-        "latency_mean_ms": 427.42,
-        "latency_p50_ms": 384.18,
-        "latency_p95_ms": 740.71,
-        "non_neural_latency_mean_ms": 49.27,
-        "non_neural_latency_p50_ms": 41.45,
-        "non_neural_latency_p95_ms": 117.53,
+        "end_to_end_latency_mean_ms": 449.18,
+        "end_to_end_latency_p50_ms": 399.67,
+        "end_to_end_latency_p95_ms": 793.59,
+        "latency_mean_ms": 449.18,
+        "latency_p50_ms": 399.67,
+        "latency_p95_ms": 793.59,
+        "non_neural_latency_mean_ms": 49.86,
+        "non_neural_latency_p50_ms": 42.35,
+        "non_neural_latency_p95_ms": 111.83,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 4.93,
-          "fts5_ms": 2.9,
-          "fusion_ms": 30.07,
-          "boundary_ms": 2.38
+          "faiss_ms": 5.21,
+          "fts5_ms": 3.47,
+          "fusion_ms": 29.81,
+          "boundary_ms": 2.62
         }
       },
       "per_dataset_metrics": {
@@ -772,8 +1043,16 @@
           "visual_recall_at_120": 0.9545,
           "lexical_recall_at_30": 0.2727,
           "fused_recall_at_10": 0.9545,
-          "latency_p50_ms": 376.8,
-          "non_neural_latency_p50_ms": 39.89
+          "visual_candidate_recall": 0.9545,
+          "union_recall": 1.0,
+          "shortlist_recall": 1.0,
+          "shortlist_recall_at_10": 0.9545,
+          "shortlist_recall_at_20": 0.9545,
+          "shortlist_recall_at_50": 1.0,
+          "shortlist_recall_at_k": 1.0,
+          "reranker_input_recall": 1.0,
+          "latency_p50_ms": 392.39,
+          "non_neural_latency_p50_ms": 41.67
         },
         "avc": {
           "queries": 28,
@@ -810,8 +1089,16 @@
           "visual_recall_at_120": 0.8214,
           "lexical_recall_at_30": 0.75,
           "fused_recall_at_10": 0.9286,
-          "latency_p50_ms": 378.51,
-          "non_neural_latency_p50_ms": 42.97
+          "visual_candidate_recall": 0.8214,
+          "union_recall": 0.9643,
+          "shortlist_recall": 0.9643,
+          "shortlist_recall_at_10": 0.9286,
+          "shortlist_recall_at_20": 0.9286,
+          "shortlist_recall_at_50": 0.9643,
+          "shortlist_recall_at_k": 0.9643,
+          "reranker_input_recall": 0.9643,
+          "latency_p50_ms": 388.74,
+          "non_neural_latency_p50_ms": 43.47
         },
         "msrvtt": {
           "queries": 809,
@@ -848,15 +1135,26 @@
           "visual_recall_at_120": 0.8418,
           "lexical_recall_at_30": 0.178,
           "fused_recall_at_10": 0.6724,
-          "latency_p50_ms": 385.51,
-          "non_neural_latency_p50_ms": 41.47
+          "visual_candidate_recall": 0.8418,
+          "union_recall": 0.8591,
+          "shortlist_recall": 0.8591,
+          "shortlist_recall_at_10": 0.6724,
+          "shortlist_recall_at_20": 0.7491,
+          "shortlist_recall_at_50": 0.8443,
+          "shortlist_recall_at_k": 0.8591,
+          "reranker_input_recall": 0.8591,
+          "latency_p50_ms": 400.27,
+          "non_neural_latency_p50_ms": 42.28
         }
       },
       "degraded_channels": [
         "e5_caption_index",
-        "spatial_patches"
+        "spatial_patches",
+        "vlm_caption_lexical"
       ],
-      "disabled_channels": [],
+      "disabled_channels": [
+        "temporal_rerank"
+      ],
       "degraded_channel_details": {
         "e5_caption_index": {
           "status": "missing_artifact",
@@ -867,6 +1165,11 @@
           "status": "missing_artifact",
           "affected_queries": 859,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 859,
+          "sample_reason": "fts_vlm_caption_not_available"
         }
       },
       "channel_status": {
@@ -875,20 +1178,94 @@
           "affected_queries": 859,
           "sample_reason": "loaded"
         },
-        "e5_caption_index": {
-          "status": "missing_artifact",
-          "affected_queries": 859,
-          "sample_reason": "e5_caption_index_not_loaded"
-        },
         "lexical_db": {
           "status": "ready",
           "affected_queries": 859,
           "sample_reason": "connected"
         },
+        "e5_caption_index": {
+          "status": "missing_artifact",
+          "affected_queries": 859,
+          "sample_reason": "e5_caption_index_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 859,
+          "sample_reason": "fts_vlm_caption_not_available"
+        },
         "spatial_patches": {
           "status": "missing_artifact",
           "affected_queries": 859,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "temporal_rerank": {
+          "status": "disabled_by_config",
+          "affected_queries": 859,
+          "sample_reason": "disabled_by_flag"
+        }
+      },
+      "dataset_averages": {
+        "micro": {
+          "queries": 859,
+          "video_hit_at_1": 0.4156,
+          "video_hit_at_5": 0.6193,
+          "video_hit_at_10": 0.688,
+          "mrr": 0.501,
+          "shortlist_recall": 0.8661
+        },
+        "macro": {
+          "datasets": 3,
+          "video_hit_at_1": 0.726,
+          "video_hit_at_5": 0.8128,
+          "video_hit_at_10": 0.8518,
+          "mrr": 0.7636,
+          "shortlist_recall": 0.9411
+        },
+        "msrvtt": {
+          "queries": 809,
+          "hit_at_1": 0.3857,
+          "hit_at_1_ci95": [
+            0.3523,
+            0.4203
+          ],
+          "hit_at_5": 0.6007,
+          "hit_at_10": 0.6724,
+          "mrr": 0.4758,
+          "mrr_ci95": [
+            0.4428,
+            0.5061
+          ],
+          "video_ndcg_at_1": 0.3857,
+          "video_ndcg_at_5": 0.4996,
+          "video_ndcg_at_10": 0.523,
+          "within_dataset_hit_at_1": 0.4166,
+          "within_dataset_hit_at_5": 0.6304,
+          "within_dataset_hit_at_10": 0.7058,
+          "within_dataset_mrr": 0.5077,
+          "within_dataset_ndcg_at_10": 0.5553,
+          "moment_labeled_n": 0,
+          "moment_hit_at_1_iou03": 0.0,
+          "moment_hit_at_1_iou05": 0.0,
+          "moment_hit_at_1_iou07": 0.0,
+          "moment_ndcg_at_5": 0.0,
+          "moment_ndcg_at_10": 0.0,
+          "moment_map_at_05": 0.0,
+          "moment_map_at_075": 0.0,
+          "moment_map_range_05_095": 0.0,
+          "visual_recall_at_30": 0.7824,
+          "visual_recall_at_120": 0.8418,
+          "lexical_recall_at_30": 0.178,
+          "fused_recall_at_10": 0.6724,
+          "visual_candidate_recall": 0.8418,
+          "union_recall": 0.8591,
+          "shortlist_recall": 0.8591,
+          "shortlist_recall_at_10": 0.6724,
+          "shortlist_recall_at_20": 0.7491,
+          "shortlist_recall_at_50": 0.8443,
+          "shortlist_recall_at_k": 0.8591,
+          "reranker_input_recall": 0.8591,
+          "latency_p50_ms": 400.27,
+          "non_neural_latency_p50_ms": 42.28
         }
       }
     },
@@ -953,9 +1330,20 @@
           "visual_recall_at_30": 0.7761,
           "visual_recall_at_120": 0.8259,
           "lexical_recall_at_30": 0.2587,
+          "visual_candidate_recall": 0.8259,
           "union_recall": 0.8657,
           "shortlist_recall": 0.8657,
+          "shortlist_recall_at_10": 0.6866,
+          "shortlist_recall_at_20": 0.7512,
+          "shortlist_recall_at_50": 0.8507,
+          "shortlist_recall_at_k": 0.8657,
+          "reranker_input_recall": 0.8657,
+          "ranked_recall": 0.6866,
           "fused_recall_at_10": 0.6866,
+          "mean_visual_pool_size": 46.4677,
+          "mean_union_pool_size": 64.8756,
+          "mean_pre_rerank_pool_size": 64.8756,
+          "mean_reranker_input_pool_size": 64.8756,
           "shortlist_not_top1_count": 96,
           "shortlist_not_top1_rate": 0.4776
         },
@@ -965,20 +1353,20 @@
           "F1_VISUAL_CANDIDATE_MISS": 33,
           "F2_LEXICAL_DISTRACTOR_OVERTHROW": 19
         },
-        "end_to_end_latency_mean_ms": 413.56,
-        "end_to_end_latency_p50_ms": 375.47,
-        "end_to_end_latency_p95_ms": 751.03,
-        "latency_mean_ms": 413.56,
-        "latency_p50_ms": 375.47,
-        "latency_p95_ms": 751.03,
-        "non_neural_latency_mean_ms": 45.02,
-        "non_neural_latency_p50_ms": 39.87,
-        "non_neural_latency_p95_ms": 76.51,
+        "end_to_end_latency_mean_ms": 417.66,
+        "end_to_end_latency_p50_ms": 389.72,
+        "end_to_end_latency_p95_ms": 589.97,
+        "latency_mean_ms": 417.66,
+        "latency_p50_ms": 389.72,
+        "latency_p95_ms": 589.97,
+        "non_neural_latency_mean_ms": 46.99,
+        "non_neural_latency_p50_ms": 42.46,
+        "non_neural_latency_p95_ms": 77.35,
         "stage_latencies_p50_ms": {
-          "faiss_ms": 4.57,
-          "fts5_ms": 2.96,
-          "fusion_ms": 28.42,
-          "boundary_ms": 2.31
+          "faiss_ms": 4.94,
+          "fts5_ms": 3.48,
+          "fusion_ms": 30.09,
+          "boundary_ms": 2.37
         }
       },
       "per_dataset_metrics": {
@@ -1017,8 +1405,16 @@
           "visual_recall_at_120": 1.0,
           "lexical_recall_at_30": 0.5,
           "fused_recall_at_10": 1.0,
-          "latency_p50_ms": 709.14,
-          "non_neural_latency_p50_ms": 97.18
+          "visual_candidate_recall": 1.0,
+          "union_recall": 1.0,
+          "shortlist_recall": 1.0,
+          "shortlist_recall_at_10": 1.0,
+          "shortlist_recall_at_20": 1.0,
+          "shortlist_recall_at_50": 1.0,
+          "shortlist_recall_at_k": 1.0,
+          "reranker_input_recall": 1.0,
+          "latency_p50_ms": 685.21,
+          "non_neural_latency_p50_ms": 110.21
         },
         "avc": {
           "queries": 8,
@@ -1055,8 +1451,16 @@
           "visual_recall_at_120": 0.625,
           "lexical_recall_at_30": 1.0,
           "fused_recall_at_10": 0.875,
-          "latency_p50_ms": 547.3,
-          "non_neural_latency_p50_ms": 61.87
+          "visual_candidate_recall": 0.625,
+          "union_recall": 1.0,
+          "shortlist_recall": 1.0,
+          "shortlist_recall_at_10": 0.875,
+          "shortlist_recall_at_20": 0.875,
+          "shortlist_recall_at_50": 0.875,
+          "shortlist_recall_at_k": 1.0,
+          "reranker_input_recall": 1.0,
+          "latency_p50_ms": 546.78,
+          "non_neural_latency_p50_ms": 64.22
         },
         "msrvtt": {
           "queries": 191,
@@ -1093,15 +1497,26 @@
           "visual_recall_at_120": 0.8325,
           "lexical_recall_at_30": 0.2251,
           "fused_recall_at_10": 0.6754,
-          "latency_p50_ms": 373.25,
-          "non_neural_latency_p50_ms": 39.47
+          "visual_candidate_recall": 0.8325,
+          "union_recall": 0.8586,
+          "shortlist_recall": 0.8586,
+          "shortlist_recall_at_10": 0.6754,
+          "shortlist_recall_at_20": 0.7435,
+          "shortlist_recall_at_50": 0.8482,
+          "shortlist_recall_at_k": 0.8586,
+          "reranker_input_recall": 0.8586,
+          "latency_p50_ms": 388.78,
+          "non_neural_latency_p50_ms": 41.55
         }
       },
       "degraded_channels": [
         "e5_caption_index",
-        "spatial_patches"
+        "spatial_patches",
+        "vlm_caption_lexical"
       ],
-      "disabled_channels": [],
+      "disabled_channels": [
+        "temporal_rerank"
+      ],
       "degraded_channel_details": {
         "e5_caption_index": {
           "status": "missing_artifact",
@@ -1112,6 +1527,11 @@
           "status": "missing_artifact",
           "affected_queries": 201,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 201,
+          "sample_reason": "fts_vlm_caption_not_available"
         }
       },
       "channel_status": {
@@ -1120,20 +1540,94 @@
           "affected_queries": 201,
           "sample_reason": "loaded"
         },
-        "e5_caption_index": {
-          "status": "missing_artifact",
-          "affected_queries": 201,
-          "sample_reason": "e5_caption_index_not_loaded"
-        },
         "lexical_db": {
           "status": "ready",
           "affected_queries": 201,
           "sample_reason": "connected"
         },
+        "e5_caption_index": {
+          "status": "missing_artifact",
+          "affected_queries": 201,
+          "sample_reason": "e5_caption_index_not_loaded"
+        },
+        "vlm_caption_lexical": {
+          "status": "missing_artifact",
+          "affected_queries": 201,
+          "sample_reason": "fts_vlm_caption_not_available"
+        },
         "spatial_patches": {
           "status": "missing_artifact",
           "affected_queries": 201,
           "sample_reason": "spatial_patches_not_loaded"
+        },
+        "temporal_rerank": {
+          "status": "disabled_by_config",
+          "affected_queries": 201,
+          "sample_reason": "disabled_by_flag"
+        }
+      },
+      "dataset_averages": {
+        "micro": {
+          "queries": 201,
+          "video_hit_at_1": 0.3881,
+          "video_hit_at_5": 0.5821,
+          "video_hit_at_10": 0.6866,
+          "mrr": 0.4755,
+          "shortlist_recall": 0.8657
+        },
+        "macro": {
+          "datasets": 3,
+          "video_hit_at_1": 0.4156,
+          "video_hit_at_5": 0.8135,
+          "video_hit_at_10": 0.8501,
+          "mrr": 0.5837,
+          "shortlist_recall": 0.9529
+        },
+        "msrvtt": {
+          "queries": 191,
+          "hit_at_1": 0.3717,
+          "hit_at_1_ci95": [
+            0.2984,
+            0.4398
+          ],
+          "hit_at_5": 0.5654,
+          "hit_at_10": 0.6754,
+          "mrr": 0.4594,
+          "mrr_ci95": [
+            0.3956,
+            0.5234
+          ],
+          "video_ndcg_at_1": 0.3717,
+          "video_ndcg_at_5": 0.4746,
+          "video_ndcg_at_10": 0.5104,
+          "within_dataset_hit_at_1": 0.3874,
+          "within_dataset_hit_at_5": 0.623,
+          "within_dataset_hit_at_10": 0.7016,
+          "within_dataset_mrr": 0.4834,
+          "within_dataset_ndcg_at_10": 0.5355,
+          "moment_labeled_n": 0,
+          "moment_hit_at_1_iou03": 0.0,
+          "moment_hit_at_1_iou05": 0.0,
+          "moment_hit_at_1_iou07": 0.0,
+          "moment_ndcg_at_5": 0.0,
+          "moment_ndcg_at_10": 0.0,
+          "moment_map_at_05": 0.0,
+          "moment_map_at_075": 0.0,
+          "moment_map_range_05_095": 0.0,
+          "visual_recall_at_30": 0.7801,
+          "visual_recall_at_120": 0.8325,
+          "lexical_recall_at_30": 0.2251,
+          "fused_recall_at_10": 0.6754,
+          "visual_candidate_recall": 0.8325,
+          "union_recall": 0.8586,
+          "shortlist_recall": 0.8586,
+          "shortlist_recall_at_10": 0.6754,
+          "shortlist_recall_at_20": 0.7435,
+          "shortlist_recall_at_50": 0.8482,
+          "shortlist_recall_at_k": 0.8586,
+          "reranker_input_recall": 0.8586,
+          "latency_p50_ms": 388.78,
+          "non_neural_latency_p50_ms": 41.55
         }
       }
     }
@@ -1149,7 +1643,7 @@
       "moment_hit_at_1_iou05": 0.0455,
       "moment_ndcg_at_5": 0.0143,
       "moment_map_range_05_095": 0.0008,
-      "non_neural_latency_p50_ms": 11.0
+      "non_neural_latency_p50_ms": 11.17
     },
     "A1": {
       "video_hit_at_1": 0.4933,
@@ -1161,7 +1655,7 @@
       "moment_hit_at_1_iou05": 0.0455,
       "moment_ndcg_at_5": 0.0175,
       "moment_map_range_05_095": 0.0008,
-      "non_neural_latency_p50_ms": 16.33
+      "non_neural_latency_p50_ms": 16.01
     },
     "A2": {
       "video_hit_at_1": 0.4933,
@@ -1173,7 +1667,7 @@
       "moment_hit_at_1_iou05": 0.0455,
       "moment_ndcg_at_5": 0.0175,
       "moment_map_range_05_095": 0.0008,
-      "non_neural_latency_p50_ms": 24.56
+      "non_neural_latency_p50_ms": 25.65
     },
     "A3": {
       "video_hit_at_1": 0.6133,
@@ -1185,7 +1679,7 @@
       "moment_hit_at_1_iou05": 0.0455,
       "moment_ndcg_at_5": 0.024,
       "moment_map_range_05_095": 0.0008,
-      "non_neural_latency_p50_ms": 39.49
+      "non_neural_latency_p50_ms": 43.3
     },
     "A4": {
       "video_hit_at_1": 0.6133,
@@ -1197,7 +1691,7 @@
       "moment_hit_at_1_iou05": 0.7273,
       "moment_ndcg_at_5": 0.4986,
       "moment_map_range_05_095": 0.3543,
-      "non_neural_latency_p50_ms": 43.06
+      "non_neural_latency_p50_ms": 40.57
     },
     "A5": {
       "video_hit_at_1": 0.6133,
@@ -1209,7 +1703,7 @@
       "moment_hit_at_1_iou05": 0.7273,
       "moment_ndcg_at_5": 0.5121,
       "moment_map_range_05_095": 0.3599,
-      "non_neural_latency_p50_ms": 40.47
+      "non_neural_latency_p50_ms": 41.12
     }
   },
   "acceptance_metrics": [
@@ -1263,7 +1757,7 @@
     },
     {
       "metric": "non_neural_latency_p50_ms",
-      "value": 40.47,
+      "value": 41.12,
       "threshold": 20,
       "source": "dev_150",
       "n": 150,
@@ -1271,7 +1765,7 @@
     },
     {
       "metric": "non_neural_latency_p95_ms",
-      "value": 122.49,
+      "value": 113.03,
       "threshold": 45,
       "source": "dev_150",
       "n": 150,

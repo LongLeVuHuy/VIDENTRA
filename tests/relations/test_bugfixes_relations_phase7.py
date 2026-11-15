@@ -202,11 +202,12 @@ def test_bug4_graph_matcher_infers_temporal_intervals_from_evidence():
     assert res_reversed.predicate_evaluations["p_temp"].state == MatchState.CONTRADICTED
     assert res_reversed.overall_status == "contradicted"
 
-    # Caller-provided event_intervals are respected and not mutated
+    # Caller-provided event_intervals act as a candidate filter window and are not mutated:
+    # evidence_reversed has OCR at 9.0s (outside (1.0, 2.0)), so temporal state is UNKNOWN (no fabricated override).
     caller_intervals = {"p_ocr": (1.0, 2.0), "p_asr": (4.0, 6.0)}
     snapshot = dict(caller_intervals)
     res_explicit = GraphMatcher().match(graph, evidence_reversed, event_intervals=caller_intervals)
-    assert res_explicit.predicate_evaluations["p_temp"].state == MatchState.SUPPORTED
+    assert res_explicit.predicate_evaluations["p_temp"].state == MatchState.UNKNOWN
     assert caller_intervals == snapshot
 
 

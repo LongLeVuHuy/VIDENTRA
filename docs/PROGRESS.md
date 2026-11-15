@@ -1,4 +1,22 @@
-﻿# Tiến độ triển khai VIDENTRA
+# Tiến độ triển khai VIDENTRA
+
+## 15/11/2026 — Hoàn thiện Audit 2.1–2.4, Temporal Rerank Challenger 3.1 & Benchmark 3-Split (`8c40e943d7104f21badda4a3fd62f623`)
+
+- **Xác minh & vá lỗi xác nhận thực tế (Mục 2.1–2.4 của [VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md](../VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md)):**
+  - **2.1 Temporal Relation Verifier (`src/videntra/relations/temporal.py`, `src/videntra/relations/matcher.py`):** Tái hiện và xác nhận 2 lỗi thật (caller `event_intervals` ghi đè bounds của OCR/ASR refs; hai refs khác ID cùng timestamp `5000ms` vẫn trả `SUPPORTED` cho `before`). Đã sửa `evaluate_temporal_order` trả `PARTIAL` cho point anchors cùng timestamp (giữ `SUPPORTED` cho các interval chạm biên như `(0, 1000)`/`(1000, 2000)`), chuyển `event_intervals` thành bộ lọc occurrence window chỉ đọc, dùng bounds trực tiếp từ evidence (`track_id`/`segment_id`, kiểm `timeline_revision` & `video_id`). Cập nhật `tests/relations/test_temporal_relation_grounding.py` và `tests/relations/test_bugfixes_relations_phase7.py`.
+  - **2.2 Stage Recall Telemetry (`src/videntra/retrieval/unified_pipeline.py`, `scripts/run_validation_benchmark.py`):** Sửa `shortlist_before_rerank_vids` khỏi việc lấy sau LTR, tách 4 ranh giới `visual_candidate_ids`, `union_candidate_ids`, `pre_rerank_video_ids`, `reranker_input_ids`, `ranked_video_ids`. Evaluator xuất `schema_version=3` kèm `shortlist_recall_at_10/20/50/k`, `dataset_averages` (`micro`, `macro`, `msrvtt`), `NOT_MEASURED` thay `0` cho metric thiếu, và cờ `--splits`.
+  - **2.3 P8-5 Spatial Patches Row Mapping & Sidecar (`scripts/kaggle_multimodal_offline_worker.py`, `scripts/ingest_kaggle_offline_results.py`, `unified_pipeline.py`):** Enforced thứ tự `faiss_id` chuẩn hóa khi backfill P8-5, sinh `spatial_patches_map.jsonl` + `p85_receipt.json` (SHA-256) và kiểm tra shape/finiteness/caption/sidecar khi ingest và runtime load.
+  - **2.4 Ablation Feature Flags & Channel Diagnostics (`unified_pipeline.py`, `scripts/run_validation_benchmark.py`):** Nối cờ `enable_spatial_patches`, `enable_vlm_caption_lexical`, `enable_vlm_caption_dense`, `enable_temporal_rerank` vào đúng nhánh điểm thực tế, báo `channel_status` (`ready` / `missing_artifact` / `disabled_by_config`).
+- **Thí nghiệm Section 3.1 (`--splits dev_150,dev_full_859` only; `heldout_test_201` giữ nguyên không dùng để tune):**
+  - Bổ sung `compute_temporal_pool_score` (`mean`, `mean_top2`, `mean_top3`, `attention`) và `_apply_temporal_rerank` trên tập Top-K `ranked_video_ids` cố định.
+  - So sánh trên `dev_full_859`: Baseline (`lambda=0.0`) đạt Overall Hit@1 `41.56%` / Hit@5 `61.93%` / MRR `0.5010` (MSR-VTT `38.57%` / `60.07%` / `0.4758`); `attention (lambda=0.10)` giảm `dev_150` Hit@1 (`61.33% -> 60.67%`) và Moment Hit@1 (`72.73% -> 68.18%`); `mean_top2 (lambda=0.10)` không làm giảm Hit@1/Moment Hit@1 (`0W/0L` trên `dev_150`, `2W/2L` trên `dev_full_859`) và tăng nhẹ Hit@5 (`+0.35pp` overall lên `62.28%`, `+0.37pp` MSR-VTT lên `60.44%`, MRR `23W/14L`). Do Hit@1 giữ nguyên, giữ mặc định `temporal_rerank_lambda=0.0` và giữ nguyên CLI flags (`--temporal-rerank-mode`, `--temporal-rerank-lambda`, `--temporal-rerank-top-k`) cho các thí nghiệm tiếp theo.
+- **Kiểm chứng cuối cùng sau hoàn thiện:**
+  - `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` → **522 passed, 3 warnings in 90.08s** (exit code `0`).
+  - `.\.venv\Scripts\python.exe -B scripts/run_validation_benchmark.py` (Run ID `8c40e943d7104f21badda4a3fd62f623`, `provenance.json`: `gate_passed=True`, `inputs_unchanged=True`, `outputs_verified=True`):
+    - `dev_150` (OOF 129/150): Video Hit@1 **61.33%** (`[53.33%, 68.67%]`), Hit@5 **70.00%**, Hit@10 **74.00%**, MRR **0.6515**, nDCG@10 **0.6727**, Moment Hit@1 (0.5) **72.73%** (16/22), Pure-ASR FP **0/2**, Non-Neural p50/p95 **41.12 ms / 113.03 ms**. Stage recall `dev_150`: Visual `82.00%`, Union `86.00%`, Shortlist@10/20/50/k `74.00% / 78.00% / 84.67% / 86.00%`.
+    - `dev_full_859` (OOF 742/859): Hit@1 **41.56%**, Hit@5 **61.93%**, Hit@10 **68.80%**, MRR **0.5010**, nDCG@10 **0.5459** (MSR-VTT 809 q: Hit@1 **38.57%**, Hit@5 **60.07%**, MRR **0.4758**, Shortlist@10/20/50/k `67.24% / 74.91% / 84.43% / 85.91%`).
+    - `heldout_test_201` (`clean_disjoint`, 0 overlap): Hit@1 **38.81%**, Hit@5 **58.21%**, Hit@10 **68.66%**, MRR **0.4755**, nDCG@10 **0.5255** (MSR-VTT 191 q: Hit@1 **37.17%**, Hit@5 **56.54%**, MRR **0.4594**, Shortlist@10/20/50/k `67.54% / 74.35% / 84.82% / 85.86%`).
+  - Đã đồng bộ 5 file báo cáo vào `benchmark/` (sanitize `<repo-root>`) và cập nhật `PROJECT.md`, `README.md`.
 
 ## 15/11/2026 — Kế hoạch sửa lỗi và tune MSR‑VTT ở thư mục gốc
 

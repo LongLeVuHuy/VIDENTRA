@@ -677,3 +677,169 @@ def test_build_clause_multimodal_curves_availability_and_values():
     conn.close()
 
 
+def _make_synthetic_pipeline(**pipeline_kwargs):
+    import faiss
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    pipe = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False, **pipeline_kwargs)
+    # 3 videos, 3 keyframes each (9 keyframes total)
+    # v0: 1 strong peak + 2 orthogonal frames (low mean/attention)
+    # v1: 3 coherent strong frames (high mean/attention), slightly lower peak than v0
+    # v2: weak frames
+    raw_768 = np.zeros((9, 768), dtype=np.float32)
+    # v0 (fids 0,1,2 at t=10, 11, 12): highest peak (0.95) -> wins base fusion, lower 3-frame mean (0.8367)
+    raw_768[0, 0], raw_768[0, 1] = 0.95, np.sqrt(1.0 - 0.95**2)
+    raw_768[1, 0], raw_768[1, 2] = 0.78, np.sqrt(1.0 - 0.78**2)
+    raw_768[2, 0], raw_768[2, 3] = 0.78, np.sqrt(1.0 - 0.78**2)
+    # v1 (fids 3,4,5 at t=10, 11, 12): 3 coherent strong frames (0.88) -> lower peak than v0, higher mean (0.88)
+    raw_768[3, 0], raw_768[3, 1] = 0.88, np.sqrt(1.0 - 0.88**2)
+    raw_768[4, 0], raw_768[4, 1] = 0.88, np.sqrt(1.0 - 0.88**2)
+    raw_768[5, 0], raw_768[5, 1] = 0.88, np.sqrt(1.0 - 0.88**2)
+    # v2 (fids 6,7,8 at t=50, 51, 52 — outside +/-3s of anchor if anchor=50s, still ok)
+    raw_768[6, 0], raw_768[6, 4] = 0.50, np.sqrt(1.0 - 0.25)
+    raw_768[7, 0], raw_768[7, 4] = 0.50, np.sqrt(1.0 - 0.25)
+    raw_768[8, 0], raw_768[8, 4] = 0.50, np.sqrt(1.0 - 0.25)
+
+    aug_864 = np.zeros((9, 864), dtype=np.float32)
+    aug_864[:, :768] = raw_768
+    pipe.all_embeddings = raw_768
+    pipe.augmented_embeddings = aug_864
+    pipe.index = faiss.IndexFlatIP(768)
+    pipe.index.add(raw_768)
+    pipe.aug_index = faiss.IndexFlatIP(864)
+    pipe.aug_index.add(aug_864)
+
+    pipe.keyframe_map = {}
+    pipe.video_keyframes = {}
+    pipe.video_durations = {}
+    for v_idx in range(3):
+        vid = f"v{v_idx}"
+        pipe.video_durations[vid] = 60.0
+        pipe.video_keyframes[vid] = []
+        for k in range(3):
+            fid = v_idx * 3 + k
+            pts = 10.0 + k if v_idx < 2 else 50.0 + k
+            pipe.keyframe_map[fid] = {
+                "video_id": vid,
+                "pts_time": pts,
+                "source_frame_index": fid * 30,
+                "keyframe_path": f"{vid}_{k}.jpg",
+            }
+            pipe.video_keyframes[vid].append({
+                "faiss_id": fid,
+                "pts_time": pts,
+                "source_frame_index": fid * 30,
+            })
+
+    pipe.encode_texts = lambda texts: np.tile(np.array([[1.0] + [0.0] * 767], dtype=np.float32), (len(texts), 1))  # type: ignore[method-assign]
+    return pipe
+
+
+def test_feature_flags_spy_disabled_never_calls_scorers_and_receipt_mismatch(tmp_path: Path):
+    import faiss
+    import hashlib
+
+    # 1. Receipt mismatch rejects spatial_patches with status="mismatch"
+    patches = np.ones((9, 9, 768), dtype=np.float16)
+    np.save(tmp_path / "spatial_patches_fp16.npy", patches)
+    (tmp_path / "p85_receipt.json").write_text(
+        json.dumps({"spatial_patches_sha256": "0" * 64}),
+        encoding="utf-8",
+    )
+    pipe_mismatch = _make_synthetic_pipeline()
+    loaded_bad = pipe_mismatch.load_optional_phase74_artifacts(tmp_path)
+    assert loaded_bad["spatial_patches"] is False
+    assert pipe_mismatch.spatial_patches is None
+    assert pipe_mismatch._build_degraded_diagnostics("A5")["spatial_patches"]["status"] == "mismatch"
+
+    # Valid receipt + sidecar loads cleanly
+    patch_sha = hashlib.sha256((tmp_path / "spatial_patches_fp16.npy").read_bytes()).hexdigest()
+    sidecar_lines = [
+        json.dumps({
+            "row_index": fid,
+            "faiss_id": fid,
+            "keyframe_id": f"kf_{fid}",
+            "video_id": pipe_mismatch.keyframe_map[fid]["video_id"],
+        })
+        for fid in range(9)
+    ]
+    (tmp_path / "spatial_patches_map.jsonl").write_text("\n".join(sidecar_lines) + "\n", encoding="utf-8")
+    map_sha = hashlib.sha256((tmp_path / "spatial_patches_map.jsonl").read_bytes()).hexdigest()
+    (tmp_path / "p85_receipt.json").write_text(
+        json.dumps({"spatial_patches_sha256": patch_sha, "spatial_patches_map_sha256": map_sha}),
+        encoding="utf-8",
+    )
+
+    # 2. Disabled flags never call patch or caption scorers & diagnostics say disabled_by_config
+    pipe_off = _make_synthetic_pipeline(
+        enable_spatial_patches=False,
+        enable_vlm_caption_lexical=False,
+        enable_vlm_caption_dense=False,
+    )
+    assert pipe_off.load_optional_phase74_artifacts(tmp_path)["spatial_patches"] is True
+
+    cap_vec = np.zeros((1, 384), dtype=np.float32)
+    cap_vec[0, 0] = 1.0
+    cap_idx = faiss.IndexFlatIP(384)
+    cap_idx.add(cap_vec)
+    pipe_off.e5_caption_index = cap_idx
+    pipe_off.e5_caption_manifest = [{"video_id": "v2", "faiss_id": 6, "timestamp_ms": 50000, "caption_text": "test"}]
+    pipe_off.has_vlm_caption_fts = True
+
+    patch_calls = []
+    cap_dense_calls = []
+    pipe_off._score_late_interaction_window = lambda *a, **kw: (patch_calls.append(1) or 0.0)  # type: ignore[method-assign]
+    pipe_off._search_e5_caption_index = lambda *a, **kw: (cap_dense_calls.append(1) or [])  # type: ignore[method-assign]
+
+    resp_off = pipe_off.search_with_metadata(snapshot_id="flags_off", query="a dog running", top_k=3, ablation_config="A5")
+    assert patch_calls == []
+    assert cap_dense_calls == []
+    deg = resp_off["diagnostics"]["degraded"]
+    assert deg["spatial_patches"]["status"] == "disabled_by_config"
+    assert deg["vlm_caption_lexical"]["status"] == "disabled_by_config"
+    assert deg["e5_caption_index"]["status"] == "disabled_by_config"
+    assert resp_off["diagnostics"]["feature_compute_counts"]["late_interaction_scored_candidates"] == 0
+
+
+def test_four_boundary_video_trace_and_temporal_rerank_lambda_zero_vs_positive():
+    # 1. Baseline with temporal_rerank_lambda=0.0 must be bit-for-bit identical to enable_temporal_rerank=False
+    pipe_base = _make_synthetic_pipeline(enable_temporal_rerank=False, temporal_rerank_lambda=0.0)
+    pipe_zero = _make_synthetic_pipeline(
+        enable_temporal_rerank=True,
+        temporal_rerank_mode="attention",
+        temporal_rerank_lambda=0.0,
+    )
+
+    resp_base = pipe_base.search_with_metadata(snapshot_id="s_base", query="a dog running", top_k=3, ablation_config="A5")
+    resp_zero = pipe_zero.search_with_metadata(snapshot_id="s_zero", query="a dog running", top_k=3, ablation_config="A5")
+
+    assert [m.video_id for m in resp_base["ranked_videos"]] == [m.video_id for m in resp_zero["ranked_videos"]]
+    assert [m.ranking_score for m in resp_base["ranked_videos"]] == [m.ranking_score for m in resp_zero["ranked_videos"]]
+
+    diag = resp_base["diagnostics"]
+    assert diag["visual_frame_depth"] > 0
+    assert diag["visual_distinct_videos"] == len(diag["visual_candidate_ids"])
+    assert diag["union_candidate_ids"] == diag["union_dedup_vids"]
+    assert diag["pre_rerank_video_ids"] == diag["shortlist_before_rerank_vids"]
+    assert diag["ranked_video_ids"] == [m.video_id for m in resp_base["ranked_videos"]]
+    assert set(diag["pre_rerank_video_ids"]).issubset(set(diag["union_candidate_ids"]))
+
+    # 2. Positive lambda reranks v1 (coherent 3 frames 0.86) above v0 (peak 0.98 + two 0.78s)
+    pipe_rerank = _make_synthetic_pipeline(
+        enable_temporal_rerank=True,
+        temporal_rerank_mode="mean",
+        temporal_rerank_lambda=2.0,
+        temporal_rerank_top_k=3,
+        temporal_rerank_window_sec=3.0,
+        temporal_rerank_max_frames=5,
+        temporal_rerank_tau=12.0,
+    )
+    resp_rr = pipe_rerank.search_with_metadata(snapshot_id="s_rr", query="a dog running", top_k=3, ablation_config="A5")
+    rr_diag = resp_rr["diagnostics"]
+    assert rr_diag["pre_rerank_video_ids"][0] == "v0"
+    assert rr_diag["reranker_input_ids"][:2] == ["v0", "v1"]
+    assert rr_diag["ranked_video_ids"][0] == "v1"
+    assert rr_diag["feature_compute_counts"]["temporal_rerank_scored_candidates"] == 3
+    assert rr_diag["temporal_rerank_stats"]["per_video"]["v1"]["used_fallback"] is False
+
+

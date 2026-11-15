@@ -3,7 +3,8 @@ from dataclasses import dataclass
 import math
 from typing import Any, Sequence
 
-from videntra.query.schemas import QueryGraph
+from videntra.evidence.normalize import contains_text_phrase
+from videntra.query.schemas import Predicate, QueryGraph
 from .entities import ground_entities, GroundedEntity
 from .predicates import evaluate_predicate, PredicateEvaluation, MatchState
 from .temporal import evaluate_temporal_order
@@ -76,6 +77,35 @@ def _scope_evidence_items(
     return scoped
 
 
+def _collect_predicate_refs(
+    pred: Predicate,
+    scoped_evidence: Sequence[dict[str, Any]],
+    ev: PredicateEvaluation,
+) -> list[str]:
+    """Collect all matching evidence_ids for a grounded predicate (beyond first-match)."""
+    refs: list[str] = [str(r) for r in ev.evidence_refs if r not in (None, "")]
+    kind = pred.kind.lower()
+    if kind == "ocr":
+        for item in scoped_evidence:
+            if item.get("kind") in ("ocr_track", "ocr_observation") and item.get("evidence_id") not in (None, ""):
+                if contains_text_phrase(item.get("text"), pred.value):
+                    refs.append(str(item["evidence_id"]))
+    elif kind == "asr":
+        for item in scoped_evidence:
+            if item.get("kind") == "asr_segment" and item.get("evidence_id") not in (None, ""):
+                if contains_text_phrase(item.get("text"), pred.value):
+                    refs.append(str(item["evidence_id"]))
+    return list(dict.fromkeys(refs))
+
+
+@dataclass(frozen=True)
+class _GroundedOccurrence:
+    span: tuple[float, float]
+    refs: list[str]
+    video_ids: set[str]
+    timeline_revisions: set[str]
+
+
 @dataclass(frozen=True)
 class GraphMatchResult:
     overall_status: str  # "supported", "partial", "contradicted", "unknown"
@@ -120,67 +150,117 @@ class GraphMatcher:
                     ev = evaluate_predicate(p, scoped_evidence, grounded)
                 pred_evals[p.id] = ev
 
-        # Build verified grounded intervals & refs only from grounded non-temporal events
+        # Build verified grounded occurrences only from grounded non-temporal events
         evidence_by_id = {
             str(item["evidence_id"]): item
             for item in scoped_evidence
             if item.get("evidence_id") not in (None, "")
         }
-        grounded_intervals: dict[str, tuple[float, float]] = {}
-        grounded_refs: dict[str, list[str]] = {}
-        grounded_revs: dict[str, set[str]] = {}
-        grounded_vids: dict[str, set[str]] = {}
+        pred_by_id = {p.id: p for p in query_graph.predicates if p.id}
+        grounded_occurrences: dict[str, list[_GroundedOccurrence]] = {}
+        anchor_failure_reasons: dict[str, str] = {}
 
         for p_id, ev in pred_evals.items():
             if not p_id or ev.state not in (MatchState.SUPPORTED, MatchState.PARTIAL):
                 continue
-            valid_refs = [str(ref) for ref in ev.evidence_refs if str(ref) in evidence_by_id]
+            pred_obj = pred_by_id.get(p_id)
+            candidate_refs = (
+                _collect_predicate_refs(pred_obj, scoped_evidence, ev)
+                if pred_obj is not None
+                else [str(ref) for ref in ev.evidence_refs]
+            )
+            valid_refs = [str(ref) for ref in candidate_refs if str(ref) in evidence_by_id]
             if not valid_refs:
+                anchor_failure_reasons[p_id] = f"No evidence refs for '{p_id}'"
                 continue
 
-            item_vids: set[str] = set()
-            item_revs: set[str] = set()
-            spans: list[tuple[float, float]] = []
+            timed_refs: list[tuple[str, dict[str, Any], tuple[float, float]]] = []
             for ref in valid_refs:
                 item = evidence_by_id[ref]
-                if item.get("video_id") not in (None, ""):
-                    item_vids.add(str(item["video_id"]))
-                if item.get("timeline_revision") not in (None, ""):
-                    item_revs.add(str(item["timeline_revision"]))
                 span = _extract_evidence_interval(item)
                 if span is not None:
-                    spans.append(span)
+                    timed_refs.append((ref, item, span))
 
-            if video_id is not None and any(v != str(video_id) for v in item_vids):
-                continue
-            if len(item_vids) > 1:
-                continue
-            if timeline_revision is not None and any(r != str(timeline_revision) for r in item_revs):
-                continue
-            if len(item_revs) > 1:
+            if not timed_refs:
+                anchor_failure_reasons[p_id] = f"No timed observations for '{p_id}'"
                 continue
 
-            chosen_span: tuple[float, float] | None = None
+            # Caller event_intervals acts strictly as a candidate occurrence filter window
             if p_id in caller_intervals:
-                cand_span = caller_intervals[p_id]
+                cand_window = caller_intervals[p_id]
                 if (
-                    len(cand_span) == 2
-                    and math.isfinite(cand_span[0])
-                    and math.isfinite(cand_span[1])
-                    and cand_span[0] <= cand_span[1]
-                    and (moment_window is None or _interval_in_window(cand_span, moment_window))
+                    len(cand_window) != 2
+                    or not math.isfinite(cand_window[0])
+                    or not math.isfinite(cand_window[1])
+                    or cand_window[0] > cand_window[1]
                 ):
-                    chosen_span = (float(cand_span[0]), float(cand_span[1]))
-            elif spans:
-                chosen_span = (min(s for s, _ in spans), max(e for _, e in spans))
+                    anchor_failure_reasons[p_id] = f"Invalid candidate window for '{p_id}'"
+                    continue
+                cand_win_f = (float(cand_window[0]), float(cand_window[1]))
+                timed_refs = [
+                    (ref, item, span)
+                    for ref, item, span in timed_refs
+                    if _interval_in_window(span, cand_win_f)
+                ]
+                if not timed_refs:
+                    anchor_failure_reasons[p_id] = (
+                        f"No timed evidence refs for '{p_id}' fall within candidate window "
+                        f"[{cand_win_f[0]:.2f}s, {cand_win_f[1]:.2f}s]"
+                    )
+                    continue
 
-            if chosen_span is None:
+            # Group occurrences separately by track_id / segment_id (or per-ref when untrack-grouped)
+            grouped: dict[str, list[tuple[str, dict[str, Any], tuple[float, float]]]] = {}
+            for ref, item, span in timed_refs:
+                if item.get("track_id") not in (None, ""):
+                    occ_key = f"track:{item['track_id']}"
+                elif item.get("segment_id") not in (None, ""):
+                    occ_key = f"segment:{item['segment_id']}"
+                else:
+                    occ_key = f"ref:{ref}"
+                grouped.setdefault(occ_key, []).append((ref, item, span))
+
+            valid_occs: list[_GroundedOccurrence] = []
+            for entries in grouped.values():
+                occ_vids = {
+                    str(it["video_id"])
+                    for _, it, _ in entries
+                    if it.get("video_id") not in (None, "")
+                }
+                occ_revs = {
+                    str(it["timeline_revision"])
+                    for _, it, _ in entries
+                    if it.get("timeline_revision") not in (None, "")
+                }
+                if video_id is not None and any(v != str(video_id) for v in occ_vids):
+                    continue
+                if len(occ_vids) > 1:
+                    continue
+                if timeline_revision is not None and any(r != str(timeline_revision) for r in occ_revs):
+                    continue
+                if len(occ_revs) > 1:
+                    continue
+                occ_span = (
+                    min(s for _, _, (s, _) in entries),
+                    max(e for _, _, (_, e) in entries),
+                )
+                occ_refs = list(dict.fromkeys(r for r, _, _ in entries))
+                valid_occs.append(
+                    _GroundedOccurrence(
+                        span=occ_span,
+                        refs=occ_refs,
+                        video_ids=occ_vids,
+                        timeline_revisions=occ_revs,
+                    )
+                )
+
+            if not valid_occs:
+                anchor_failure_reasons[p_id] = (
+                    f"No timeline/video-consistent occurrences for '{p_id}'"
+                )
                 continue
 
-            grounded_intervals[p_id] = chosen_span
-            grounded_refs[p_id] = list(dict.fromkeys(valid_refs))
-            grounded_revs[p_id] = item_revs
-            grounded_vids[p_id] = item_vids
+            grounded_occurrences[p_id] = valid_occs
 
         # Second pass: evaluate temporal predicates referencing prior grounded events
         for p in query_graph.predicates:
@@ -195,67 +275,99 @@ class GraphMatcher:
                 if (
                     not event_a_id
                     or not event_b_id
-                    or event_a_id not in grounded_intervals
-                    or event_b_id not in grounded_intervals
+                    or event_a_id not in grounded_occurrences
+                    or event_b_id not in grounded_occurrences
                 ):
+                    reason = (
+                        anchor_failure_reasons.get(event_a_id or "")
+                        or anchor_failure_reasons.get(event_b_id or "")
+                        or f"Missing grounded anchors for events '{event_a_id}' or '{event_b_id}'"
+                    )
                     pred_evals[p.id] = PredicateEvaluation(
                         p.id,
                         MatchState.UNKNOWN,
                         0.0,
-                        f"Missing grounded anchors for events '{event_a_id}' or '{event_b_id}'",
+                        reason,
                         [],
                     )
                     continue
 
-                revs_a = grounded_revs.get(event_a_id, set())
-                revs_b = grounded_revs.get(event_b_id, set())
-                if revs_a and revs_b and revs_a != revs_b:
-                    pred_evals[p.id] = PredicateEvaluation(
-                        p.id,
-                        MatchState.UNKNOWN,
-                        0.0,
-                        "Time basis unaligned between events (timeline_revision mismatch)",
-                        [],
-                    )
+                occs_a = grounded_occurrences[event_a_id]
+                occs_b = grounded_occurrences[event_b_id]
+                pair_evals: list[PredicateEvaluation] = []
+                saw_timeline_mismatch = False
+                saw_video_mismatch = False
+
+                for occ_a in occs_a:
+                    for occ_b in occs_b:
+                        if occ_a.video_ids and occ_b.video_ids and occ_a.video_ids != occ_b.video_ids:
+                            saw_video_mismatch = True
+                            continue
+                        revs_a = occ_a.timeline_revisions
+                        revs_b = occ_b.timeline_revisions
+                        if (revs_a and revs_b and revs_a != revs_b) or (bool(revs_a) != bool(revs_b)):
+                            saw_timeline_mismatch = True
+                            continue
+
+                        combined_refs = list(dict.fromkeys([*occ_a.refs, *occ_b.refs]))
+                        st_a, end_a = occ_a.span
+                        st_b, end_b = occ_b.span
+                        if set(occ_a.refs) == set(occ_b.refs) and st_a == st_b and end_a == end_b:
+                            pair_evals.append(
+                                PredicateEvaluation(
+                                    p.id,
+                                    MatchState.PARTIAL,
+                                    0.0,
+                                    "Events share the same anchor/timestamp; temporal order is ambiguous",
+                                    combined_refs,
+                                )
+                            )
+                            continue
+
+                        pair_ev = evaluate_temporal_order(
+                            p,
+                            {event_a_id: occ_a.span, event_b_id: occ_b.span},
+                        )
+                        if pair_ev.state in (MatchState.SUPPORTED, MatchState.PARTIAL, MatchState.CONTRADICTED):
+                            pair_ev = PredicateEvaluation(
+                                pair_ev.predicate_id,
+                                pair_ev.state,
+                                pair_ev.score,
+                                pair_ev.reason,
+                                combined_refs,
+                            )
+                        pair_evals.append(pair_ev)
+
+                if not pair_evals:
+                    if saw_timeline_mismatch:
+                        reason = "Time basis unaligned between events (timeline_revision mismatch)"
+                    elif saw_video_mismatch:
+                        reason = "Events belong to different videos"
+                    else:
+                        reason = "No valid occurrence pairs for temporal comparison"
+                    pred_evals[p.id] = PredicateEvaluation(p.id, MatchState.UNKNOWN, 0.0, reason, [])
                     continue
 
-                vids_a = grounded_vids.get(event_a_id, set())
-                vids_b = grounded_vids.get(event_b_id, set())
-                if vids_a and vids_b and vids_a != vids_b:
-                    pred_evals[p.id] = PredicateEvaluation(
-                        p.id,
-                        MatchState.UNKNOWN,
-                        0.0,
-                        "Events belong to different videos",
-                        [],
-                    )
-                    continue
-
-                refs_a = grounded_refs.get(event_a_id, [])
-                refs_b = grounded_refs.get(event_b_id, [])
-                combined_refs = list(dict.fromkeys([*refs_a, *refs_b]))
-
-                st_a, end_a = grounded_intervals[event_a_id]
-                st_b, end_b = grounded_intervals[event_b_id]
-                if set(refs_a) == set(refs_b) and st_a == st_b and end_a == end_b:
-                    pred_evals[p.id] = PredicateEvaluation(
-                        p.id,
-                        MatchState.PARTIAL,
-                        0.0,
-                        "Events share the same anchor/timestamp; temporal order is ambiguous",
-                        combined_refs,
-                    )
-                    continue
-
-                ev = evaluate_temporal_order(p, grounded_intervals)
-                if ev.state in (MatchState.SUPPORTED, MatchState.PARTIAL, MatchState.CONTRADICTED):
-                    ev = PredicateEvaluation(
-                        ev.predicate_id,
-                        ev.state,
-                        ev.score,
-                        ev.reason,
-                        combined_refs,
-                    )
+                if len(pair_evals) == 1:
+                    ev = pair_evals[0]
+                else:
+                    pair_states = {e.state for e in pair_evals}
+                    all_refs = list(dict.fromkeys(r for e in pair_evals for r in e.evidence_refs))
+                    if pair_states == {MatchState.SUPPORTED}:
+                        best = max(pair_evals, key=lambda e: e.score)
+                        ev = PredicateEvaluation(p.id, MatchState.SUPPORTED, best.score, best.reason, all_refs)
+                    elif pair_states == {MatchState.CONTRADICTED}:
+                        ev = PredicateEvaluation(p.id, MatchState.CONTRADICTED, 0.0, pair_evals[0].reason, all_refs)
+                    elif pair_states == {MatchState.UNKNOWN}:
+                        ev = pair_evals[0]
+                    else:
+                        ev = PredicateEvaluation(
+                            p.id,
+                            MatchState.PARTIAL,
+                            0.0,
+                            "Multiple occurrences yield conflicting or ambiguous temporal orders",
+                            all_refs,
+                        )
                 pred_evals[p.id] = ev
 
         # 3. Evaluate logic root node

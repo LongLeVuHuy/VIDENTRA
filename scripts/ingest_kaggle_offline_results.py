@@ -132,118 +132,177 @@ def _ensure_caption_schema(conn: sqlite3.Connection) -> None:
         """)
 
 
-def ingest_p85_artifacts(
+def _preflight_p85_artifacts(
     outputs_dir: Path,
-    db_path: Path,
-    processed_dir: Path | None = None,
+    target_dir: Path,
+    conn: sqlite3.Connection,
     *,
     allow_partial_keyframes: bool = False,
-    dry_run: bool = False,
-) -> dict[str, object]:
-    """Ingest P8-5 artifacts (spatial_patches_fp16.npy, keyframe_captions.json, faiss_e5_caption_384.bin).
-
-    Safely updates an existing metadata.db (adding KeyframeCaptions + fts_vlm_caption)
-    and copies spatial_patches_fp16.npy / faiss_e5_caption_384.bin into processed_dir.
-    """
-    if not db_path.is_file():
-        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
-
-    target_dir = processed_dir or db_path.parent
-    result: dict[str, object] = {
-        "outputs_dir": str(outputs_dir),
-        "db_path": str(db_path),
-        "processed_dir": str(target_dir),
-        "spatial_patches_shape": None,
-        "captions_ingested": 0,
-        "e5_caption_vectors": 0,
-        "dry_run": dry_run,
+) -> dict[str, Any]:
+    """Shared preflight for P8-5 artifacts (runs identically for dry_run=True and dry_run=False)."""
+    kf_rows = conn.execute("SELECT keyframe_id, video_id, faiss_id, timestamp_ms FROM Keyframes;").fetchall()
+    kf_count = len(kf_rows)
+    kf_by_id: dict[str, tuple[str, int | None, int]] = {
+        str(r[0]): (str(r[1]), (int(r[2]) if r[2] is not None else None), int(r[3]))
+        for r in kf_rows
+    }
+    kf_by_faiss: dict[int, tuple[str, str, int]] = {
+        int(r[2]): (str(r[0]), str(r[1]), int(r[3]))
+        for r in kf_rows
+        if r[2] is not None
     }
 
-    with sqlite3.connect(str(db_path), timeout=30.0) as conn:
-        kf_count = int(conn.execute("SELECT COUNT(*) FROM Keyframes").fetchone()[0])
+    # 0. Verify p85_receipt.json checksums if present
+    receipt_path = outputs_dir / "p85_receipt.json"
+    receipt_status = "missing"
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or receipt.get("status") != "success":
+            raise ValueError("p85_receipt.json must report status='success' before ingest")
+        artifacts = receipt.get("artifacts")
+        if not isinstance(artifacts, dict):
+            raise ValueError("p85_receipt.json missing 'artifacts' object")
+        for key in (
+            "spatial_patches_fp16",
+            "spatial_patches_map",
+            "keyframe_captions",
+            "faiss_e5_caption_384",
+            "e5_caption_manifest",
+        ):
+            art = artifacts.get(key)
+            if art is None:
+                continue
+            if not isinstance(art, dict) or "filename" not in art:
+                raise ValueError(f"p85_receipt.json artifacts.{key} must be an object with 'filename'")
+            art_path = outputs_dir / str(art["filename"])
+            if not art_path.is_file():
+                raise FileNotFoundError(f"p85_receipt.json lists missing artifact: {art['filename']}")
+            expected_sha = art.get("sha256")
+            if expected_sha is not None:
+                actual_sha = _sha256_file(art_path)
+                if actual_sha != expected_sha:
+                    raise ValueError(
+                        f"SHA-256 mismatch for {art['filename']}: receipt={expected_sha}, actual={actual_sha}"
+                    )
+        vis_art = artifacts.get("visual_index")
+        if vis_art is not None:
+            if not isinstance(vis_art, dict) or "filename" not in vis_art:
+                raise ValueError("p85_receipt.json artifacts.visual_index must be an object with 'filename'")
+            vis_name = str(vis_art["filename"])
+            vis_candidate = outputs_dir / vis_name
+            if not vis_candidate.is_file():
+                vis_candidate = target_dir / vis_name
+            if vis_candidate.is_file() and vis_art.get("sha256") is not None:
+                actual_vis_sha = _sha256_file(vis_candidate)
+                if actual_vis_sha != vis_art["sha256"]:
+                    raise ValueError(
+                        f"SHA-256 mismatch for visual index {vis_name}: "
+                        f"receipt={vis_art['sha256']}, actual={actual_vis_sha}"
+                    )
+        receipt_status = "verified"
 
-    # 1. Validate & copy spatial_patches_fp16.npy
+    # 1. Validate spatial_patches_fp16.npy + spatial_patches_map.jsonl
+    patches_shape: list[int] | None = None
     patches_src = outputs_dir / "spatial_patches_fp16.npy"
+    map_src = outputs_dir / "spatial_patches_map.jsonl"
     if patches_src.is_file():
         patches_arr = np.load(str(patches_src), mmap_mode="r")
-        if patches_arr.ndim != 3 or patches_arr.shape[1] != 9:
+        if patches_arr.ndim != 3 or patches_arr.shape[1] != 9 or patches_arr.shape[2] != 768:
             raise ValueError(
-                f"spatial_patches_fp16.npy must have shape (N, 9, D), got {tuple(patches_arr.shape)}"
+                f"spatial_patches_fp16.npy must have shape (N, 9, 768), got {tuple(patches_arr.shape)}"
             )
         if patches_arr.dtype != np.float16:
             raise ValueError(f"spatial_patches_fp16.npy must be float16, got {patches_arr.dtype}")
-        if not allow_partial_keyframes and kf_count > 0 and patches_arr.shape[0] != kf_count:
-            raise ValueError(
-                f"spatial_patches_fp16.npy row count ({patches_arr.shape[0]}) != Keyframes count ({kf_count})"
-            )
-        result["spatial_patches_shape"] = list(patches_arr.shape)
-        del patches_arr
-        if not dry_run:
-            _atomic_copy_file(patches_src, target_dir / "spatial_patches_fp16.npy")
 
-    # 2. Validate & ingest keyframe_captions.json -> KeyframeCaptions + fts_vlm_caption
+        n_rows = int(patches_arr.shape[0])
+        for st in range(0, n_rows, 4096):
+            chunk = patches_arr[st : st + 4096]
+            if not np.all(np.isfinite(chunk)):
+                raise ValueError(f"spatial_patches_fp16.npy contains non-finite values around row {st}")
+
+        if not allow_partial_keyframes and kf_count > 0 and n_rows != kf_count:
+            raise ValueError(
+                f"spatial_patches_fp16.npy row count ({n_rows}) != Keyframes count ({kf_count})"
+            )
+
+        if not map_src.is_file():
+            raise FileNotFoundError(
+                f"Missing required spatial_patches_map.jsonl sidecar for {patches_src.name}"
+            )
+        map_rows = _load_jsonl(map_src)
+        if len(map_rows) != n_rows:
+            raise ValueError(
+                f"spatial_patches_map.jsonl row count ({len(map_rows)}) != spatial_patches_fp16.npy rows ({n_rows})"
+            )
+
+        seen_kf_ids: set[str] = set()
+        seen_faiss_ids: set[int] = set()
+        for idx, row in enumerate(map_rows):
+            for req in ("row_index", "faiss_id", "keyframe_id", "video_id"):
+                if req not in row or row[req] is None:
+                    raise ValueError(f"spatial_patches_map.jsonl row {idx} missing required field '{req}'")
+            row_idx = int(row["row_index"])
+            if row_idx != idx:
+                raise ValueError(
+                    f"spatial_patches_map.jsonl row {idx} has out-of-order row_index={row_idx} (expected {idx})"
+                )
+            fid = int(row["faiss_id"])
+            kf_id = str(row["keyframe_id"])
+            vid_id = str(row["video_id"])
+            if kf_id in seen_kf_ids:
+                raise ValueError(f"Duplicate keyframe_id in spatial_patches_map.jsonl: {kf_id}")
+            if fid in seen_faiss_ids:
+                raise ValueError(f"Duplicate faiss_id in spatial_patches_map.jsonl: {fid}")
+            seen_kf_ids.add(kf_id)
+            seen_faiss_ids.add(fid)
+
+            if kf_by_id:
+                if kf_id not in kf_by_id:
+                    raise ValueError(f"spatial_patches_map.jsonl row {idx} unknown keyframe_id '{kf_id}'")
+                db_vid, db_fid, _ = kf_by_id[kf_id]
+                if db_vid != vid_id:
+                    raise ValueError(
+                        f"spatial_patches_map.jsonl row {idx} keyframe_id '{kf_id}' belongs to video '{db_vid}', not '{vid_id}'"
+                    )
+                if db_fid is not None and db_fid != fid:
+                    raise ValueError(
+                        f"spatial_patches_map.jsonl row {idx} keyframe_id '{kf_id}' has faiss_id={fid}, DB has {db_fid}"
+                    )
+                if not allow_partial_keyframes and row_idx != fid:
+                    raise ValueError(
+                        f"spatial_patches_map.jsonl row {idx} dense alignment mismatch: row_index={row_idx} != faiss_id={fid}"
+                    )
+
+        patches_shape = list(patches_arr.shape)
+        del patches_arr
+
+    # 2. Validate keyframe_captions.json
+    raw_captions: list[dict[str, Any]] = []
     captions_src = outputs_dir / "keyframe_captions.json"
     if captions_src.is_file():
-        raw_captions = json.loads(captions_src.read_text(encoding="utf-8"))
-        if not isinstance(raw_captions, list):
+        loaded_caps = json.loads(captions_src.read_text(encoding="utf-8"))
+        if not isinstance(loaded_caps, list):
             raise ValueError("keyframe_captions.json must be a JSON list")
-
-        for idx, rec in enumerate(raw_captions):
+        for idx, rec in enumerate(loaded_caps):
             if not isinstance(rec, dict) or "video_id" not in rec or "timestamp_ms" not in rec or "caption_text" not in rec:
                 raise ValueError(f"Invalid caption record at index {idx}")
-
-        if not dry_run:
-            now = current_iso()
-            with sqlite3.connect(str(db_path), timeout=30.0) as conn:
-                _ensure_caption_schema(conn)
-                conn.execute("DELETE FROM fts_vlm_caption;")
-                cap_rows = []
-                fts_rows = []
-                for idx, rec in enumerate(raw_captions):
-                    vid = str(rec["video_id"])
-                    fid = int(rec.get("faiss_id", idx))
-                    kf_id = str(rec.get("keyframe_id") or f"{vid}__kf_{fid}")
-                    ts_ms = int(rec["timestamp_ms"])
-                    cap_txt = str(rec["caption_text"]).strip()
-                    norm_txt = normalize_text(cap_txt)
-                    unacc_txt = fold_diacritics(norm_txt)
-                    cap_id = f"{kf_id}__florence2"
-                    cap_rows.append((
-                        cap_id,
-                        kf_id,
-                        vid,
-                        fid,
-                        ts_ms,
-                        cap_txt,
-                        norm_txt,
-                        "microsoft/Florence-2-base",
-                        now,
-                    ))
-                    if norm_txt:
-                        fts_rows.append((norm_txt, unacc_txt, vid, kf_id, str(fid), str(ts_ms)))
-
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO KeyframeCaptions (
-                        caption_id, keyframe_id, video_id, faiss_id, timestamp_ms,
-                        caption_text, normalized_text, model_id, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    cap_rows,
-                )
-                if fts_rows:
-                    conn.executemany(
-                        """
-                        INSERT INTO fts_vlm_caption (
-                            normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        fts_rows,
+            if kf_by_id and rec.get("keyframe_id"):
+                kf_id = str(rec["keyframe_id"])
+                if kf_id not in kf_by_id:
+                    raise ValueError(f"keyframe_captions.json[{idx}] unknown keyframe_id '{kf_id}'")
+                db_vid, db_fid, _ = kf_by_id[kf_id]
+                if db_vid != str(rec["video_id"]):
+                    raise ValueError(
+                        f"keyframe_captions.json[{idx}] keyframe_id '{kf_id}' belongs to '{db_vid}', not '{rec['video_id']}'"
                     )
-                conn.commit()
-        result["captions_ingested"] = len(raw_captions)
+                if "faiss_id" in rec and rec["faiss_id"] is not None and db_fid is not None and int(rec["faiss_id"]) != db_fid:
+                    raise ValueError(
+                        f"keyframe_captions.json[{idx}] faiss_id={rec['faiss_id']} != DB faiss_id={db_fid}"
+                    )
+        raw_captions = loaded_caps
 
-    # 3. Validate & copy faiss_e5_caption_384.bin + e5_caption_manifest.json
+    # 3. Validate faiss_e5_caption_384.bin + e5_caption_manifest.json
+    e5_caption_vectors = 0
     cap_faiss_src = outputs_dir / "faiss_e5_caption_384.bin"
     cap_manifest_src = outputs_dir / "e5_caption_manifest.json"
     if cap_faiss_src.is_file():
@@ -256,11 +315,154 @@ def ingest_p85_artifacts(
                 raise ValueError(
                     f"e5_caption_manifest.json length ({len(cap_manifest) if isinstance(cap_manifest, list) else 'invalid'}) != FAISS ntotal ({cap_idx.ntotal})"
                 )
-            if not dry_run:
-                _atomic_copy_file(cap_manifest_src, target_dir / "e5_caption_manifest.json")
-        result["e5_caption_vectors"] = int(cap_idx.ntotal)
-        if not dry_run:
-            _atomic_copy_file(cap_faiss_src, target_dir / "faiss_e5_caption_384.bin")
+            for idx, entry in enumerate(cap_manifest):
+                if not isinstance(entry, dict) or "video_id" not in entry:
+                    raise ValueError(f"Invalid e5_caption_manifest.json entry at index {idx}")
+                vid_id = str(entry["video_id"])
+                raw_fid = entry.get("keyframe_faiss_id", entry.get("faiss_id"))
+                raw_kf_id = entry.get("keyframe_id")
+                if kf_by_id:
+                    if raw_kf_id:
+                        kf_id = str(raw_kf_id)
+                        if kf_id not in kf_by_id:
+                            raise ValueError(f"e5_caption_manifest.json[{idx}] unknown keyframe_id '{kf_id}'")
+                        db_vid, db_fid, _ = kf_by_id[kf_id]
+                        if db_vid != vid_id:
+                            raise ValueError(
+                                f"e5_caption_manifest.json[{idx}] keyframe_id '{kf_id}' belongs to '{db_vid}', not '{vid_id}'"
+                            )
+                        if raw_fid is not None and db_fid is not None and int(raw_fid) != db_fid:
+                            raise ValueError(
+                                f"e5_caption_manifest.json[{idx}] faiss_id={raw_fid} != DB faiss_id={db_fid}"
+                            )
+                    elif raw_fid is not None:
+                        fid = int(raw_fid)
+                        if fid not in kf_by_faiss:
+                            raise ValueError(f"e5_caption_manifest.json[{idx}] unknown keyframe faiss_id={fid}")
+                        _, db_vid, _ = kf_by_faiss[fid]
+                        if db_vid != vid_id:
+                            raise ValueError(
+                                f"e5_caption_manifest.json[{idx}] faiss_id={fid} belongs to '{db_vid}', not '{vid_id}'"
+                            )
+        e5_caption_vectors = int(cap_idx.ntotal)
+
+    return {
+        "patches_shape": patches_shape,
+        "raw_captions": raw_captions,
+        "e5_caption_vectors": e5_caption_vectors,
+        "receipt_status": receipt_status,
+    }
+
+
+def ingest_p85_artifacts(
+    outputs_dir: Path,
+    db_path: Path,
+    processed_dir: Path | None = None,
+    *,
+    allow_partial_keyframes: bool = False,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    """Ingest P8-5 artifacts (spatial_patches_fp16.npy, keyframe_captions.json, faiss_e5_caption_384.bin).
+
+    Safely updates an existing metadata.db (adding KeyframeCaptions + fts_vlm_caption)
+    and copies spatial_patches_fp16.npy, spatial_patches_map.jsonl, p85_receipt.json,
+    and faiss_e5_caption_384.bin into processed_dir.
+    """
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
+
+    target_dir = processed_dir or db_path.parent
+    with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+        preflight = _preflight_p85_artifacts(
+            outputs_dir,
+            target_dir,
+            conn,
+            allow_partial_keyframes=allow_partial_keyframes,
+        )
+
+    raw_captions: list[dict[str, Any]] = preflight["raw_captions"]
+    result: dict[str, object] = {
+        "outputs_dir": str(outputs_dir),
+        "db_path": str(db_path),
+        "processed_dir": str(target_dir),
+        "spatial_patches_shape": preflight["patches_shape"],
+        "captions_ingested": len(raw_captions),
+        "e5_caption_vectors": preflight["e5_caption_vectors"],
+        "receipt_status": preflight["receipt_status"],
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return result
+
+    # 1. Copy validated spatial_patches_fp16.npy + spatial_patches_map.jsonl + p85_receipt.json
+    patches_src = outputs_dir / "spatial_patches_fp16.npy"
+    if patches_src.is_file():
+        _atomic_copy_file(patches_src, target_dir / "spatial_patches_fp16.npy")
+        map_src = outputs_dir / "spatial_patches_map.jsonl"
+        if map_src.is_file():
+            _atomic_copy_file(map_src, target_dir / "spatial_patches_map.jsonl")
+    receipt_src = outputs_dir / "p85_receipt.json"
+    if receipt_src.is_file():
+        _atomic_copy_file(receipt_src, target_dir / "p85_receipt.json")
+
+    # 2. Ingest keyframe_captions.json -> KeyframeCaptions + fts_vlm_caption
+    if raw_captions:
+        now = current_iso()
+        with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+            _ensure_caption_schema(conn)
+            conn.execute("DELETE FROM fts_vlm_caption;")
+            cap_rows = []
+            fts_rows = []
+            for idx, rec in enumerate(raw_captions):
+                vid = str(rec["video_id"])
+                fid = int(rec.get("faiss_id", idx))
+                kf_id = str(rec.get("keyframe_id") or f"{vid}__kf_{fid}")
+                ts_ms = int(rec["timestamp_ms"])
+                cap_txt = str(rec["caption_text"]).strip()
+                norm_txt = normalize_text(cap_txt)
+                unacc_txt = fold_diacritics(norm_txt)
+                cap_id = f"{kf_id}__florence2"
+                cap_rows.append((
+                    cap_id,
+                    kf_id,
+                    vid,
+                    fid,
+                    ts_ms,
+                    cap_txt,
+                    norm_txt,
+                    "microsoft/Florence-2-base",
+                    now,
+                ))
+                if norm_txt:
+                    fts_rows.append((norm_txt, unacc_txt, vid, kf_id, str(fid), str(ts_ms)))
+
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO KeyframeCaptions (
+                    caption_id, keyframe_id, video_id, faiss_id, timestamp_ms,
+                    caption_text, normalized_text, model_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                cap_rows,
+            )
+            if fts_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO fts_vlm_caption (
+                        normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    fts_rows,
+                )
+            conn.commit()
+
+    # 3. Copy faiss_e5_caption_384.bin + e5_caption_manifest.json
+    cap_faiss_src = outputs_dir / "faiss_e5_caption_384.bin"
+    cap_manifest_src = outputs_dir / "e5_caption_manifest.json"
+    if cap_faiss_src.is_file():
+        if cap_manifest_src.is_file():
+            _atomic_copy_file(cap_manifest_src, target_dir / "e5_caption_manifest.json")
+        _atomic_copy_file(cap_faiss_src, target_dir / "faiss_e5_caption_384.bin")
 
     return result
 

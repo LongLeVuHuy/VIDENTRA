@@ -1,14 +1,14 @@
 # Báo Cáo Kiểm Toán & Đánh Giá Toàn Diện Hệ Thống Tìm Kiếm Đa Phương Thức VIDENTRA (P0–P4)
 
-**Thời điểm thực thi:** 2026-11-15 15:31:26 | **Run ID:** `08626d79ef744e3080c2fb24c4761cad` | **Git SHA:** `dffdf8a` (Dirty: `True`)\
-**LTR Model SHA256:** `432c2c831ec89ef1f9f3d4d796a756c60e4fcccf97b8812171cf8a1df21f8e00` | **Eval Mode:** `oof` | **Leakage Free:** `True`\
-**Overlap With Eval:** `{"dev_150": 129, "dev_full_859": 742, "heldout_test_201": 0}` | **OOF Stats:** `{"dev_150": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A0": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A1": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A2": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A3": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A4": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "dev_full_859": {"applied_count": 742, "fallback_count": 117, "total_queries": 859}, "heldout_test_201": {"applied_count": 0, "fallback_count": 0, "total_queries": 201}}`\
-**Degraded Channels:** `["e5_caption_index", "spatial_patches"]` | **Disabled Channels:** `["e5_caption_index", "e5_text_index", "lexical_db", "spatial_patches"]`\
-**Channel Status:** `{"e5_text_index": {"status": "ready", "affected_queries": 1960, "sample_reason": "loaded"}, "e5_caption_index": {"status": "missing_artifact", "affected_queries": 1960, "sample_reason": "e5_caption_index_not_loaded"}, "lexical_db": {"status": "ready", "affected_queries": 1960, "sample_reason": "connected"}, "spatial_patches": {"status": "missing_artifact", "affected_queries": 1960, "sample_reason": "spatial_patches_not_loaded"}}`\
-**Config:** `{"max_msrvtt": 100, "run_all_splits": true, "allow_insample_eval": false, "ltr_model_path": "models\\ranking\\videntra_ltr_v1.json", "ltr_model_resolved_path": "<repo-root>/models/ranking/videntra_ltr_v1.json", "ablation_config": "A5", "cutoffs": {"top_k": 10, "ranking_mode": "diverse_video", "max_msrvtt": 100}}`\
-**Hardware:** `{"platform": "Windows-10-10.0.19045-SP0", "machine": "AMD64", "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel", "cpu_count": 4, "ram_total_gb": null, "device": "cpu"}`\
-**Kiến trúc:** `UnifiedMultimodalSearchPipeline` (Single Source of Truth — SSOT 7-Stage Pipeline)\
-**Giới hạn:** các số lịch sử bên dưới chưa được xác minh lại và không dùng để nghiệm thu.\
+**Thời điểm thực thi:** 2026-11-15 17:17:27 | **Run ID:** `8c40e943d7104f21badda4a3fd62f623` | **Git SHA:** `e0d5d5f` (Dirty: `True`)  
+**LTR Model SHA256:** `432c2c831ec89ef1f9f3d4d796a756c60e4fcccf97b8812171cf8a1df21f8e00` | **Eval Mode:** `oof` | **Leakage Free:** `True`  
+**Overlap With Eval:** `{"dev_150": 129, "dev_full_859": 742, "heldout_test_201": 0}` | **OOF Stats:** `{"dev_150": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A0": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A1": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A2": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A3": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "ablation_A4": {"applied_count": 129, "fallback_count": 21, "total_queries": 150}, "dev_full_859": {"applied_count": 742, "fallback_count": 117, "total_queries": 859}, "heldout_test_201": {"applied_count": 0, "fallback_count": 0, "total_queries": 201}}`  
+**Degraded Channels:** `["e5_caption_index", "spatial_patches", "vlm_caption_lexical"]` | **Disabled Channels:** `["e5_caption_index", "e5_text_index", "lexical_db", "spatial_patches", "temporal_rerank", "vlm_caption_lexical"]`  
+**Channel Status:** `{"e5_text_index": {"status": "ready", "affected_queries": 1960, "sample_reason": "loaded"}, "lexical_db": {"status": "ready", "affected_queries": 1960, "sample_reason": "connected"}, "e5_caption_index": {"status": "missing_artifact", "affected_queries": 1960, "sample_reason": "e5_caption_index_not_loaded"}, "vlm_caption_lexical": {"status": "missing_artifact", "affected_queries": 1960, "sample_reason": "fts_vlm_caption_not_available"}, "spatial_patches": {"status": "missing_artifact", "affected_queries": 1960, "sample_reason": "spatial_patches_not_loaded"}, "temporal_rerank": {"status": "disabled_by_config", "affected_queries": 1960, "sample_reason": "disabled_by_flag"}}`  
+**Config:** `{"max_msrvtt": 100, "run_all_splits": true, "splits": ["dev_150", "dev_full_859", "heldout_test_201"], "allow_insample_eval": false, "ltr_model_path": "models\\ranking\\videntra_ltr_v1.json", "ltr_model_resolved_path": "<repo-root>\\models\\ranking\\videntra_ltr_v1.json", "ablation_config": "A5", "feature_flags": {"enable_spatial_patches": true, "enable_vlm_caption_lexical": true, "enable_vlm_caption_dense": true, "enable_temporal_rerank": false, "temporal_rerank_mode": "attention", "temporal_rerank_lambda": 0.0, "temporal_rerank_top_k": 10}, "cutoffs": {"top_k": 10, "ranking_mode": "diverse_video", "max_msrvtt": 100}}`  
+**Hardware:** `{"platform": "Windows-10-10.0.19045-SP0", "machine": "AMD64", "processor": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel", "cpu_count": 4, "ram_total_gb": null, "device": "cpu"}`  
+**Kiến trúc:** `UnifiedMultimodalSearchPipeline` (Single Source of Truth — SSOT 7-Stage Pipeline)  
+**Giới hạn:** các số lịch sử bên dưới chưa được xác minh lại và không dùng để nghiệm thu.  
 
 ---
 
@@ -22,8 +22,8 @@
 | **Moment Hit@1 (tIoU $\ge 0.5$)** | $\ge 72.73\%$ ($\ge 16/22$) | **72.73%** (N=22) | `[54.55%, 90.91%]` | **PASS** |
 | **Moment nDCG@5 (Graded 4-Level)** | $\ge 0.5300$ | **0.5121** (N=22) | `[0.3319, 0.6738]` | **FAIL** |
 | **Pure-ASR False Positive Top-1** | $\le 1$ ca sai | **0/2 pure-ASR** (N=150 total) | — | **PASS** |
-| **Non-Neural Latency ($p_{50} / p_{95}$)** | $\le 20\text{ ms} / \le 45\text{ ms}$ | **40.47 ms / 122.49 ms** | — | **FAIL / FAIL** |
-| **End-to-End Latency ($p_{50} / p_{95}$)** | — | **376.21 ms / 775.62 ms** | — | — |
+| **Non-Neural Latency ($p_{50} / p_{95}$)** | $\le 20\text{ ms} / \le 45\text{ ms}$ | **41.12 ms / 113.03 ms** | — | **FAIL / FAIL** |
+| **End-to-End Latency ($p_{50} / p_{95}$)** | — | **379.37 ms / 785.42 ms** | — | — |
 | **Cold Query Latency ($p_{50} / p_{95}$)** | $\le 220\text{ ms} / \le 420\text{ ms}$ | **NOT_MEASURED / NOT_MEASURED** | — | **NOT_MEASURED / NOT_MEASURED** |
 | **Peak RAM Footprint** | $< 4,000\text{ MB}$ ($4.0\text{ GB}$) | **NOT_MEASURED** (RSS: NOT_MEASURED) | — | **NOT_MEASURED** |
 | **Ý nghĩa thống kê ($p$-value vs `A0`)** | $p < 0.05$ | **$p(\text{Hit@1}) = 0.00050$, $p(\text{MRR}) = 0.00050$** | Paired Sign Test | **PASS** |
@@ -89,8 +89,10 @@
 - **`Visual Recall@30`**: **77.33%**
 - **`Visual Recall@120`**: **82.00%**
 - **`Lexical Recall@30 (OCR + ASR)`**: **31.33%**
-- **`Union Recall (Visual + Lexical)`**: **86.00%**
-- **`Shortlist Recall (Pre-Rerank)`**: **86.00%**
+- **`Visual Candidate Recall`**: **82.00%** (mean pool: `44.8267`)
+- **`Union Recall (Visual + Lexical + Caption)`**: **86.00%** (mean pool: `65.04`)
+- **`Shortlist Recall (Pre-Rerank)`**: **86.00%** | `@10`: **74.00%** | `@20`: **78.00%** | `@50`: **84.67%** (mean pool: `65.04`)
+- **`Reranker Input Recall`**: **86.00%** (mean pool: `65.04`)
 - **`Fused Recall@10`**: **74.00%**
 - **`Target in Shortlist but Not Top-1`**: **37** (24.67%)
 
@@ -124,8 +126,8 @@
 - **Cold query latency:** NOT_MEASURED (phép đo cũ không đại diện end-to-end):
   - Trung bình (`Mean`): **NOT_MEASURED** | Trung vị (`p50`): **NOT_MEASURED** | Ngưỡng `p95`: **NOT_MEASURED**
 - **Độ trễ End-to-End Online (Query Encoding + Retrieval + Rerank + Boundary):**
-  - Trung bình (`Mean`): **525.13 ms** | Trung vị (`p50`): **376.21 ms** | Ngưỡng `p95`: **775.62 ms**
+  - Trung bình (`Mean`): **510.89 ms** | Trung vị (`p50`): **379.37 ms** | Ngưỡng `p95`: **785.42 ms**
 - **Độ trễ truy xuất phi nơ-ron (Non-Neural Retrieval Latency = FAISS + FTS5 + Clustering + Fusion + Boundary):**
-  - Trung bình (`Mean`): **48.48 ms** | Trung vị (`p50`): **40.47 ms** | Ngưỡng `p95`: **122.49 ms**
-  - Phân rã trung vị từng chặng (`p50`): FAISS 864d IP: `4.49 ms`, SQLite FTS5: `3.16 ms`, Multimodal Fusion: `28.93 ms`, Boundary Expansion: `2.38 ms`.
+  - Trung bình (`Mean`): **47.36 ms** | Trung vị (`p50`): **41.12 ms** | Ngưỡng `p95`: **113.03 ms**
+  - Phân rã trung vị từng chặng (`p50`): FAISS 864d IP: `4.97 ms`, SQLite FTS5: `3.7 ms`, Multimodal Fusion: `28.8 ms`, Boundary Expansion: `2.7 ms`.
 - **Bộ nhớ tiêu thụ (Memory Footprint):** RSS = **NOT_MEASURED**, Peak Working Set = **NOT_MEASURED** (xem verdict ở bảng nghiệm thu).

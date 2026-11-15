@@ -44,6 +44,19 @@ def evaluate_temporal_order(
         event_a_id, event_b_id = event_b_id, event_a_id
         op = "before"
     if op == "before":
+        is_same_point = (
+            abs(end_a - st_a) <= 1e-6
+            and abs(end_b - st_b) <= 1e-6
+            and abs(end_a - st_b) <= 1e-6
+        )
+        if is_same_point:
+            return PredicateEvaluation(
+                pred.id,
+                MatchState.PARTIAL,
+                0.0,
+                "Events share the exact same point timestamp; temporal order is ambiguous",
+                [],
+            )
         # Event A must occur before Event B (allowing slight tolerance)
         if end_a <= st_b + tolerance_seconds:
             if end_a > st_b:
