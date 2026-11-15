@@ -1,5 +1,12 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kiểm chứng bản vá `3224676` và phân tích MSR‑VTT
+
+- `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` → **507 passed, 3 warnings in 113.74s**. Chạy lại 12 query MSR‑VTT đầu của `dev_150` bằng `MultimodalBenchmarkRunner` trên CPU Intel Core i5-7300U, dùng fold LTR tương ứng. **12/12** khớp thứ tự Top‑10 video trong archive. Kiểm tra artifact cho thấy 742/742 query có fold, tập train/eval của mỗi fold không trùng group và AVC `xvAvN5xn5oY` nằm tại fold 0. Đối chiếu 11/11 output hash và các hash runner, pipeline, SQLite, LTR với run `08626d79ef744e3080c2fb24c4761cad`. Không chạy lại full benchmark hay đo GPU trong lượt này.
+- Đếm lại JSONL theo `dataset=msrvtt`. Hit@1 là 47/100, 312/809 và 71/191 ở dev nhỏ, dev đầy đủ và held-out. Toàn bộ 809 dev và 191 test giữ nguyên video Top‑1 giữa hai run trước/sau sửa. Held-out có 37 target ở hạng 2–5, 21 ở hạng 6–10 và 62 ngoài top 10. Visual Recall@120 là 83,25%. Taxonomy tự động gán 69/120 ca sai held-out là F4, 32/120 là F1 và 19/120 là F2. F1 là nhãn heuristic, có 1 ca F1 vẫn xuất hiện trong top 10. Ablation 100 query MSR‑VTT cho A0→A3 tăng 40→47 hit, A4/A5 cùng 47 hit. Có 22 query dev đầy đủ thuộc 10 nhóm caption trùng sau chuẩn hóa chữ thường và khoảng trắng. Chưa review bằng video để gán thêm positives.
+- Hai giới hạn khi đọc kết quả: `shortlist_before_rerank_vids` hiện là tất cả `cand_moments` sau LTR, nên union/shortlist recall đang bằng nhau ở cả ba split và chưa đo được Recall@K của một shortlist hữu hạn trước rerank. `GraphMatcher` vẫn chấp nhận `event_intervals` từ caller khi có evidence refs, nhưng không so khoảng truyền vào với timestamp của refs. Fixture với A tại 6s và B tại 2s trả `CONTRADICTED` theo refs và `SUPPORTED` khi caller truyền hai khoảng trái ngược. Pipeline benchmark mặc định không truyền khoảng này.
+- Ưu tiên thí nghiệm giữ cùng candidate pool rồi so visual rerank nhiều frame và spatial patches, caption chạy thành nhánh ablation riêng. Đo thêm recall theo shortlist K cố định để quyết định có tăng độ phủ hay không. Đồng bộ 5 file trong `benchmark/` và bảng README bằng run đã xác minh. Đường dẫn model cục bộ trong hai báo cáo public được thay bằng `<repo-root>` và archive gốc giữ đầy đủ provenance.
+
 ## 15/11/2026 — Triển khai Khắc phục Phase 9 (`2.1`–`2.6` & `3.1`) theo [PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md](audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md)
 
 - **Kiểm chứng & sửa 6 điểm xác nhận (`2.1`–`2.6`):**

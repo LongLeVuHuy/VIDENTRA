@@ -278,15 +278,15 @@ for rank, moment in enumerate(response["moments"], start=1):
 
 ## 6. Kết Quả Benchmark Thực Nghiệm
 
-> **Run tham chiếu chính thức:** `run_id = 08626d79ef744e3080c2fb24c4761cad` (`eval_mode = "oof"` chuẩn hóa theo canonical `source_group`, `leakage_free = true`, `gate_passed = true`, `degraded_channels = ["e5_caption_index", "spatial_patches"]`, chi tiết tại `work/experiments/20261115_153141_all_splits_dffdf8a_08626d79/provenance.json`).
+> **Run tham chiếu** `08626d79ef744e3080c2fb24c4761cad`. Dev dùng OOF theo canonical `source_group` cho các query thuộc tập train LTR. Kênh dense caption và spatial patches thiếu artifact trong run này. [Báo cáo benchmark](benchmark/benchmark_report.md) · [Số liệu JSON](benchmark/benchmark_summary.json)
 
 ### 6.1. Bảng Kết Quả Tổng Hợp Đa Tập Dữ Liệu (`dev_150`, `dev_full_859`, `heldout_test_201`)
 
 | Tập Đánh Giá | Số Queries | Chế Độ Đánh Giá | Video Hit@1 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 | Non-Neural Latency (`p50 / p95`) | Pure-ASR FP Top-1 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`dev_150` (Validation Core)** | 150 | **OOF** (95% CI) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73%`** | **`0.5121`** | **`40.47 / 122.49 ms`** | **`0`** |
-| **`dev_full_859` (Full Validation 80%)** | 859 | **OOF** | **`41.56%`** | **`0.5010`** | **`0.5459`** | — | — | **`40.47 / 122.49 ms`** | **`0`** |
-| **`heldout_test_201` (Blind Test 20%)** | 201 | **`clean_disjoint`** (`overlap=0`) | **`38.81%`** | **`0.4755`** | **`0.5255`** | — | — | **`40.47 / 122.49 ms`** | **`0`** |
+| **`dev_150` (Validation Core)** | 150 | **OOF** (129/150) | **`61.33%`** (`[53.33%, 68.67%]`) | **`0.6515`** (`[0.5792, 0.7204]`) | **`0.6727`** | **`72.73% (16/22)`** | **`0.5121`** | **`40.47 / 122.49 ms`** | **`0/2`** |
+| **`dev_full_859` (Full Validation)** | 859 | **OOF** (742/859) | **`41.56%`** | **`0.5010`** | **`0.5459`** | **`72.73% (16/22)`** | **`0.5121`** | **`41.45 / 117.53 ms`** | **`0/2`** |
+| **`heldout_test_201` (held-out lịch sử)** | 201 | **`clean_disjoint`** (0 query ID trùng train LTR) | **`38.81%`** | **`0.4755`** | **`0.5255`** | **`0.00% (0/2)`** | **`0.3155`** | **`39.87 / 76.51 ms`** | **`0/1`** |
 
 ---
 
@@ -296,34 +296,35 @@ for rank, moment in enumerate(response["moments"], start=1):
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **QVHighlights** | 22 | **`86.36%`** | **`95.45%`** | `90.91%` | `95.45%` | **`0.8864`** | **`0.9773`** | `95.45%` | `27.27%` |
 | **AVC (Educational/AV)** | 28 | **`92.86%`** | **`92.86%`** | `92.86%` | `92.86%` | **`0.9286`** | **`0.9375`** | `82.14%` | `75.00%` |
-| **MSRVTT** | 100 | **`47.00%–48.00%`** | **`50.00%`** | `60.00%` | `65.00%` | **`0.5323`** | **`0.5536`** | `79.00%` | `20.00%` |
+| **MSR-VTT** | 100 | **`47.00%`** | **`49.00%`** | `59.00%` | `64.00%` | **`0.5223`** | **`0.5436`** | `79.00%` | `20.00%` |
+
+Khi tìm trên toàn corpus, MSR-VTT đạt **38,57% Hit@1 (312/809)** ở dev đầy đủ và **37,17% (71/191)** ở held-out. Ở held-out, video có nhãn đúng nằm trong hạng 2–5 ở 37 query, hạng 6–10 ở 21 query và ngoài top 10 ở 62 query. [Số liệu theo dataset](benchmark/benchmark_summary.json)
 
 ---
 
-### 6.3. Ma Trận Ablation 6 Bước (`A0` $\to$ `A5` trên `dev_150`) — Chứng Minh Đóng Góp Của Từng Thành Phần Mới
+### 6.3. Ma trận ablation 6 bước (`A0` $\to$ `A5` trên `dev_150`)
 
 | Cấu Hình Ablation | Thành Phần Kỹ Thuật Được Kích Hoạt | Video Hit@1 | Video Hit@10 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`A0` (Baseline)** | Thuần vector `768d SigLIP2` tiêu chuẩn (Zero-shot) | `46.67%` | `70.00%` | `0.5401` | `0.5786` | `4.55%` | `0.0151` |
-| **`A1`** | `+` Không gian mở rộng trực giao **`864d Augmented Subspace`** (`COCO-IDF 80d` + `Spatial 16d`) | `48.67%` | `68.00%` | `0.5475` | `0.5796` | `4.55%` | `0.0175` |
-| **`A2`** | `+` Phân rã đa mệnh đề & Căn chỉnh chuỗi thời gian (**`Multi-Clause & Sequential Alignment`**) | `48.67%` | `68.67%` | `0.5483` | `0.5816` | `4.55%` | `0.0175` |
-| **`A3`** | `+` Truy xuất `FTS5` đặc hiệu cao + Hợp nhất đa phương thức có cổng kiểm chứng (**`Local-Gated Fusion`**) | `61.33%` | `74.67%` | `0.6540` | `0.6763` | `4.55%` | `0.0240` |
-| **`A4`** | `+` Mở rộng biên tương phản thích ứng (**`Adaptive Contrast Boundary Expansion`**) | `61.33%` | `74.67%` | `0.6540` | `0.6763` | **`72.73%`** | **`0.5182`** |
-| **`A5` (Full VIDENTRA — OOF)** | `+` Đề xuất đa đỉnh **`NMS-MultiPeak`** + **`24d Residual CrossLTR (OOF)`** + **`Partial OT (T-SOT)`** + **`Attention Coherence`** | **`61.33%`** | `74.00%` | **`0.6515`** | **`0.6727`** | **`72.73%`** | **`0.5121`** |
+| **`A0` (Baseline)** | Thuần vector `768d SigLIP2` tiêu chuẩn (Zero-shot) | `46.67%` | `70.00%` | `0.5394` | `0.5781` | `4.55%` | `0.0143` |
+| **`A1`** | `+` Không gian mở rộng trực giao **`864d Augmented Subspace`** (`COCO-IDF 80d` + `Spatial 16d`) | `49.33%` | `68.00%` | `0.5523` | `0.5832` | `4.55%` | `0.0175` |
+| **`A2`** | `+` Phân rã đa mệnh đề và căn chỉnh chuỗi thời gian | `49.33%` | `68.00%` | `0.5523` | `0.5832` | `4.55%` | `0.0175` |
+| **`A3`** | `+` Truy hồi lexical và hợp nhất đa phương thức có cổng | `61.33%` | `74.00%` | `0.6517` | `0.6729` | `4.55%` | `0.0240` |
+| **`A4`** | `+` Mở rộng biên theo tương phản | `61.33%` | `74.00%` | `0.6517` | `0.6729` | **`72.73%`** | **`0.4986`** |
+| **`A5` (cấu hình đầy đủ)** | `+` Đề xuất đa đỉnh và residual LTR 24d | **`61.33%`** | `74.00%` | **`0.6515`** | **`0.6727`** | **`72.73%`** | **`0.5121`** |
 
-> **Ý nghĩa thống kê:** So với baseline thuần `SigLIP2` (`A0`), kiến trúc đầy đủ của VIDENTRA (`A5`) giúp tăng **`+14.66%` tuyệt đối về `Video Hit@1`** (`46.67%` $\to$ `61.33%`), **`+0.1114` về `MRR`** và tăng **`+68.18%` tuyệt đối về `Moment Hit@1 (tIoU >= 0.5)`** (`4.55%` $\to$ `72.73%`), với độ trễ phi nơ-ron trung vị **`40.47 ms / p95 = 122.49 ms`** trên CPU ở run `08626d79ef744e3080c2fb24c4761cad`.
+> Trên `dev_150`, A0 → A5 tăng Video Hit@1 từ **70 lên 92/150** và MRR tăng **0,1121**. Bước A3 → A4 tăng Moment Hit@1 từ **1 lên 16/22** ở `tIoU ≥ 0,5`. Ma trận so các cấu hình cộng dồn, nên cần ablation riêng để đo đóng góp của T-SOT, temporal attention và từng đặc trưng LTR.
 
 ---
 
 ## 7. Khẳng Định Lại Tính Mới & Định Hướng Nghiên Cứu Tiếp Theo
 
 ### 7.1. Khẳng định lại giá trị đóng góp & tính mới của VIDENTRA
-1. **Về mặt biểu diễn đa phương thức:** VIDENTRA chứng minh rằng không cần dùng đến các mô hình Video-LLM khổng lồ đòi hỏi hàng chục GB VRAM, việc **ghép nối trực giao có kiểm soát tỷ lệ năng lượng (`864d Augmented Subspace`)** kết hợp với **phân rã định tuyến truy vấn bằng mô hình ngôn ngữ nhỏ (`Small-LLM Query Decomposer` 1.5B)** và **hợp nhất có cổng kiểm chứng hình ảnh (`Visual-Anchored Lexical Gating`)** có thể vượt xa mô hình nhúng thị giác nguyên bản hơn **15 điểm phần trăm `Hit@1`** mà không tạo ra bất kỳ ca dương tính giả thuần lời thoại nào (`Pure-ASR FP = 0`).
-2. **Về mặt định vị khoảnh khắc thời gian:** Việc thay thế cơ chế cửa sổ trượt cứng nhắc bằng **Sổ cái thời gian giải mã chính xác (`PTS Ledger`) + Mở rộng biên tương phản thích ứng (`Adaptive Boundary Contrast`) + Quy hoạch động sự kiện (`SE-Viterbi`)** giúp nâng độ chính xác định vị khoảnh khắc `Moment Hit@1 (tIoU >= 0.5)` lên tới **`72.73%`**.
+1. **Truy hồi đa phương thức.** Nhánh visual và các nhánh OCR/ASR tìm ứng viên độc lập. `Visual-Anchored Lexical Gating` điều chỉnh phần tăng điểm do tín hiệu chữ hoặc lời thoại tùy truy vấn. Bước A2 → A3 tăng Hit@1 từ 74 lên 92/150 trên `dev_150`.
+2. **Định vị khoảnh khắc.** Pipeline dựa trên timestamp từ ledger và mở rộng biên theo tương phản. Kết quả định vị hiện có 22 query dev và 2 query held-out có nhãn thời gian.
 
 ### 7.2. Định hướng nghiên cứu phát triển tiếp theo
-Phần khung mã nguồn cho **Residual Pairwise LTR 24d (Canonical OOF)**, **Unbalanced/Partial OT (`T-SOT`)**, **Query-Guided Temporal Attention Pooler (#23)**, **nối kênh `fts_vlm_caption` + `rrf_vis_caption` (#24)**, **bảo toàn ingest OCR/ASR & relation grounding**, và **Kaggle `--mode ocr_asr` / `--mode p85`** đã được hoàn thiện và kiểm chứng qua `507` tests. Các bước mở rộng tiếp theo (chi tiết tại [PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md](file:///C:/Users/DELL/Desktop/VIDENTRA/docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md)):
-1. **Chạy thực chiến trên Kaggle T4 GPU để nạp 4 kho tín hiệu còn chờ dữ liệu (`D1`):** Chạy `prewarm_llm_query_cache.py --split all_1060` (`Qwen2.5-1.5B-Instruct` thật), `--mode p85` (`spatial_patches_fp16.npy` $3\times 3$ cho `QAT-LateInteraction` + `Florence-2` VLM Captions & `faiss_e5_caption_384.bin`) và `--mode ocr_asr` (`VietOCR` + `PaddleOCR_en` + `PhoWhisper-small` + `Faster-Whisper`).
-2. **Nâng chất lượng thị giác tầng gốc (`D2`):** Lấy mẫu dày hơn quanh peak khi rerank Top-15, thử nghiệm cross-encoder video-text nhẹ hoặc LoRA projection `SigLIP2` trên `dev_full_859` theo group-split `source_video_id`.
-3. **Mở rộng bộ xếp hạng phi tuyến & định vị (`D3`–`D5`):** Thử nghiệm LightGBM LambdaMART (hiệu chỉnh isotonic) trên dữ liệu OOF, bổ sung lexicon gập dấu chịu lỗi chính tả OCR tiếng Việt cho FTS5, và kiểm chứng định vị khoảnh khắc trên tập QVHighlights quy mô lớn hơn.
+1. **Rerank thị giác trên shortlist MSR-VTT.** Giữ cùng tập ứng viên. So A5 hiện tại với context pooling nhiều frame, spatial patches và caption trong các run riêng. Dùng Kaggle `--mode p85` để tạo patches và captions. Đo Hit@1, Hit@5 và p95 trên dev đầy đủ.
+2. **Đo độ phủ ứng viên theo từng bước.** Ghi Recall@K của visual, union và shortlist thực tế theo dataset. Nếu video đúng còn nằm ngoài shortlist, thử thêm embedding theo clip hoặc lấy mẫu dày hơn quanh chuyển cảnh. Đối chiếu ở cùng số ứng viên để tách hiệu quả coverage khỏi reranking.
+3. **Thử OCR/ASR và LTR theo lát cắt.** Dùng `--mode ocr_asr` cho pilot truy vấn tiếng Việt có nhãn riêng. So có/không LTR khi cùng snapshot. Chọn cấu hình trên dev khóa theo nguồn và đánh giá cấu hình đã chốt trên split mới. [Kế hoạch thí nghiệm](docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md)
 
