@@ -392,3 +392,44 @@ def test_unified_ranking_falls_back_to_original_query_when_extractive_plan_rejec
     assert query in encoded_texts
 
 
+@pytest.mark.parametrize(
+    "query,dropped_vis",
+    [
+        ("the dog is not really swimming in the pool", "swimming in the pool"),
+        ("two brown dogs are swimming in the pool", "dogs are swimming in the pool"),
+        ("hai con chó nâu đang bơi trong hồ", "chó nâu đang bơi trong hồ"),
+    ],
+)
+def test_unified_pipeline_falls_back_and_excludes_constraint_dropping_clauses(tmp_path, query, dropped_vis):
+    import json
+    from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
+
+    bad_wire = {
+        "lang": "en",
+        "events": [{"id": "e1", "vis": dropped_vis, "ocr": [], "asr": [], "objs": [], "pol": "pos"}],
+        "spatial": [],
+        "temporal": [],
+    }
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(bad_wire)),
+        cache_path=tmp_path / "cache.jsonl",
+        enable_disk_cache=False,
+        query_plan_prompt_version="extractive-v2",
+    )
+    encoded_texts: list[str] = []
+    pipeline = _make_lightweight_unified_pipeline(query_decomposer=decomposer)
+
+    def spy_encode(texts):
+        encoded_texts.extend(texts)
+        vectors = np.zeros((len(texts), 768), dtype=np.float32)
+        vectors[:, 0] = 1.0
+        return vectors
+
+    pipeline.encode_texts = spy_encode
+    pipeline.search_with_metadata(snapshot_id="s1", query=query, top_k=2, mode="accurate", ranking_mode="moment")
+    assert pipeline.last_diagnostics["query_plan_mode"] == "fallback"
+    assert query in encoded_texts
+    assert dropped_vis not in encoded_texts
+
+
+

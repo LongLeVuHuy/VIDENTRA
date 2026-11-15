@@ -41,6 +41,7 @@ from scripts.prepare_qwen_sft_dataset import (  # noqa: E402
     _sha256_file,
     build_sft_dataset,
     get_sft_system_prompt,
+    get_validator_commit,
     is_generic_placeholder_clause,
 )
 from videntra.query.llm import (  # noqa: E402
@@ -226,6 +227,7 @@ def export_query_plan_cache(
                 routing_mode="llm_compact",
                 model_revision=model_revision,
                 prompt_version=prompt_version,
+                reject_generic_clauses=True,
             )
             key = _make_cache_key(norm_query, model_revision=model_revision, prompt_version=prompt_version)
             q_sha = hashlib.sha256(plan.original_query.encode("utf-8")).hexdigest()
@@ -472,6 +474,7 @@ def run_training_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "base_revision": args.base_revision,
         "model_revision": args.model_revision,
         "prompt_version": args.prompt_version,
+        "validator_commit": get_validator_commit(),
         "train_jsonl": str(train_jsonl),
         "val_jsonl": str(val_jsonl) if val_jsonl else None,
         "train_samples": len(train_rows),

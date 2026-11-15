@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import random
 import re
+import subprocess
 import sys
 from typing import Any, Sequence
 import unicodedata
@@ -85,9 +86,29 @@ Rules:
 5. Output ONLY valid JSON."""
 
 
+def get_validator_commit() -> str | None:
+    """Return current git HEAD commit hash of the validator/repository if available."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_ROOT),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def normalize_query_for_dedup(query: str) -> str:
+    """Normalize query text for leakage-free deduplication across train/val splits."""
+    nfc = unicodedata.normalize("NFC", str(query or "")).strip().lower()
+    return re.sub(r"\s+", " ", fold_diacritics(nfc)).strip()
+
+
 def get_sft_system_prompt(prompt_version: str = "extractive-v2") -> str:
     """Return the extractive system prompt, reusing llm.py if available."""
-    if prompt_version == "extractive-v2":
+    if prompt_version in ("extractive-v2", "lora-sft-v1") or prompt_version.startswith(("extractive-", "lora-")):
         prompt = getattr(llm_mod, "EXTRACTIVE_V2_SYSTEM_PROMPT", None)
         if isinstance(prompt, str) and prompt.strip():
             return prompt
@@ -500,21 +521,62 @@ def _generate_parametric_variations(rng: random.Random, target_count: int) -> li
     return generated
 
 
-def _load_tune_queries_from_manifest(manifest_path: Path) -> tuple[list[str], dict[str, int]]:
-    """Load query texts strictly from `split == 'tune'` in a source-group manifest (zero GT)."""
+def _verify_frozen_manifest_integrity(
+    manifest_path: Path,
+    loaded_obj: Any,
+    expected_manifest_sha256: str | None = None,
+) -> str:
+    """Verify SHA-256 and optional split-lock canonical hashes of a source-group manifest."""
+    actual_sha = _sha256_file(manifest_path)
+    if expected_manifest_sha256 is not None:
+        if actual_sha.lower() != expected_manifest_sha256.strip().lower():
+            raise ValueError(
+                f"Source-group manifest SHA-256 mismatch for {manifest_path}: "
+                f"expected {expected_manifest_sha256}, got {actual_sha}"
+            )
+    if isinstance(loaded_obj, dict) and "records_sha256" in loaded_obj:
+        records = loaded_obj.get("records")
+        if not isinstance(records, list):
+            raise ValueError(f"Invalid split-lock manifest {manifest_path}: missing records list")
+        payload = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        computed = hashlib.sha256(payload).hexdigest()
+        if computed != loaded_obj.get("records_sha256"):
+            raise ValueError(
+                f"Source-group manifest records_sha256 mismatch for {manifest_path}: "
+                f"expected {loaded_obj.get('records_sha256')}, got {computed}"
+            )
+    if isinstance(loaded_obj, dict) and "metadata_sha256" in loaded_obj:
+        meta_payload = json.dumps(
+            loaded_obj.get("metadata", {}), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        computed_meta = hashlib.sha256(meta_payload).hexdigest()
+        if computed_meta != loaded_obj.get("metadata_sha256"):
+            raise ValueError(
+                f"Source-group manifest metadata_sha256 mismatch for {manifest_path}: "
+                f"expected {loaded_obj.get('metadata_sha256')}, got {computed_meta}"
+            )
+    return actual_sha
+
+
+def _load_tune_queries_from_manifest(
+    manifest_path: Path,
+    expected_manifest_sha256: str | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Load query texts & source_group strictly from `split == 'tune'` in a source-group manifest (zero GT)."""
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Source-group manifest not found: {manifest_path}")
 
     raw_text = manifest_path.read_text(encoding="utf-8").strip()
     rows: list[dict[str, Any]] = []
+    loaded_obj: Any = None
     if manifest_path.suffix.lower() == ".json":
-        loaded = json.loads(raw_text)
-        if isinstance(loaded, list):
-            rows = [r for r in loaded if isinstance(r, dict)]
-        elif isinstance(loaded, dict):
+        loaded_obj = json.loads(raw_text)
+        if isinstance(loaded_obj, list):
+            rows = [r for r in loaded_obj if isinstance(r, dict)]
+        elif isinstance(loaded_obj, dict):
             for key in ("queries", "rows", "items", "records"):
-                if isinstance(loaded.get(key), list):
-                    rows = [r for r in loaded[key] if isinstance(r, dict)]
+                if isinstance(loaded_obj.get(key), list):
+                    rows = [r for r in loaded_obj[key] if isinstance(r, dict)]
                     break
     else:
         for line in raw_text.splitlines():
@@ -525,9 +587,21 @@ def _load_tune_queries_from_manifest(manifest_path: Path) -> tuple[list[str], di
             if isinstance(obj, dict):
                 rows.append(obj)
 
-    stats = {"total_rows": len(rows), "tune_kept": 0, "skipped_non_tune": 0}
-    queries: list[str] = []
-    seen: set[str] = set()
+    manifest_sha256 = _verify_frozen_manifest_integrity(
+        manifest_path,
+        loaded_obj,
+        expected_manifest_sha256=expected_manifest_sha256,
+    )
+
+    stats: dict[str, Any] = {
+        "total_rows": len(rows),
+        "tune_kept": 0,
+        "skipped_non_tune": 0,
+        "deduped_normalized": 0,
+        "manifest_sha256": manifest_sha256,
+    }
+    entries: list[dict[str, str]] = []
+    seen_norm: set[str] = set()
     for row in rows:
         split_val = str(row.get("split") or "").strip().lower()
         if split_val in FORBIDDEN_SPLITS or split_val not in ALLOWED_SPLITS:
@@ -537,13 +611,20 @@ def _load_tune_queries_from_manifest(manifest_path: Path) -> tuple[list[str], di
         clean_text = unicodedata.normalize(
             "NFC", str(row.get("query_text") or row.get("query") or "")
         ).strip()
-        if not clean_text or clean_text in seen:
+        if not clean_text:
             continue
-        seen.add(clean_text)
-        queries.append(clean_text)
+        norm_text = normalize_query_for_dedup(clean_text)
+        if norm_text in seen_norm:
+            stats["deduped_normalized"] += 1
+            continue
+        seen_norm.add(norm_text)
+        source_group = str(row.get("source_group") or "").strip()
+        if not source_group:
+            source_group = str(row.get("query_id") or "").strip() or f"tune_row_{len(entries)}"
+        entries.append({"query_text": clean_text, "source_group": source_group})
         stats["tune_kept"] += 1
 
-    return queries, stats
+    return entries, stats
 
 
 def _extract_wire_from_rule_parser(query: str, parser: RuleBasedQueryParser) -> dict[str, Any]:
@@ -619,7 +700,82 @@ def validate_sft_example(
         routing_mode="llm_compact",
         model_revision=BASE_MODEL_REVISION,
         prompt_version=prompt_version,
+        reject_generic_clauses=True,
     )
+
+
+def verify_sft_dataset_hashes(manifest_path: Path) -> bool:
+    """Verify that sft_train.jsonl and sft_val.jsonl match the SHA-256 hashes recorded in sft_manifest.json."""
+    if not manifest_path.is_file():
+        return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    train_path = Path(manifest.get("train_path", ""))
+    val_path = Path(manifest.get("val_path", ""))
+    if not train_path.is_file() or not val_path.is_file():
+        return False
+    if _sha256_file(train_path) != manifest.get("train_sha256"):
+        return False
+    if _sha256_file(val_path) != manifest.get("val_sha256"):
+        return False
+    src_manifest = manifest.get("source_group_manifest")
+    expected_src_sha = manifest.get("source_group_manifest_sha256")
+    if src_manifest and expected_src_sha:
+        src_path = Path(src_manifest)
+        if not src_path.is_file() or _sha256_file(src_path) != expected_src_sha:
+            return False
+    return True
+
+
+def _split_records_by_group(
+    records: list[dict[str, Any]],
+    record_groups: list[str],
+    val_ratio: float,
+    rng: random.Random,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split records into (train_rows, val_rows) by source/template group with zero normalized query leakage."""
+    if len(records) <= 1 or val_ratio <= 0.0:
+        return list(records), []
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for rec, grp in zip(records, record_groups):
+        grouped.setdefault(grp, []).append(rec)
+
+    group_keys = list(grouped.keys())
+    rng.shuffle(group_keys)
+    target_val_count = max(1, int(round(len(records) * float(val_ratio))))
+
+    if len(group_keys) >= 2:
+        val_rows: list[dict[str, Any]] = []
+        train_rows: list[dict[str, Any]] = []
+        val_groups: set[str] = set()
+        for idx, gkey in enumerate(group_keys):
+            # Always keep at least 1 group for training
+            remaining_groups = len(group_keys) - idx
+            if len(val_rows) < target_val_count and (remaining_groups > 1 or len(train_rows) > 0):
+                val_rows.extend(grouped[gkey])
+                val_groups.add(gkey)
+            else:
+                train_rows.extend(grouped[gkey])
+        if not train_rows:
+            # Move last val group to train if needed
+            last_g = group_keys[-1]
+            val_groups.discard(last_g)
+            val_rows = [r for g in group_keys if g in val_groups for r in grouped[g]]
+            train_rows = list(grouped[last_g])
+    else:
+        shuffled = list(records)
+        rng.shuffle(shuffled)
+        val_count = min(len(shuffled) - 1, target_val_count)
+        val_rows = shuffled[:val_count]
+        train_rows = shuffled[val_count:]
+
+    train_norms = {normalize_query_for_dedup(r["messages"][1]["content"]) for r in train_rows}
+    val_norms = {normalize_query_for_dedup(r["messages"][1]["content"]) for r in val_rows}
+    overlap = train_norms & val_norms
+    if overlap:
+        raise ValueError(f"Normalized query leakage detected between train and val splits ({len(overlap)} queries)")
+
+    return train_rows, val_rows
 
 
 def build_sft_dataset(
@@ -629,34 +785,50 @@ def build_sft_dataset(
     seed: int = 42,
     prompt_version: str = "extractive-v2",
     source_group_manifest: Path | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Generate and validate sft_train.jsonl, sft_val.jsonl, and sft_manifest.json."""
     rng = random.Random(seed)
     system_prompt = get_sft_system_prompt(prompt_version)
     validator = SemanticDecomposerValidator()
 
-    candidates: list[tuple[str, str, str, dict[str, Any]]] = []
+    candidates: list[tuple[str, str, str, dict[str, Any], str]] = []
     for cat, q, wire in _build_template_specs():
-        candidates.append(("template", cat, q, wire))
+        candidates.append(("template", cat, q, wire, f"template_family:{cat}"))
 
     remaining = max(0, int(num_samples) - len(candidates))
     if remaining > 0:
         for cat, q, wire in _generate_parametric_variations(rng, remaining):
-            candidates.append(("template_var", cat, q, wire))
+            candidates.append(("template_var", cat, q, wire, f"template_family:{cat}"))
 
-    manifest_stats = {"total_rows": 0, "tune_kept": 0, "skipped_non_tune": 0}
+    manifest_stats: dict[str, Any] = {
+        "total_rows": 0,
+        "tune_kept": 0,
+        "skipped_non_tune": 0,
+        "deduped_normalized": 0,
+        "manifest_sha256": None,
+    }
     if source_group_manifest is not None:
-        tune_queries, manifest_stats = _load_tune_queries_from_manifest(source_group_manifest)
+        tune_entries, manifest_stats = _load_tune_queries_from_manifest(
+            source_group_manifest,
+            expected_manifest_sha256=expected_manifest_sha256,
+        )
         rule_parser = RuleBasedQueryParser()
-        for q in tune_queries:
+        for entry in tune_entries:
+            q = entry["query_text"]
             wire = _extract_wire_from_rule_parser(q, rule_parser)
-            candidates.append(("source_manifest_tune", "extractive_tune", q, wire))
+            candidates.append(("source_manifest_tune", "extractive_tune", q, wire, f"source_group:{entry['source_group']}"))
 
     validated_records: list[dict[str, Any]] = []
+    validated_groups: list[str] = []
+    seen_norm_queries: set[str] = set()
     category_counts: dict[str, int] = {}
     placeholder_rejections = 0
 
-    for idx, (source_kind, cat, query, wire) in enumerate(candidates):
+    for idx, (source_kind, cat, query, wire, split_group) in enumerate(candidates):
+        norm_q = normalize_query_for_dedup(query)
+        if not norm_q or norm_q in seen_norm_queries:
+            continue
         try:
             validate_sft_example(query, wire, validator=validator, prompt_version=prompt_version)
         except ValueError as exc:
@@ -664,12 +836,14 @@ def build_sft_dataset(
                 placeholder_rejections += 1
             continue
 
+        seen_norm_queries.add(norm_q)
         assistant_json = json.dumps(wire, ensure_ascii=False, separators=(",", ":"))
         validated_records.append(
             {
                 "id": f"sft_{idx:05d}",
                 "source": source_kind,
                 "category": cat,
+                "split_group": split_group,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query},
@@ -677,15 +851,16 @@ def build_sft_dataset(
                 ],
             }
         )
+        validated_groups.append(split_group)
         category_counts[cat] = category_counts.get(cat, 0) + 1
 
     if not validated_records:
         raise ValueError("No valid SFT records remained after SemanticDecomposerValidator checks")
 
-    rng.shuffle(validated_records)
-    val_count = max(1, int(round(len(validated_records) * float(val_ratio)))) if len(validated_records) > 1 else 0
-    val_rows = validated_records[:val_count]
-    train_rows = validated_records[val_count:] if val_count < len(validated_records) else validated_records
+    train_rows, val_rows = _split_records_by_group(validated_records, validated_groups, val_ratio, rng)
+    train_groups = sorted({str(r.get("split_group", "")) for r in train_rows})
+    val_groups = sorted({str(r.get("split_group", "")) for r in val_rows})
+    group_overlap = set(train_groups) & set(val_groups)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     train_path = output_dir / "sft_train.jsonl"
@@ -695,30 +870,42 @@ def build_sft_dataset(
     _atomic_write_jsonl(train_path, train_rows)
     _atomic_write_jsonl(val_path, val_rows)
 
+    train_sha256 = _sha256_file(train_path)
+    val_sha256 = _sha256_file(val_path)
+
     manifest = {
         "schema_version": "1.0",
         "base_model": BASE_MODEL_ID,
         "base_revision": BASE_MODEL_REVISION,
         "prompt_version": prompt_version,
+        "validator_commit": get_validator_commit(),
         "seed": seed,
         "val_ratio": val_ratio,
+        "split_strategy": "group_by_source_and_template_family",
         "train_count": len(train_rows),
         "val_count": len(val_rows),
         "total_count": len(validated_records),
+        "train_groups_count": len(train_groups),
+        "val_groups_count": len(val_groups),
+        "group_overlap_count": len(group_overlap),
+        "normalized_query_overlap_count": 0,
         "validator_pass_rate": 1.0,
         "placeholder_rejections": placeholder_rejections,
         "category_counts": category_counts,
         "source_group_manifest": str(source_group_manifest) if source_group_manifest else None,
+        "source_group_manifest_sha256": manifest_stats.get("manifest_sha256"),
         "source_manifest_stats": manifest_stats,
         "allowed_splits": sorted(ALLOWED_SPLITS),
         "excluded_splits": sorted(FORBIDDEN_SPLITS),
         "forbidden_gt_keys_stripped": sorted(FORBIDDEN_GT_KEYS),
         "train_path": str(train_path),
         "val_path": str(val_path),
-        "train_sha256": _sha256_file(train_path),
-        "val_sha256": _sha256_file(val_path),
+        "train_sha256": train_sha256,
+        "val_sha256": val_sha256,
     }
     _atomic_write_json(manifest_path, manifest)
+    if not verify_sft_dataset_hashes(manifest_path):
+        raise RuntimeError(f"Frozen SFT dataset hash verification failed for {manifest_path}")
     return manifest
 
 
@@ -737,6 +924,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional source-group manifest (JSON/JSONL); strictly filtered to split=='tune' only.",
     )
+    parser.add_argument(
+        "--expected-manifest-sha256",
+        type=str,
+        default=None,
+        help="Optional frozen SHA-256 hash to verify --source-group-manifest integrity.",
+    )
     return parser
 
 
@@ -749,6 +942,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         prompt_version=args.prompt_version,
         source_group_manifest=args.source_group_manifest,
+        expected_manifest_sha256=args.expected_manifest_sha256,
     )
     print(
         f"Built Qwen SFT dataset at {args.output_dir}: "

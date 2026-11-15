@@ -373,6 +373,7 @@ def _verify_query_plan_cache_and_receipt(
             "receipt_sha256": None,
             "dry_run": None,
             "adapter_revision": None,
+            "validator_commit": None,
         }
     if not query_plan_cache.is_file():
         raise FileNotFoundError(f"Frozen query plan cache not found: {query_plan_cache}")
@@ -381,6 +382,7 @@ def _verify_query_plan_cache_and_receipt(
     receipt_sha256: str | None = None
     dry_run_flag: bool | None = None
     adapter_revision: str | None = None
+    validator_commit: str | None = None
     if query_plan_receipt is not None:
         if not query_plan_receipt.is_file():
             raise FileNotFoundError(f"Query plan receipt not found: {query_plan_receipt}")
@@ -426,11 +428,15 @@ def _verify_query_plan_cache_and_receipt(
         elif receipt_data.get("lora_config") is not None and rec_rev is not None:
             adapter_revision = str(rec_rev)
 
+        if receipt_data.get("validator_commit") is not None:
+            validator_commit = str(receipt_data["validator_commit"])
+
     return {
         "cache_sha256": cache_sha256,
         "receipt_sha256": receipt_sha256,
         "dry_run": dry_run_flag,
         "adapter_revision": adapter_revision,
+        "validator_commit": validator_commit,
     }
 
 
@@ -762,6 +768,8 @@ def capture_pools(
             "query_plan_receipt_path": str(query_plan_receipt) if query_plan_receipt else None,
             "query_plan_receipt_sha256": q_plan_meta["receipt_sha256"],
             "query_plan_dry_run": q_plan_meta["dry_run"],
+            "validator_commit": git_commit,
+            "query_plan_validator_commit": q_plan_meta["validator_commit"],
             "query_decomposer_stats": decomposer_obj.get_stats() if hasattr(decomposer_obj, "get_stats") else None,
             "run_fingerprint": run_fingerprint,
             "elapsed_seconds": round(time.perf_counter() - t_start, 2),

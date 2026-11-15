@@ -21,9 +21,12 @@ from scripts.prepare_qwen_sft_dataset import (
     BASE_MODEL_ID,
     BASE_MODEL_REVISION,
     build_sft_dataset,
+    get_validator_commit,
     is_generic_placeholder_clause,
     main as prepare_main,
+    normalize_query_for_dedup,
     validate_sft_example,
+    verify_sft_dataset_hashes,
 )
 from videntra.contracts import validate
 from videntra.query.llm import AdaptiveQueryDecomposer, SemanticDecomposerValidator
@@ -555,3 +558,175 @@ def test_capture_rejects_mutated_prompt_revision_cache_byte_and_dry_run_receipt(
         _run_capture("extractive-v2", "rev-lora-1", non_dry_receipt_path, tag="bad_sha")
     with pytest.raises(ValueError):
         _run_capture("extractive-v2", "rev-lora-1", None, tag="bad_json")
+
+
+def test_prepare_qwen_sft_dataset_group_split_no_norm_leak_and_frozen_hash(tmp_path: Path) -> None:
+    manifest_in = tmp_path / "text_only_manifest.jsonl"
+    rows = [
+        {"query_id": "t1", "split": "tune", "source_group": "grp_a", "query_text": "A brown dog jumps over a fence"},
+        {"query_id": "t2", "split": "tune", "source_group": "grp_a", "query_text": "  a   brown dog jumps over a fence  "},
+        {"query_id": "t3", "split": "tune", "source_group": "grp_b", "query_text": "Two cyclists ride past a red bus"},
+        {"query_id": "t4", "split": "tune", "source_group": "grp_c", "query_text": "A woman pours coffee into a white mug"},
+        {"query_id": "t5", "split": "tune", "source_group": "grp_d", "query_text": "Children play soccer on a green field"},
+        {"query_id": "c1", "split": "confirm", "source_group": "grp_c_only", "query_text": "CONFIRM_MUST_NOT_APPEAR"},
+    ]
+    manifest_in.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    manifest_sha = hashlib.sha256(manifest_in.read_bytes()).hexdigest()
+
+    # Wrong frozen hash must fail
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        build_sft_dataset(
+            output_dir=tmp_path / "bad_hash",
+            num_samples=0,
+            val_ratio=0.25,
+            seed=11,
+            source_group_manifest=manifest_in,
+            expected_manifest_sha256="0" * 64,
+        )
+
+    out_dir = tmp_path / "sft_grouped"
+    rc = prepare_main([
+        "--output-dir", str(out_dir),
+        "--num-samples", "0",
+        "--val-ratio", "0.25",
+        "--seed", "11",
+        "--source-group-manifest", str(manifest_in),
+        "--expected-manifest-sha256", manifest_sha,
+    ])
+    assert rc == 0
+
+    sft_manifest = json.loads((out_dir / "sft_manifest.json").read_text(encoding="utf-8"))
+    assert sft_manifest["source_group_manifest_sha256"] == manifest_sha
+    assert sft_manifest["group_overlap_count"] == 0
+    assert sft_manifest["normalized_query_overlap_count"] == 0
+    assert sft_manifest["validator_commit"] == get_validator_commit()
+    assert verify_sft_dataset_hashes(out_dir / "sft_manifest.json") is True
+
+    train_rows = _read_jsonl(out_dir / "sft_train.jsonl")
+    val_rows = _read_jsonl(out_dir / "sft_val.jsonl")
+    assert train_rows and val_rows
+    assert {r["split_group"] for r in train_rows}.isdisjoint({r["split_group"] for r in val_rows})
+    train_norms = {normalize_query_for_dedup(r["messages"][1]["content"]) for r in train_rows}
+    val_norms = {normalize_query_for_dedup(r["messages"][1]["content"]) for r in val_rows}
+    assert train_norms.isdisjoint(val_norms)
+    assert "CONFIRM_MUST_NOT_APPEAR" not in (out_dir / "sft_train.jsonl").read_text(encoding="utf-8")
+
+    # Mutating train JSONL invalidates frozen hash check
+    train_path = out_dir / "sft_train.jsonl"
+    train_path.write_text(train_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    assert verify_sft_dataset_hashes(out_dir / "sft_manifest.json") is False
+
+
+def test_validator_commit_propagated_across_prewarm_lora_and_capture_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = get_validator_commit()
+    assert expected_commit is not None and len(expected_commit) >= 7
+
+    cached_query = "A dog is swimming in a pool"
+    env = _setup_minimal_capture_env(tmp_path, cached_query, "A cat is sleeping on a mat")
+    monkeypatch.setattr("scripts.capture_msr_candidate_pools.UnifiedMultimodalSearchPipeline", _make_fake_pipeline_cls())
+
+    # 1. Prewarm receipt records validator_commit
+    queries_file = tmp_path / "queries.jsonl"
+    queries_file.write_text(
+        json.dumps({"query_id": "q1", "dataset": "qvhighlights", "query_text": cached_query}) + "\n",
+        encoding="utf-8",
+    )
+    prewarm_receipt = tmp_path / "prewarm_receipt.json"
+    assert prewarm_main([
+        "--queries-file", str(queries_file),
+        "--cache-path", str(tmp_path / "prewarm_cache.jsonl"),
+        "--model-revision", "rev-prewarm",
+        "--prompt-version", "extractive-v2",
+        "--receipt-path", str(prewarm_receipt),
+        "--dry-run",
+    ]) == 0
+    assert json.loads(prewarm_receipt.read_text(encoding="utf-8"))["validator_commit"] == expected_commit
+
+    # 2. LoRA dry-run receipt records validator_commit & propagates to capture_receipt.json
+    lora_dir = tmp_path / "lora_out"
+    assert train_main([
+        "--dry-run",
+        "--output-dir", str(lora_dir),
+        "--export-cache-queries", str(queries_file),
+        "--model-revision", "rev-lora-vc",
+        "--prompt-version", "extractive-v2",
+    ]) == 0
+    lora_receipt = json.loads((lora_dir / "qwen_receipt.json").read_text(encoding="utf-8"))
+    assert lora_receipt["validator_commit"] == expected_commit
+
+    out_dir = tmp_path / "pools_vc"
+    eval_dir = tmp_path / "eval_vc"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "capture_msr_candidate_pools.py",
+            "--split", "dev_full_859",
+            "--max-k", "2",
+            "--out-dir", str(out_dir),
+            "--eval-dir", str(eval_dir),
+            "--val-dir", str(env["val_dir"]),
+            "--test-dir", str(env["test_dir"]),
+            "--db-path", str(env["db_path"]),
+            "--faiss-path", str(env["faiss_path"]),
+            "--model-dir", str(env["model_dir"]),
+            "--no-ltr",
+            "--query-plan-cache", str(lora_dir / "query_plan_cache.jsonl"),
+            "--query-plan-revision", "rev-lora-vc",
+            "--query-plan-prompt-version", "extractive-v2",
+            "--query-plan-receipt", str(lora_dir / "qwen_receipt.json"),
+            "--allow-dry-run-cache",
+        ],
+    )
+    capture_main()
+    cap_receipt = json.loads((out_dir / "capture_receipt.json").read_text(encoding="utf-8"))
+    assert cap_receipt["validator_commit"] == expected_commit
+    assert cap_receipt["query_plan_validator_commit"] == expected_commit
+
+
+@pytest.mark.parametrize(
+    ("query", "bad_vis", "pol"),
+    [
+        ("the dog is not really swimming in the pool", "swimming in the pool", "pos"),
+        ("two brown dogs are swimming in the pool", "dogs are swimming in the pool", "pos"),
+    ],
+)
+def test_sft_and_lora_export_enforce_extractive_v2_constraint_validator(
+    tmp_path: Path,
+    query: str,
+    bad_vis: str,
+    pol: str,
+) -> None:
+    bad_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": bad_vis,
+                "ocr": [],
+                "asr": [],
+                "objs": [{"id": "o1", "cls": "dog", "cnt": 1, "color": ""}],
+                "pol": pol,
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    validator = SemanticDecomposerValidator()
+    with pytest.raises(ValueError):
+        validate_sft_example(query, bad_wire, validator=validator, prompt_version="extractive-v2")
+
+    cache_path = tmp_path / "rejected_cache.jsonl"
+    stats = export_query_plan_cache(
+        queries=[{"query_id": "q1", "dataset": "msrvtt", "query_text": query}],
+        cache_path=cache_path,
+        generate_fn=lambda _q: json.dumps(bad_wire),
+        model_revision="rev-lora-reject",
+        prompt_version="extractive-v2",
+    )
+    assert stats["valid_plan_count"] == 0
+    assert stats["rejected_count"] == 1
+    assert _read_jsonl(cache_path) == []

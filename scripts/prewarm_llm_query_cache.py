@@ -20,6 +20,7 @@ from pathlib import Path
 import random
 import sqlite3
 import statistics
+import subprocess
 import sys
 from typing import Any, Sequence
 
@@ -35,6 +36,20 @@ DEFAULT_PILOT_FILE = Path(
     "data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"
 )
 VALID_SPLITS = ("dev_150", "dev_full_859", "heldout_test_201", "all_1060")
+
+
+def _get_validator_commit() -> str | None:
+    """Return full HEAD git commit hash of the validator/repository if available."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_ROOT),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out or None
+    except Exception:
+        return None
 
 
 def load_indexed_videos(db_path: Path) -> set[str]:
@@ -392,6 +407,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hf_model_id": args.hf_model_id,
                     "hf_revision": args.hf_revision,
                     "prompt_version": decomposer.prompt_version,
+                    "validator_commit": _get_validator_commit(),
                     "total_queries": len(queries),
                     "cached_matches": cached_count,
                     "cache_path": str(args.cache_path),
@@ -469,6 +485,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hf_model_id": args.hf_model_id,
                 "hf_revision": args.hf_revision,
                 "prompt_version": decomposer.prompt_version,
+                "validator_commit": _get_validator_commit(),
                 "total_queries": len(queries),
                 "tier_counts": tier_counts,
                 "routing_mode_counts": mode_counts,

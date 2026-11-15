@@ -188,9 +188,10 @@ Extract events from a Vietnamese/English video query into Compact Wire JSON:
 }
 Rules:
 1. "vis" MUST contain real descriptive words/phrases copied or closely extracted from the user query (e.g. "woman in red shirt", "người đàn ông mở cửa"). NEVER output generic placeholders or template labels.
-2. Order events chronologically (invert "after"/"sau khi" so first occurs before second).
-3. Put on-screen text in "ocr", spoken words/topics in "asr". Never invent OCR/ASR words not in the query.
-4. Output ONLY valid JSON.
+2. Extract wider spans that preserve negation tokens along with auxiliaries/adverbs (e.g. "is not really swimming", "không hề bơi"), as well as cardinality/digits along with classifiers and adjectives (e.g. "two brown dogs", "hai con chó nâu"). Never drop negation or quantity modifiers from a phrase.
+3. Order events chronologically (invert "after"/"sau khi" so first occurs before second).
+4. Put on-screen text in "ocr", spoken words/topics in "asr". Never invent OCR/ASR words not in the query.
+5. Output ONLY valid JSON.
 
 Example:
 Query: "Người phụ nữ mặc áo đỏ đứng bên trái ô tô"
@@ -1045,10 +1046,86 @@ _NEGATION_TOKENS: frozenset[str] = frozenset(
 )
 
 
+_EXTRACTIVE_TOKEN_RE = re.compile(r"[\w%]+(?:'[\w%]+)*")
+_QUOTED_SPAN_RE = re.compile(r'"[^"]*"|(?:^|(?<!\w))\'[^\']*\'(?!\w)')
+_CLAUSE_PUNCT_CHARS: frozenset[str] = frozenset({",", ";", ".", "!", "?", ":"})
+_CLAUSE_BOUNDARY_WORDS: frozenset[str] = frozenset(
+    {
+        "but", "and", "or", "while", "whereas", "however", "although", "though", "yet", "then",
+        "nhưng", "mà", "còn", "và", "hoặc", "hay", "rồi",
+    }
+)
+_NP_CARDINALITY_BARRIERS: frozenset[str] = frozenset(
+    {
+        "is", "are", "was", "were", "be", "being", "been",
+        "has", "have", "had", "do", "does", "did",
+        "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+        "in", "on", "at", "of", "to", "for", "with", "by", "from", "into", "onto",
+        "near", "beside", "behind", "under", "over", "above", "below", "inside", "outside",
+        "around", "through", "across", "toward", "towards", "about", "against", "between", "among",
+        "who", "which", "that", "whom", "whose", "where", "when",
+        "he", "she", "it", "they", "we", "you", "i",
+        "đang", "đã", "sẽ", "vẫn", "cũng", "thì", "là", "bị", "được",
+        "trong", "trên", "dưới", "bên", "cạnh", "gần", "sau", "trước", "vào", "ra",
+        "tới", "đến", "với", "của", "từ", "qua", "theo", "giữa", "cho", "về", "ở", "tại",
+        "họ", "nó",
+        "points", "point", "pointing", "holds", "hold", "holding",
+        "sees", "see", "seeing", "watches", "watch", "watching",
+        "looks", "look", "looking", "walks", "walk", "walking",
+        "runs", "run", "running", "sits", "sit", "sitting",
+        "stands", "stand", "standing", "carries", "carry", "carrying",
+        "wears", "wear", "wearing", "eats", "eat", "eating",
+        "drinks", "drink", "drinking", "plays", "play", "playing",
+        "chases", "chase", "chasing", "throws", "throw", "throwing",
+        "catches", "catch", "catching",
+        "nhìn", "chỉ", "cầm", "giữ", "chạy", "đi", "đứng", "ngồi",
+        "ăn", "uống", "chơi", "đuổi", "ném", "bắt",
+    }
+)
+_MAX_NP_MODIFIER_GAP = 5
+
+
+@dataclass(frozen=True)
+class _ExtractiveTokenContext:
+    token: str
+    in_quotes: bool
+    clause_id: int
+
+
 def _extractive_tokens(text: str) -> list[str]:
     """Tokenize text after NFC + lowercase normalization while preserving diacritics."""
     nfc = unicodedata.normalize("NFC", str(text or "")).lower().strip()
-    return re.findall(r"[\w%']+", nfc)
+    return _EXTRACTIVE_TOKEN_RE.findall(nfc)
+
+
+def _tokenize_extractive_with_context(text: str) -> list[_ExtractiveTokenContext]:
+    """Tokenize text with quote-span membership and clause boundary IDs."""
+    nfc = unicodedata.normalize("NFC", str(text or "")).lower().strip()
+    quoted_ranges = [(m.start(), m.end()) for m in _QUOTED_SPAN_RE.finditer(nfc)]
+
+    def _is_in_quotes(pos: int) -> bool:
+        return any(q_start <= pos < q_end for q_start, q_end in quoted_ranges)
+
+    contexts: list[_ExtractiveTokenContext] = []
+    clause_id = 0
+    prev_end = 0
+    for match in _EXTRACTIVE_TOKEN_RE.finditer(nfc):
+        start, end = match.start(), match.end()
+        if prev_end < start:
+            for char_idx in range(prev_end, start):
+                if nfc[char_idx] in _CLAUSE_PUNCT_CHARS and not _is_in_quotes(char_idx):
+                    clause_id += 1
+                    break
+        tok = match.group(0)
+        in_quotes = _is_in_quotes(start)
+        if not in_quotes and tok in _CLAUSE_BOUNDARY_WORDS:
+            clause_id += 1
+            contexts.append(_ExtractiveTokenContext(token=tok, in_quotes=False, clause_id=clause_id))
+            clause_id += 1
+        else:
+            contexts.append(_ExtractiveTokenContext(token=tok, in_quotes=in_quotes, clause_id=clause_id))
+        prev_end = end
+    return contexts
 
 
 def _match_extractive_span(
@@ -1182,7 +1259,8 @@ class SemanticDecomposerValidator:
     def validate_extractive_events(compact: CompactDecomposedQuery, original_query: str) -> None:
         """Reject generic placeholders and ungrounded or meaning-breaking visual clauses in extractive mode."""
         query_tokens = _meaningful_grounding_tokens(original_query)
-        raw_query_tokens = _extractive_tokens(original_query)
+        token_contexts = _tokenize_extractive_with_context(original_query)
+        raw_query_tokens = [tc.token for tc in token_contexts]
         matched_spans: list[tuple[int, int]] = []
         for idx, ev in enumerate(compact.events, start=1):
             vis = str(ev.get("vis") or "").strip()
@@ -1209,15 +1287,36 @@ class SemanticDecomposerValidator:
                 )
             start_idx, _end_idx = span
             if start_idx > 0:
-                prev_tok = raw_query_tokens[start_idx - 1]
-                if prev_tok in _NEGATION_TOKENS:
-                    raise ValueError(
-                        f"Visual clause in event {idx} drops preceding negation {prev_tok!r}: {vis!r}"
-                    )
-                if prev_tok in _CARDINALITY_WORDS or prev_tok.isdigit():
-                    raise ValueError(
-                        f"Visual clause in event {idx} drops preceding cardinality {prev_tok!r}: {vis!r}"
-                    )
+                span_clause_id = token_contexts[start_idx].clause_id
+                # 1. Clause-scoped negation check (across auxiliaries/adverbs, ignoring quotes/other clauses)
+                for k in range(start_idx):
+                    ctx = token_contexts[k]
+                    if ctx.in_quotes or ctx.clause_id != span_clause_id:
+                        continue
+                    if ctx.token in _NEGATION_TOKENS:
+                        raise ValueError(
+                            f"Visual clause in event {idx} drops preceding negation {ctx.token!r}: {vis!r}"
+                        )
+
+                # 2. NP-scoped cardinality check (across classifiers/adjectives, stopping at barriers/clauses)
+                first_vis_tok = token_contexts[start_idx].token
+                if first_vis_tok not in _CARDINALITY_WORDS and not first_vis_tok.isdigit():
+                    np_steps = 0
+                    for k in range(start_idx - 1, -1, -1):
+                        ctx = token_contexts[k]
+                        if ctx.clause_id != span_clause_id:
+                            break
+                        if ctx.in_quotes:
+                            continue
+                        if ctx.token in _CARDINALITY_WORDS or ctx.token.isdigit():
+                            raise ValueError(
+                                f"Visual clause in event {idx} drops preceding cardinality {ctx.token!r}: {vis!r}"
+                            )
+                        if ctx.token in _NP_CARDINALITY_BARRIERS or ctx.token in _NEGATION_TOKENS:
+                            break
+                        np_steps += 1
+                        if np_steps > _MAX_NP_MODIFIER_GAP:
+                            break
             matched_spans.append(span)
 
         if len(matched_spans) >= 2 and not compact.temporal:

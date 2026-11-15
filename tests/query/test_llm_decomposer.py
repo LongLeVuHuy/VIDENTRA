@@ -1147,3 +1147,126 @@ def test_validator_extractive_rejects_single_word_overlap_hallucination_and_pres
     assert fb_plan.query_graph.parser.status == "fallback"
     assert decomposer.get_stats()["fallback_count"] == 1
 
+
+@pytest.mark.parametrize("prompt_ver", ["extractive-v2", "lora-sft-v1"])
+def test_validator_extractive_clause_and_np_scoped_negation_cardinality(prompt_ver: str):
+    validator = SemanticDecomposerValidator()
+
+    def make_wire(vis_list, temporal=None, ocr=None, asr=None):
+        return {
+            "lang": "en",
+            "events": [
+                {
+                    "id": f"e{i}",
+                    "vis": v,
+                    "ocr": ocr if (ocr and i == 1) else [],
+                    "asr": asr if (asr and i == 1) else [],
+                    "objs": [],
+                    "pol": "pos",
+                }
+                for i, v in enumerate(vis_list, start=1)
+            ],
+            "spatial": [],
+            "temporal": temporal or [],
+        }
+
+    # Case 1: Negation across auxiliary + adverb ("is not really swimming")
+    q_neg_adv = "the dog is not really swimming in the pool"
+    with pytest.raises(ValueError, match="negation"):
+        validator.validate_and_expand(
+            make_wire(["swimming in the pool"]), original_query=q_neg_adv, prompt_version=prompt_ver
+        )
+    _, ok_neg_adv = validator.validate_and_expand(
+        make_wire(["the dog is not really swimming in the pool"]),
+        original_query=q_neg_adv,
+        prompt_version=prompt_ver,
+    )
+    assert ok_neg_adv.visual_clauses == ("the dog is not really swimming in the pool",)
+
+    # Case 2: Cardinality across intervening adjective ("two brown dogs" and "2 brown dogs")
+    for q_card, kept in (
+        ("two brown dogs are swimming in the pool", "two brown dogs are swimming in the pool"),
+        ("2 brown dogs are swimming in the pool", "2 brown dogs are swimming in the pool"),
+    ):
+        with pytest.raises(ValueError, match="cardinality"):
+            validator.validate_and_expand(
+                make_wire(["dogs are swimming in the pool"]), original_query=q_card, prompt_version=prompt_ver
+            )
+        _, ok_card = validator.validate_and_expand(
+            make_wire([kept]), original_query=q_card, prompt_version=prompt_ver
+        )
+        assert ok_card.visual_clauses == (kept,)
+
+    # Case 3: Vietnamese cardinality across classifier ("hai con chó nâu")
+    q_vi_card = "hai con chó nâu đang bơi trong hồ"
+    with pytest.raises(ValueError, match="cardinality"):
+        validator.validate_and_expand(
+            make_wire(["chó nâu đang bơi trong hồ"]), original_query=q_vi_card, prompt_version=prompt_ver
+        )
+    _, ok_vi_card = validator.validate_and_expand(
+        make_wire(["hai con chó nâu đang bơi trong hồ"]), original_query=q_vi_card, prompt_version=prompt_ver
+    )
+    assert ok_vi_card.visual_clauses == ("hai con chó nâu đang bơi trong hồ",)
+
+    # Case 4: Vietnamese negation across adverb ("không hề bơi")
+    q_vi_neg = "con chó thật ra không hề bơi trong hồ"
+    with pytest.raises(ValueError, match="negation"):
+        validator.validate_and_expand(
+            make_wire(["bơi trong hồ"]), original_query=q_vi_neg, prompt_version=prompt_ver
+        )
+    _, ok_vi_neg = validator.validate_and_expand(
+        make_wire(["không hề bơi trong hồ"]), original_query=q_vi_neg, prompt_version=prompt_ver
+    )
+    assert ok_vi_neg.visual_clauses == ("không hề bơi trong hồ",)
+
+    # Case 5: Clause boundary (", but") prevents negation leakage across clauses
+    q_clauses = "a man is not swimming, but a woman is running"
+    _, ok_second_only = validator.validate_and_expand(
+        make_wire(["a woman is running"]), original_query=q_clauses, prompt_version=prompt_ver
+    )
+    assert ok_second_only.visual_clauses == ("a woman is running",)
+    with pytest.raises(ValueError):
+        validator.validate_and_expand(
+            make_wire(["swimming", "a woman is running"]), original_query=q_clauses, prompt_version=prompt_ver
+        )
+    _, ok_both = validator.validate_and_expand(
+        make_wire(["a man is not swimming", "a woman is running"]),
+        original_query=q_clauses,
+        prompt_version=prompt_ver,
+    )
+    assert ok_both.visual_clauses == ("a man is not swimming", "a woman is running")
+
+    # Case 6: Multiple object cardinalities in one clause + OCR/ASR quoted digit/negation isolation
+    q_multi_card = "one person points at two brown dogs"
+    _, ok_multi = validator.validate_and_expand(
+        make_wire(["one person points at two brown dogs"]),
+        original_query=q_multi_card,
+        prompt_version=prompt_ver,
+    )
+    assert ok_multi.visual_clauses == ("one person points at two brown dogs",)
+    _, ok_obj_np = validator.validate_and_expand(
+        make_wire(["two brown dogs"]), original_query=q_multi_card, prompt_version=prompt_ver
+    )
+    assert ok_obj_np.visual_clauses == ("two brown dogs",)
+    with pytest.raises(ValueError, match="cardinality"):
+        validator.validate_and_expand(
+            make_wire(["brown dogs"]), original_query=q_multi_card, prompt_version=prompt_ver
+        )
+
+    q_ocr_quote = 'A man holding a sign that says "NO SWIMMING 2" walks into a store'
+    _, ok_ocr_quote = validator.validate_and_expand(
+        make_wire(["walks into a store"], ocr=["NO SWIMMING 2"]),
+        original_query=q_ocr_quote,
+        prompt_version=prompt_ver,
+    )
+    assert ok_ocr_quote.visual_clauses == ("walks into a store",)
+
+    q_asr_quote = "A woman reading a book titled 'not 3 cats' sits on a bench"
+    _, ok_asr_quote = validator.validate_and_expand(
+        make_wire(["sits on a bench"], asr=["not 3 cats"]),
+        original_query=q_asr_quote,
+        prompt_version=prompt_ver,
+    )
+    assert ok_asr_quote.visual_clauses == ("sits on a bench",)
+
+
