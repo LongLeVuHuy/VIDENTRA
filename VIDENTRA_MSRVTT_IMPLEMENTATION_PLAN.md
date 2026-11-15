@@ -2,6 +2,40 @@
 
 Cập nhật ngày 15/11/2026. Điểm xuất phát là commit `56a79c7`. Mục tiêu là đo đóng góp riêng của clip reserve, VideoPrism‑LvT‑B và phân rã query bằng Qwen2.5‑1.5B‑Instruct. Chỉ đề xuất thay cấu hình mặc định khi kết quả ghép cặp đã qua các bước dưới đây.
 
+## Bàn giao theo dõi Kaggle cho Antigravity
+
+Kiểm tra từng notebook độc lập. Khi một notebook đã xuất artifact đạt kiểm tra ở mục 2, chạy ngay các cặp tương ứng ở mục 3.
+
+```powershell
+$kg = '.\.venv\Scripts\kaggle.exe'
+$vpRef = 'lvhuylong/videntra-msr-videoprism-dev-20261115'
+$qwenRef = 'lvhuylong/videntra-msr-qwen15b-dev-20261115'
+foreach ($ref in $vpRef, $qwenRef) {
+    & $kg kernels status $ref
+    & $kg kernels files $ref -v
+}
+```
+
+| Kaggle trả về | Antigravity làm tiếp |
+| --- | --- |
+| `QUEUED` | Giữ phiên đang xếp hàng. Kiểm tra lại sau vài phút. Nếu hàng đợi kéo dài, kiểm tra quota và các phiên GPU đang chiếm slot trước khi cân nhắc gửi lại. |
+| `RUNNING` | Theo dõi tiến độ với `kernels logs --follow`. Ghi mốc query hoặc video mới nhất. Có thể đóng luồng log và kiểm tra lại sau. |
+| `ERROR` hoặc `CANCEL_ACKNOWLEDGED` | Kiểm log của đúng version và lưu lỗi đầu tiên có thể hành động. Sửa nguyên nhân nếu thuộc notebook, tận dụng checkpoint còn hợp lệ, rồi gửi version mới. |
+| `COMPLETE` | Kiểm `kernels files`, tải artifacts về thư mục mới và đối chiếu receipt ở mục 2. Nếu output còn thiếu, kiểm tra danh sách file và log export trước khi chấm. |
+
+```powershell
+# Chạy riêng lệnh của notebook đã COMPLETE và đã liệt kê các file cần tải.
+$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$vpOut = "work/kaggle/videoprism_msr_output_$stamp"
+$qwenOut = "work/kaggle/qwen_msr_output_$stamp"
+& $kg kernels output $vpRef -p $vpOut --file-pattern '^dev/'
+& $kg kernels output $qwenRef -p $qwenOut --file-pattern '^qwen_receipt\.json$|^query_plan_cache\.jsonl$'
+```
+
+- [ ] **VideoPrism**. Xác minh shard tại `$vpOut/dev` theo mục 2.2. Gán đường dẫn này vào `$vp` trong lệnh benchmark và chấm R01, R11 ở K=10 và K=20. Kiểm receipt của từng replay để xác nhận VP thật đã chấm query.
+- [ ] **Qwen**. Xác minh receipt và cache tại `$qwenOut` theo mục 2.3. Gán `$qwenOut/query_plan_cache.jsonl` vào `$qwen` rồi chấm Q00, Q10 ở K=10 và K=20. Ghi số query thực dùng cache và số fallback.
+- [ ] **Báo kết quả**. Sau mỗi mốc quan trọng, cập nhật bảng trạng thái bên dưới và `docs/PROGRESS.md` với giờ kiểm tra, version, tiến độ và đường dẫn output hoặc lỗi. Sau mỗi benchmark, thêm baseline, challenger, K, Hit@1 dạng số đúng/mẫu số, delta điểm phần trăm, CI 95%, coverage và đường dẫn báo cáo ghép cặp. Ghi `chờ artifact` cho phép so chưa đủ đầu vào.
+
 ## 1. Mốc kiểm chứng và thứ tự làm
 
 Snapshot audit có 1.324 video trong gallery. `dev_full_859` có 809 query MSR-VTT. A5 dùng LTR theo fold OOF cho 742/859 query toàn dev, trọng số cuối cho phần còn lại theo provenance gate, và temporal rerank `lambda=0`.
@@ -12,12 +46,12 @@ Snapshot audit có 1.324 video trong gallery. `dev_full_859` có 809 query MSR-V
 | Recall@10 | 544/809 | 555/809 | 15 ca được, 4 ca mất |
 | Recall@20 | 606/809 | 611/809 | 9 ca được, 4 ca mất |
 
-Kaggle CLI kiểm tra lúc 19:47 UTC+7 ngày 15/11/2026. Cả hai notebook chưa có tệp output để tải.
+Kaggle CLI kiểm tra lúc 19:50 UTC+7 ngày 15/11/2026. Cả hai notebook chưa có tệp output để tải.
 
 | Notebook | Trạng thái | Kết quả có thể xác minh |
 | --- | --- | --- |
 | VideoPrism v2 | `QUEUED` | Đang chờ GPU. Lượt v1 dừng do thiếu FAISS và v2 đã bổ sung `faiss-cpu==1.13.2`. Chờ shard thật để chấm R01 và R11. |
-| Qwen2.5-1.5B | `RUNNING` | Log mốc 380/809 query ghi 343 plan qua validator, 17 fallback và 20 query thuộc tier ngắn. Chờ cache hoàn chỉnh để chấm Q00 và Q10. |
+| Qwen2.5-1.5B | `RUNNING` | Log mốc 420/809 query ghi 380 plan qua validator, 18 fallback và 22 query thuộc tier ngắn. Chờ cache hoàn chỉnh để chấm Q00 và Q10. |
 
 Mốc Hit@1 đã đo vẫn là **312/809 (38,57%)** của A5 và clip reserve với `alpha=0`. Chênh lệch Hit@1 của VideoPrism và Qwen đang chờ artifact. [Audit đã chạy](benchmark/msrvtt_clip_qwen_videoprism_audit.md) · [Qwen trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [VideoPrism trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
 
