@@ -548,6 +548,9 @@ class UnifiedMultimodalSearchPipeline:
         video_durations: dict[str, float] | None = None,
         video_objects: dict[str, list[dict]] | None = None,
         query_decomposer: AdaptiveQueryDecomposer | None = None,
+        query_plan_cache: Path | str | None = None,
+        query_plan_revision: str | None = None,
+        rules_only: bool = False,
     ):
         self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
         self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
@@ -630,7 +633,30 @@ class UnifiedMultimodalSearchPipeline:
         self._clip_branch_index: ClipBranchIndex | None = None
 
         # Phase 7.2 / 7.3 / 7.4 components (fail-safe when local models/artifacts are absent)
-        self.query_decomposer = query_decomposer or AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
+        if (query_plan_cache is None) != (query_plan_revision is None):
+            raise ValueError("query_plan_cache and query_plan_revision must be provided together")
+        if rules_only and query_plan_cache is not None:
+            raise ValueError("rules_only and query_plan_cache are mutually exclusive")
+        if query_decomposer is not None and (
+            query_plan_cache is not None or query_plan_revision is not None or rules_only
+        ):
+            raise ValueError(
+                "Cannot combine explicit query_decomposer with query_plan_cache, query_plan_revision, or rules_only"
+            )
+        self.query_plan_cache: Path | None = Path(query_plan_cache) if query_plan_cache is not None else None
+        self.query_plan_revision: str | None = query_plan_revision
+        self.rules_only = bool(rules_only)
+        if query_decomposer is not None:
+            self.query_decomposer = query_decomposer
+        elif self.query_plan_cache is not None and self.query_plan_revision is not None:
+            self.query_decomposer = AdaptiveQueryDecomposer.from_frozen_llm_cache(
+                self.query_plan_cache,
+                self.query_plan_revision,
+            )
+        elif self.rules_only:
+            self.query_decomposer = AdaptiveQueryDecomposer(rules_only=True, enable_disk_cache=False)
+        else:
+            self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
         self.ltr_blend_weight = float(ltr_blend_weight)
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
@@ -3671,6 +3697,13 @@ class UnifiedMultimodalSearchPipeline:
             },
             "clip_branch_stats": clip_branch_stats,
             "temporal_rerank_stats": temporal_rerank_stats,
+            "query_plan_mode": routing_plan.routing_mode if routing_plan is not None else None,
+            "query_plan_cache_hit": routing_plan.cache_hit if routing_plan is not None else None,
+            "query_decomposer_stats": (
+                self.query_decomposer.get_stats()
+                if hasattr(self.query_decomposer, "get_stats")
+                else None
+            ),
             "degraded": self._build_degraded_diagnostics(ablation_config),
         }
 

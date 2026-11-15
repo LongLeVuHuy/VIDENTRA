@@ -632,3 +632,200 @@ def test_cpu_dynamic_int8_quantization_and_safe_fallback():
 
     fallback_model = LocalSmallLLMBackend._quantize_cpu_model(tiny, BrokenTorch)
     assert fallback_model is tiny
+
+
+# ---------------------------------------------------------------------------
+# 6. Frozen Query Plan Cache, Revision/SHA Verification, Rules-Only & Stats
+# ---------------------------------------------------------------------------
+
+
+def _build_sample_cache_record(
+    query: str,
+    revision: str = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+    include_sha: bool = True,
+) -> dict:
+    import hashlib
+
+    compact_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "a chef slicing onions on a wooden cutting board",
+                "ocr": [],
+                "asr": [],
+                "objs": [],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(compact_wire)),
+        model_revision=revision,
+        enable_disk_cache=False,
+    )
+    plan = decomposer.decompose(query)
+    key = decomposer._make_cache_key(query)
+    rec: dict = {"key": key, "plan": plan.to_dict()}
+    if include_sha:
+        rec["query_text_sha256"] = hashlib.sha256(query.encode("utf-8")).hexdigest()
+    return rec
+
+
+def test_frozen_cache_hit_and_stats_tracking(tmp_path: Path):
+    rev = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    query = "A chef slicing onions on a wooden cutting board"
+    cache_file = tmp_path / "query_plan_cache.jsonl"
+    rec = _build_sample_cache_record(query, revision=rev, include_sha=True)
+    cache_file.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    decomposer = AdaptiveQueryDecomposer(
+        query_plan_cache=cache_file,
+        query_plan_revision=rev,
+        target_datasets={"msrvtt"},
+    )
+    assert decomposer.llm_backend.enabled is False
+
+    # 1. Frozen cache hit on target dataset
+    p_hit = decomposer.decompose(query, dataset="msrvtt")
+    assert p_hit.cache_hit is True
+    assert p_hit.routing_mode == "llm_compact"
+    assert p_hit.query_graph.parser.model_revision == rev
+
+    # 2. Short query goes to rule-tier (not cache miss)
+    p_short = decomposer.decompose("a dog running")
+    assert p_short.routing_mode == "fast_rule"
+    assert p_short.cache_hit is False
+
+    # 3. Medium/long cache miss falls back to rules
+    p_miss = decomposer.decompose("A woman in a blue jacket walking across a busy street")
+    assert p_miss.routing_mode == "fallback"
+    assert p_miss.cache_hit is False
+
+    # 4. Non-target dataset query falls back to rules even if query text matches cache
+    p_nontarget = decomposer.decompose(query, dataset="qvhighlights")
+    assert p_nontarget.routing_mode == "fallback"
+    assert p_nontarget.cache_hit is False
+
+    stats = decomposer.get_stats()
+    assert stats["total_queries"] == 4
+    assert stats["cache_hits"] == 1
+    assert stats["rule_tier_count"] == 1
+    assert stats["cache_misses"] == 1
+    assert stats["fallback_count"] == 2
+    assert stats["non_target_dataset_count"] == 1
+    assert stats["llm_live_calls"] == 0
+
+
+def test_frozen_cache_rejects_invalid_revision_corrupted_json_and_sha_mismatch(tmp_path: Path):
+    rev = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    query = "A chef slicing onions on a wooden cutting board"
+    rec = _build_sample_cache_record(query, revision=rev, include_sha=True)
+
+    # 1. Revision mismatch
+    cache_file = tmp_path / "rev.jsonl"
+    cache_file.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer(query_plan_cache=cache_file, query_plan_revision="wrong-rev")
+
+    # 2. Corrupted JSON line
+    bad_json = tmp_path / "bad_json.jsonl"
+    bad_json.write_text("{not valid json\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer(query_plan_cache=bad_json, query_plan_revision=rev)
+
+    # 3. query_text_sha256 mismatch
+    bad_sha_rec = dict(rec)
+    bad_sha_rec["query_text_sha256"] = "0" * 64
+    bad_sha = tmp_path / "bad_sha.jsonl"
+    bad_sha.write_text(json.dumps(bad_sha_rec) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="query_text_sha256 mismatch"):
+        AdaptiveQueryDecomposer(query_plan_cache=bad_sha, query_plan_revision=rev)
+
+    # 4. Invalid query_graph schema
+    bad_qg_rec = json.loads(json.dumps(rec))
+    bad_qg_rec["plan"]["query_graph"]["root_id"] = ""
+    bad_qg = tmp_path / "bad_qg.jsonl"
+    bad_qg.write_text(json.dumps(bad_qg_rec) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer(query_plan_cache=bad_qg, query_plan_revision=rev)
+
+
+def test_rules_only_override_skips_llm_and_disk_cache(tmp_path: Path):
+    query = "A chef slicing onions on a wooden cutting board"
+    cache_file = tmp_path / "disk_cache.jsonl"
+    rec = _build_sample_cache_record(query, include_sha=False)
+    cache_file.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    llm_called = False
+
+    def fail_if_called(_prompt: str) -> str:
+        nonlocal llm_called
+        llm_called = True
+        return "{}"
+
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=fail_if_called),
+        cache_path=cache_file,
+        enable_disk_cache=True,
+        rules_only=True,
+    )
+    assert decomposer.llm_backend.enabled is False
+
+    p_med = decomposer.decompose(query)
+    assert llm_called is False
+    assert p_med.cache_hit is False
+    assert p_med.routing_mode == "fallback"
+
+    p_short = decomposer.decompose("a dog running")
+    assert p_short.routing_mode == "fast_rule"
+
+    stats = decomposer.get_stats()
+    assert stats["rules_only_count"] == 2
+    assert stats["fallback_count"] == 1
+    assert stats["rule_tier_count"] == 1
+    assert stats["cache_hits"] == 0
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        AdaptiveQueryDecomposer(
+            query_plan_cache=cache_file,
+            query_plan_revision="989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+            rules_only=True,
+        )
+
+
+def test_unified_pipeline_query_plan_cache_and_rules_only_wiring(tmp_path: Path):
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    rev = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    query = "A chef slicing onions on a wooden cutting board"
+    cache_file = tmp_path / "query_plan_cache.jsonl"
+    rec = _build_sample_cache_record(query, revision=rev, include_sha=True)
+    cache_file.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    p_frozen = UnifiedMultimodalSearchPipeline(
+        lazy_load=True,
+        query_plan_cache=cache_file,
+        query_plan_revision=rev,
+    )
+    plan = p_frozen.query_decomposer.decompose(query)
+    assert plan.cache_hit is True
+    assert plan.routing_mode == "llm_compact"
+
+    p_rules = UnifiedMultimodalSearchPipeline(lazy_load=True, rules_only=True)
+    plan_r = p_rules.query_decomposer.decompose(query)
+    assert plan_r.cache_hit is False
+    assert plan_r.routing_mode == "fallback"
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        UnifiedMultimodalSearchPipeline(lazy_load=True, query_plan_cache=cache_file)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        UnifiedMultimodalSearchPipeline(
+            lazy_load=True,
+            query_plan_cache=cache_file,
+            query_plan_revision=rev,
+            rules_only=True,
+        )

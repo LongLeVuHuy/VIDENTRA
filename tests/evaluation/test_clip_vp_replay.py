@@ -297,14 +297,24 @@ def test_vp_rerank_promotion_and_paired_comparison(tmp_path: Path) -> None:
 def test_missing_artifact_and_missing_vector_fallback(tmp_path: Path) -> None:
     pools_dir, _, _, _ = _make_synthetic_pools(tmp_path)
 
-    # 1. Missing vp_dir altogether
+    # 1. Missing vp_dir altogether: strict alpha>0 blocks by default; strict_vp=False falls back
     out_missing_dir = tmp_path / "out_missing_dir"
+    with pytest.raises(FileNotFoundError, match="missing_vp_dir"):
+        run_replay(
+            pools_dir=pools_dir,
+            pool="a5",
+            k=10,
+            alpha=0.25,
+            vp_dir=tmp_path / "nonexistent_vp",
+            out_dir=out_missing_dir,
+        )
     receipt = run_replay(
         pools_dir=pools_dir,
         pool="a5",
         k=10,
         alpha=0.25,
         vp_dir=tmp_path / "nonexistent_vp",
+        strict_vp=False,
         out_dir=out_missing_dir,
     )
     assert receipt["query_count"] == 4
@@ -418,3 +428,187 @@ def test_paired_source_group_bootstrap_and_wins_losses() -> None:
     assert res1["n_source_groups"] == 3
     assert res1["delta_pp"] == pytest.approx(25.0)
     assert res1["ci95_pp"][0] <= res1["delta_pp"] <= res1["ci95_pp"][1]
+
+
+def test_strict_alpha_positive_blocks_zero_scored_and_missing_shard(tmp_path: Path) -> None:
+    pools_dir, _, _, _ = _make_synthetic_pools(tmp_path)
+
+    # 1. vp_dir=None with alpha > 0 -> ValueError
+    with pytest.raises(ValueError, match="requires --vp-dir"):
+        run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.25, vp_dir=None, out_dir=tmp_path / "out_none")
+
+    # 2. Missing single shard file -> FileNotFoundError
+    vp_incomplete = _make_vp_dir(tmp_path / "vp_incomplete", pools_dir)
+    (vp_incomplete / "query_vectors.npy").unlink()
+    with pytest.raises(FileNotFoundError, match="missing_vp_artifact"):
+        run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.25, vp_dir=vp_incomplete, out_dir=tmp_path / "out_inc")
+
+    # 3. Valid shard structure with 0 scored queries (all queries omitted) -> ValueError
+    all_qids = {"msr_q1", "msr_q2", "qvh_q3", "avc_q4"}
+    vp_zero = _make_vp_dir(tmp_path / "vp_zero", pools_dir, omit_queries=all_qids)
+    with pytest.raises(ValueError, match="scored 0 queries"):
+        run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.25, vp_dir=vp_zero, out_dir=tmp_path / "out_zero")
+
+
+def test_preserve_unscored_top1_change_eligible_and_counts(tmp_path: Path) -> None:
+    pools_dir, labels_path, split_lock_path, _ = _make_synthetic_pools(tmp_path)
+    # video0001 is rank-1 (A5 top-1) for msr_q1, msr_q2, qvh_q3; avc_vid9__s0__e10 is rank-1 for avc_q4.
+    # Omitting video0001 means msr_q1, msr_q2, qvh_q3 lack top-1 vector -> kept at #1, top1_change_eligible=False.
+    # avc_q4 has top-1 vector (avc_vid9__s0__e10) and >=2 scored candidates -> top1_change_eligible=True.
+    vp_partial = _make_vp_dir(
+        tmp_path / "vp_no_top1",
+        pools_dir,
+        omit_videos={"video0001"},
+        promote_map={"avc_q4": "video0004"},
+    )
+    base_dir = tmp_path / "base_k10"
+    chal_dir = tmp_path / "chal_k10"
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=base_dir)
+    chal_receipt = run_replay(
+        pools_dir=pools_dir,
+        pool="a5",
+        k=10,
+        alpha=1.0,
+        vp_dir=vp_partial,
+        vp_coverage_policy="preserve-unscored",
+        out_dir=chal_dir,
+    )
+    assert chal_receipt["vp_dry_run"] is False
+    assert chal_receipt["vp_receipt_sha256"] == sha256_file(vp_partial / "receipt.json")
+    assert chal_receipt["top1_eligible_count"] == 1
+    assert chal_receipt["top1_changed_count"] == 1
+
+    recs = {
+        r["query_id"]: r
+        for r in (json.loads(l) for l in (chal_dir / "per_query_evaluation.jsonl").read_text(encoding="utf-8").splitlines())
+    }
+    for qid in ("msr_q1", "msr_q2", "qvh_q3"):
+        assert recs[qid]["new_top1"] == recs[qid]["base_top1"] == "video0001"
+        assert recs[qid]["top1_change_eligible"] is False
+    assert recs["avc_q4"]["top1_change_eligible"] is True
+    assert recs["avc_q4"]["new_top1"] == "video0004"
+
+    summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_preserve",
+        n_resamples=500,
+    )
+    assert summary["coverage_counts"]["vp_full_coverage_count"] == 1
+    assert summary["coverage_counts"]["vp_partial_coverage_count"] == 3
+    assert summary["coverage_counts"]["top1_eligible_count"] == 1
+    assert summary["coverage_counts"]["top1_changed_count"] == 1
+
+
+def test_compare_rejects_gallery_fingerprint_base_pool_and_output_hash_mismatch(tmp_path: Path) -> None:
+    pools_dir, labels_path, split_lock_path, _ = _make_synthetic_pools(tmp_path)
+    base_dir = tmp_path / "base"
+    chal_dir = tmp_path / "chal"
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=base_dir)
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=chal_dir)
+
+    # 1. gallery_fingerprint mismatch -> ValueError
+    chal_receipt_path = chal_dir / "run_receipt.json"
+    orig_receipt = json.loads(chal_receipt_path.read_text(encoding="utf-8"))
+    bad_fp_receipt = dict(orig_receipt, gallery_fingerprint="deadbeef" * 8)
+    chal_receipt_path.write_text(json.dumps(bad_fp_receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="gallery_fingerprint mismatch"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_bad_fp",
+            n_resamples=200,
+        )
+    chal_receipt_path.write_text(json.dumps(orig_receipt), encoding="utf-8")
+
+    # 2. base_video_ids mismatch in same-pool comparison -> ValueError
+    chal_eval_path = chal_dir / "per_query_evaluation.jsonl"
+    orig_eval_text = chal_eval_path.read_text(encoding="utf-8")
+    rows = [json.loads(l) for l in orig_eval_text.splitlines() if l.strip()]
+    rows[0]["base_video_ids"] = list(reversed(rows[0]["base_video_ids"]))
+    _write_jsonl(chal_eval_path, rows)
+    with pytest.raises(ValueError, match="base_video_ids mismatch"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_bad_base",
+            n_resamples=200,
+        )
+
+    # 3. output_sha256 mismatch when ranked_video_ids tampered -> ValueError
+    rows = [json.loads(l) for l in orig_eval_text.splitlines() if l.strip()]
+    rows[0]["ranked_video_ids"] = list(reversed(rows[0]["ranked_video_ids"]))
+    _write_jsonl(chal_eval_path, rows)
+    with pytest.raises(ValueError, match="output_sha256 mismatch"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_bad_hash",
+            n_resamples=200,
+        )
+    chal_eval_path.write_text(orig_eval_text, encoding="utf-8")
+
+    # 4. Different pool (a5 vs clip) still succeeds automatically without --allow-different-base-pool
+    clip_dir = tmp_path / "clip"
+    run_replay(pools_dir=pools_dir, pool="clip", k=10, alpha=0.0, out_dir=clip_dir)
+    ok_summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=clip_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_a5_clip",
+        n_resamples=200,
+    )
+    assert ok_summary["require_same_base_pool"] is False
+    assert ok_summary["overall"]["n_queries"] == 4
+
+
+def test_compare_filter_manifest_tune_confirm(tmp_path: Path) -> None:
+    pools_dir, labels_path, split_lock_path, _ = _make_synthetic_pools(tmp_path)
+    base_dir = tmp_path / "base"
+    chal_dir = tmp_path / "chal"
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=base_dir)
+    run_replay(pools_dir=pools_dir, pool="clip", k=10, alpha=0.0, out_dir=chal_dir)
+
+    manifest_path = tmp_path / "tune_confirm_manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "tune_query_ids": ["msr_q1", "msr_q2", "qvh_q3"],
+            "confirm_query_ids": ["avc_q4"],
+        }),
+        encoding="utf-8",
+    )
+
+    tune_summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_tune",
+        n_resamples=200,
+        filter_manifest=manifest_path,
+        filter_split="tune",
+    )
+    assert tune_summary["overall"]["n_queries"] == 3
+    assert tune_summary["filter_split"] == "tune"
+
+    confirm_summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_confirm",
+        n_resamples=200,
+        filter_manifest=manifest_path,
+        filter_split="confirm",
+    )
+    assert confirm_summary["overall"]["n_queries"] == 1
+    assert confirm_summary["filter_split"] == "confirm"

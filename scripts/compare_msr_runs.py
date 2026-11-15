@@ -23,6 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from videntra.evaluation.provenance import sha256_file
 from videntra.evaluation.split_lock import verify_split_lock
 from videntra.retrieval.visual import temporal_iou
 
@@ -210,6 +211,85 @@ def _check_moment_hit_iou05(top1_vid: str | None, anchor_map: dict[str, Any] | N
     return 0
 
 
+def _verify_replay_output_hash(run_dir: Path, receipt: dict[str, Any], label: str) -> None:
+    """Verify per_query_evaluation.jsonl SHA-256 against receipt.output_sha256 if recorded."""
+    out_hashes = receipt.get("output_sha256")
+    if not isinstance(out_hashes, dict) or not out_hashes:
+        return
+    eval_path = run_dir / "per_query_evaluation.jsonl"
+    actual_sha = sha256_file(eval_path)
+    expected_sha: str | None = None
+    for key, digest in out_hashes.items():
+        if Path(key).name == "per_query_evaluation.jsonl":
+            expected_sha = str(digest) if digest is not None else None
+            break
+    if expected_sha is None and len(out_hashes) == 1:
+        val = next(iter(out_hashes.values()))
+        expected_sha = str(val) if val is not None else None
+    if expected_sha is None or actual_sha != expected_sha:
+        raise ValueError(
+            f"{label} output_sha256 mismatch for per_query_evaluation.jsonl: "
+            f"expected={expected_sha}, got={actual_sha}"
+        )
+
+
+def _load_filter_manifest_qids(manifest_path: Path, filter_split: str | None = None) -> set[str]:
+    """Load allowed query_ids from a tune/confirm filter manifest (JSON, JSONL, or text)."""
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing filter manifest: {manifest_path}")
+    text = manifest_path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"Empty filter manifest: {manifest_path}")
+
+    qids: set[str] = set()
+    if manifest_path.suffix.lower() == ".jsonl":
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if filter_split is not None:
+                row_split = row.get("split") or row.get("subset") or row.get("partition")
+                if row_split is not None and str(row_split) != filter_split:
+                    continue
+            qid = str(row.get("query_id") or row.get("qid") or "").strip()
+            if qid:
+                qids.add(qid)
+    elif manifest_path.suffix.lower() == ".json":
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            qids = {str(x).strip() for x in payload if str(x).strip()}
+        elif isinstance(payload, dict):
+            if filter_split is not None:
+                for key in (f"{filter_split}_query_ids", filter_split, f"{filter_split}_ids"):
+                    if isinstance(payload.get(key), list):
+                        qids = {str(x).strip() for x in payload[key] if str(x).strip()}
+                        break
+            if not qids and isinstance(payload.get("query_ids"), list):
+                qids = {str(x).strip() for x in payload["query_ids"] if str(x).strip()}
+            elif not qids and isinstance(payload.get("records"), list):
+                for row in payload["records"]:
+                    if not isinstance(row, dict):
+                        continue
+                    if filter_split is not None:
+                        row_split = row.get("split") or row.get("subset") or row.get("partition")
+                        if row_split is not None and str(row_split) != filter_split:
+                            continue
+                    qid = str(row.get("query_id") or row.get("qid") or "").strip()
+                    if qid:
+                        qids.add(qid)
+        else:
+            raise ValueError(f"Unsupported JSON manifest root in {manifest_path}")
+    else:
+        for line in text.splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                qids.add(s)
+
+    if not qids:
+        raise ValueError(f"No query_ids resolved from filter manifest {manifest_path} (split={filter_split})")
+    return qids
+
+
 def compare_runs(
     *,
     baseline_dir: Path,
@@ -219,6 +299,9 @@ def compare_runs(
     out_dir: Path,
     n_resamples: int = 10000,
     seed: int = 20261115,
+    require_same_base_pool: bool | None = None,
+    filter_manifest: Path | None = None,
+    filter_split: str | None = None,
 ) -> dict[str, Any]:
     if not verify_split_lock(split_lock_path):
         raise ValueError(f"Invalid or tampered split_lock: {split_lock_path}")
@@ -242,8 +325,24 @@ def compare_runs(
         missing_lock = sorted(set(base_rows.keys()) - set(lock_by_qid.keys()))
         raise ValueError(f"query_ids missing from split_lock: {missing_lock[:5]}")
 
+    if filter_manifest is not None:
+        allowed_qids = _load_filter_manifest_qids(filter_manifest, filter_split=filter_split)
+        unknown_qids = sorted(allowed_qids - set(base_rows.keys()))
+        if unknown_qids:
+            raise ValueError(f"filter_manifest contains query_ids absent from runs: {unknown_qids[:5]}")
+        base_rows = {qid: base_rows[qid] for qid in allowed_qids}
+        chal_rows = {qid: chal_rows[qid] for qid in allowed_qids}
+        label_rows = {qid: label_rows[qid] for qid in allowed_qids}
+
     if base_receipt.get("k") != chal_receipt.get("k"):
         raise ValueError(f"Config k mismatch: baseline={base_receipt.get('k')}, challenger={chal_receipt.get('k')}")
+
+    base_fp = base_receipt.get("gallery_fingerprint") or base_receipt.get("gallery_sha256")
+    chal_fp = chal_receipt.get("gallery_fingerprint") or chal_receipt.get("gallery_sha256")
+    if not base_fp or not chal_fp:
+        raise ValueError("Missing gallery_fingerprint / gallery_sha256 in baseline or challenger run_receipt.json")
+    if base_fp != chal_fp:
+        raise ValueError(f"gallery_fingerprint mismatch between baseline ({base_fp}) and challenger ({chal_fp})")
     if (
         base_receipt.get("gallery_sha256") is not None
         and chal_receipt.get("gallery_sha256") is not None
@@ -256,6 +355,16 @@ def compare_runs(
         and base_receipt.get("queries_sha256") != chal_receipt.get("queries_sha256")
     ):
         raise ValueError("queries_sha256 mismatch between baseline and challenger")
+
+    if require_same_base_pool is None:
+        check_same_base_pool = (
+            base_receipt.get("pool") == chal_receipt.get("pool")
+            and base_receipt.get("query_plan_source") == chal_receipt.get("query_plan_source")
+            and base_receipt.get("query_plan_revision") == chal_receipt.get("query_plan_revision")
+            and base_receipt.get("query_plan_cache_sha256") == chal_receipt.get("query_plan_cache_sha256")
+        )
+    else:
+        check_same_base_pool = bool(require_same_base_pool)
 
     k = int(base_receipt["k"])
     paired_records: list[dict[str, Any]] = []
@@ -276,6 +385,12 @@ def compare_runs(
         l_sha = str(l_row.get("query_text_sha256", ""))
         if not (b_sha and b_sha == c_sha == l_sha):
             raise ValueError(f"query_text_sha256 mismatch for {qid}: base={b_sha}, chal={c_sha}, label={l_sha}")
+
+        if check_same_base_pool:
+            b_base_pool = [str(v) for v in b_row.get("base_video_ids", [])]
+            c_base_pool = [str(v) for v in c_row.get("base_video_ids", [])]
+            if b_base_pool != c_base_pool:
+                raise ValueError(f"base_video_ids mismatch for {qid} in same-pool comparison")
 
         target_videos = [str(v) for v in (l_row.get("target_videos") or []) if str(v).strip()]
         if not target_videos:
@@ -301,12 +416,17 @@ def compare_runs(
         fallback_reason = c_row.get("fallback_reason") or b_row.get("fallback_reason")
         vp_cov_ok = bool(c_row.get("vp_coverage_ok", False)) and fallback_reason is None
 
+        top1_changed = bool(b_ranked[:1] != c_ranked[:1])
+        top1_eligible = bool(c_row.get("top1_change_eligible", False))
+
         internal = {
             "query_id": qid,
             "dataset": dataset,
             "source_group": source_group,
             "base_top1": b_ranked[0] if b_ranked else None,
             "new_top1": c_ranked[0] if c_ranked else None,
+            "top1_change_eligible": top1_eligible,
+            "top1_changed": top1_changed,
             "target_rank_before": b_metrics["target_rank"],
             "target_rank_after": c_metrics["target_rank"],
             "base_hit": b_metrics["hit1"],
@@ -348,6 +468,9 @@ def compare_runs(
             "query_plan_cache_hit": internal["query_plan_cache_hit"],
         })
 
+    _verify_replay_output_hash(baseline_dir, base_receipt, "baseline")
+    _verify_replay_output_hash(challenger_dir, chal_receipt, "challenger")
+
     by_ds: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in internal_rows:
         by_ds[r["dataset"]].append(r)
@@ -373,14 +496,21 @@ def compare_runs(
     else:
         moment_guardrail = {"moment_labeled_n": mom_labeled_n, "status": "NOT_MEASURED_VIDEO_REPLAY"}
 
+    top1_eligible_count = sum(1 for r in internal_rows if r["top1_change_eligible"])
+    top1_changed_count = sum(1 for r in internal_rows if r["top1_changed"])
+
     summary = {
         "schema_version": 1,
         "k": k,
+        "filter_manifest": str(filter_manifest) if filter_manifest is not None else None,
+        "filter_split": filter_split,
+        "require_same_base_pool": check_same_base_pool,
         "baseline": {
             "dir": str(baseline_dir),
             "pool": base_receipt.get("pool"),
             "alpha": base_receipt.get("alpha"),
             "gallery_sha256": base_receipt.get("gallery_sha256"),
+            "gallery_fingerprint": base_fp,
             "query_plan_source": base_receipt.get("query_plan_source"),
         },
         "challenger": {
@@ -388,11 +518,20 @@ def compare_runs(
             "pool": chal_receipt.get("pool"),
             "alpha": chal_receipt.get("alpha"),
             "gallery_sha256": chal_receipt.get("gallery_sha256"),
+            "gallery_fingerprint": chal_fp,
             "vp_dry_run": chal_receipt.get("vp_dry_run"),
+            "vp_receipt_sha256": chal_receipt.get("vp_receipt_sha256"),
             "vp_coverage_policy": chal_receipt.get("vp_coverage_policy"),
             "query_plan_source": chal_receipt.get("query_plan_source"),
             "query_plan_revision": chal_receipt.get("query_plan_revision"),
             "query_plan_cache_sha256": chal_receipt.get("query_plan_cache_sha256"),
+        },
+        "coverage_counts": {
+            "vp_full_coverage_count": len(cov_ok_rows),
+            "vp_partial_coverage_count": len(cov_partial_rows),
+            "fallback_count": len(cov_fb_rows),
+            "top1_eligible_count": top1_eligible_count,
+            "top1_changed_count": top1_changed_count,
         },
         "overall": _summarize_slice(internal_rows, n_resamples=n_resamples, seed=seed),
         "per_dataset": {
@@ -461,6 +600,14 @@ def _write_markdown_report(path: Path, summary: dict[str, Any]) -> None:
         if ds_name in summary["per_dataset"]:
             lines.append(_fmt_row(f"dataset={ds_name}", summary["per_dataset"][ds_name]))
     lines.append("\n## Coverage Breakdown\n\n")
+    cov_counts = summary.get("coverage_counts") or {}
+    lines.append(
+        f"- Full VP coverage: {cov_counts.get('vp_full_coverage_count', 0)}, "
+        f"Partial VP coverage: {cov_counts.get('vp_partial_coverage_count', 0)}, "
+        f"Fallback: {cov_counts.get('fallback_count', 0)}, "
+        f"Top-1 eligible: {cov_counts.get('top1_eligible_count', 0)}, "
+        f"Top-1 changed: {cov_counts.get('top1_changed_count', 0)}\n\n"
+    )
     lines.append("| Coverage Slice | N (Groups) | Hit@1 (Base -> Chal) | Recall@K (Base -> Chal) | MRR@10 | Wins/Losses | Delta (pp) | 95% Paired Group Bootstrap CI |\n")
     lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
     lines.append(_fmt_row("VP Coverage Intersection", summary["coverage_breakdown"]["vp_coverage_intersection"]))
@@ -484,6 +631,10 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--n-resamples", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=20261115)
+    parser.add_argument("--filter-manifest", type=Path, default=None)
+    parser.add_argument("--filter-split", default=None)
+    parser.add_argument("--require-same-base-pool", dest="require_same_base_pool", action="store_true", default=None)
+    parser.add_argument("--allow-different-base-pool", dest="require_same_base_pool", action="store_false")
     args = parser.parse_args()
 
     summary = compare_runs(
@@ -494,6 +645,9 @@ def main() -> None:
         out_dir=args.out_dir,
         n_resamples=args.n_resamples,
         seed=args.seed,
+        require_same_base_pool=args.require_same_base_pool,
+        filter_manifest=args.filter_manifest,
+        filter_split=args.filter_split,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

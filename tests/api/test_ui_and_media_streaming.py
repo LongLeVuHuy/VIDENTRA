@@ -86,11 +86,16 @@ def test_inspector_layout_prevents_video_shrinking_and_has_upgrades(media_client
     client, _ = media_client
     html = client.get("/").text
 
-    # Non-shrinking video container & aspect-ratio preservation
+    # Non-shrinking video container, full-width default stage, & aspect-ratio preservation
     assert "flex-shrink: 0" in html
     assert "aspect-ratio: 16 / 9" in html
     assert "object-fit: contain" in html
-    assert "inspector-layout" in html
+    assert "position: absolute; inset: 0;" in html
+    assert "min-height: 360px; max-height: 74vh;" in html
+    assert ".inspector-layout { display: grid; grid-template-columns: 1fr;" in html
+    assert "inspectorLayout" in html
+    assert "layoutToggleBtn" in html
+    assert "toggleSplitLayout" in html
 
     # Theater mode, clickable timeline bar, and evidence modality tabs
     assert "theaterToggleBtn" in html

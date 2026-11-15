@@ -1,5 +1,24 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Hoàn thiện P0 Benchmark Hardening, Qwen Cache Wiring, Kiểm tra Kaggle & Sửa triệt để Video Inspector UI
+
+- **Sửa triệt để Video Inspector UI ([ui_html.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/api/ui_html.py), [test_ui_and_media_streaming.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/api/test_ui_and_media_streaming.py)):**
+  - Xác nhận 2 nguyên nhân còn làm video bị thu nhỏ: `.inspector-layout` mặc định chia 2 cột ép cột video xuống ~737–800px, và `.video-container` là flex item thiếu explicit height khiến `<video>` độ phân giải thấp (như MSR-VTT 320×240) có thể fallback về kích thước intrinsic nhỏ.
+  - Chuyển `.inspector-layout` mặc định sang **1 cột lớn (`1fr`)** (`min-height: 360px; max-height: 74vh;`, Theater `max-height: 82vh`), `.modal` mở rộng `min(1480px, 96vw)`, định vị `<video>` bằng `position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;`, bổ sung nút `#layoutToggleBtn` (`Chia 2 cột` / `1 cột lớn`) và cập nhật test (`tests/api/` → **31 passed**).
+- **Làm chặt đường Benchmark P0 ([capture_msr_candidate_pools.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/capture_msr_candidate_pools.py), [run_clip_vp_replay.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/run_clip_vp_replay.py), [compare_msr_runs.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/compare_msr_runs.py), [test_clip_vp_replay.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/evaluation/test_clip_vp_replay.py)):**
+  - `capture_msr_candidate_pools.py`: dùng hashing từ `videntra.evaluation.provenance` ghi đầy đủ `capture_receipt.json` (`git_commit`, `db_sha256`, `faiss_sha256`, `siglip2_weights_sha256`, `gallery_fingerprint`, `split_lock_sha256`, `retrieval_config`, `seed`, `device`, `query_plan_mode`, `run_fingerprint`).
+  - `run_clip_vp_replay.py`: bật `strict_vp=True` mặc định khi `alpha > 0` (chặn thiếu shard, sai hash, `vp_dry_run=true`, hoặc `vp_coverage_count + vp_partial_count == 0`, trong khi vẫn giữ fallback per-query trong shard thật có coverage một phần); gắn `top1_change_eligible` cho `preserve-unscored` và đếm `top1_eligible_count` / `top1_changed_count`.
+  - `compare_msr_runs.py`: bắt buộc khớp `gallery_fingerprint`, kiểm `output_sha256` với receipt, kiểm tra `base_video_ids` bằng nhau theo query cho các cặp cùng pool, hỗ trợ `--filter-manifest` / `--filter-split` (chia tune/confirm ~70/30), và ghi đầy đủ `coverage_counts`.
+- **Nối Qwen Frozen Query Plan Cache ([llm.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/query/llm.py), [unified_pipeline.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/retrieval/unified_pipeline.py), [test_llm_decomposer.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/query/test_llm_decomposer.py)):**
+  - Bổ sung `query_plan_cache`, `query_plan_revision`, `rules_only`, `target_datasets` vào `AdaptiveQueryDecomposer` và `UnifiedMultimodalSearchPipeline`, kiểm chặt `model_revision`/`prompt_version`/`query_text_sha256`/`QueryGraph` schema, fallback rules khi cache miss hoặc khác dataset, thống kê `get_stats()`.
+- **Kiểm tra trạng thái Kaggle (`.\.venv\Scripts\kaggle.exe` lúc 19:55 UTC+7):**
+  - `lvhuylong/videntra-msr-videoprism-dev-20261115`: `QUEUED` (`2026-11-15 12:10:32`).
+  - `lvhuylong/videntra-msr-qwen15b-dev-20261115`: `RUNNING` (`2026-11-15 12:04:03`).
+  - Cả 2 chưa `COMPLETE` nên chưa có shard/cache thật để tải (`chờ artifact` cho ma trận R01/R11/Q00/Q10/Q11).
+- **Kiểm chứng test sau hoàn thiện:**
+  - Targeted Section 5 suite: **56 passed, 3 warnings in 18.62s**.
+  - Full `pytest` suite (`.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider`): **550 passed, 3 warnings in 92.49s** (exit code `0`).
+
 ## 15/11/2026 — Triển khai Nhánh Clip, VideoPrism‑LvT‑B Kaggle Harness & Sửa lỗi Video Inspector UI
 
 - **Sửa lỗi & nâng cấp Video Inspector UI ([ui_html.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/api/ui_html.py), [test_ui_and_media_streaming.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/api/test_ui_and_media_streaming.py)):**

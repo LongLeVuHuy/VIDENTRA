@@ -191,6 +191,7 @@ def run_replay(
     alpha: float = 0.0,
     vp_dir: Path | None = None,
     allow_synthetic: bool = False,
+    strict_vp: bool = True,
     vp_coverage_policy: str = "full",
     out_dir: Path = Path("work/experiments/clip_vp_replay"),
 ) -> dict[str, Any]:
@@ -248,11 +249,17 @@ def run_replay(
     vp_global_fallback: str | None = None
     if alpha > 0.0:
         if vp_dir is None:
+            if strict_vp:
+                raise ValueError("Strict VP replay (alpha > 0) requires --vp-dir")
             vp_global_fallback = "missing_vp_dir"
         else:
             vp_bundle, vp_global_fallback = _load_vp_artifacts(
                 vp_dir, queries_by_id, allow_synthetic=allow_synthetic
             )
+            if strict_vp and vp_global_fallback is not None:
+                raise FileNotFoundError(
+                    f"VP artifact missing or incomplete for alpha > 0 ({vp_global_fallback}): {vp_dir}"
+                )
     elif vp_dir is not None and vp_dir.exists():
         # Even at alpha=0, if vp_dir is explicitly passed and exists, validate its integrity
         vp_bundle, vp_global_fallback = _load_vp_artifacts(
@@ -269,6 +276,8 @@ def run_replay(
     fallback_count = 0
     vp_coverage_count = 0
     vp_partial_count = 0
+    top1_eligible_count = 0
+    top1_changed_count = 0
 
     for q in queries:
         qid = str(q["query_id"])
@@ -327,6 +336,16 @@ def run_replay(
         if vp_partial_applied:
             vp_partial_count += 1
 
+        vp_applied = bool(alpha > 0.0 and fallback_reason is None and (vp_coverage_ok or vp_partial_applied))
+        top1_has_vec = bool(base_pool and q_vec is not None and base_pool[0] in video_map)
+        top1_change_eligible = bool(vp_applied and top1_has_vec and len(covered_pool) >= 2)
+        base_top1 = base_pool[0] if base_pool else None
+        new_top1 = ranked_video_ids[0] if ranked_video_ids else None
+        if top1_change_eligible:
+            top1_eligible_count += 1
+        if new_top1 != base_top1:
+            top1_changed_count += 1
+
         record = {
             "query_id": qid,
             "query_text_sha256": q_sha,
@@ -336,8 +355,9 @@ def run_replay(
             "alpha": alpha,
             "base_video_ids": base_pool,
             "ranked_video_ids": ranked_video_ids,
-            "base_top1": base_pool[0] if base_pool else None,
-            "new_top1": ranked_video_ids[0] if ranked_video_ids else None,
+            "base_top1": base_top1,
+            "new_top1": new_top1,
+            "top1_change_eligible": top1_change_eligible,
             "scores": {vid: round(scores[vid], 8) for vid in ranked_video_ids},
             "fallback_reason": fallback_reason,
             "vp_coverage_ok": vp_coverage_ok,
@@ -357,6 +377,11 @@ def run_replay(
             }
         per_query_records.append(record)
 
+    if alpha > 0.0 and strict_vp and (vp_coverage_count + vp_partial_count) == 0:
+        raise ValueError(
+            "VP replay scored 0 queries (vp_coverage_count + vp_partial_count == 0) with alpha > 0"
+        )
+
     out_dir.mkdir(parents=True, exist_ok=True)
     eval_path = out_dir / "per_query_evaluation.jsonl"
     with eval_path.open("w", encoding="utf-8") as stream:
@@ -374,8 +399,12 @@ def run_replay(
         "fallback_count": fallback_count,
         "vp_coverage_count": vp_coverage_count,
         "vp_partial_count": vp_partial_count,
+        "top1_eligible_count": top1_eligible_count,
+        "top1_changed_count": top1_changed_count,
         "vp_coverage_policy": vp_coverage_policy,
         "gallery_sha256": capture_receipt.get("gallery_sha256"),
+        "gallery_fingerprint": capture_receipt.get("gallery_fingerprint") or capture_receipt.get("gallery_sha256"),
+        "run_fingerprint": capture_receipt.get("run_fingerprint"),
         "queries_sha256": sha256_file(queries_path),
         "pool_sha256": sha256_file(a5_path if pool == "a5" else clip_path),
         "vp_receipt_sha256": vp_bundle["receipt_sha256"] if vp_bundle else None,
@@ -399,6 +428,7 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.0)
     parser.add_argument("--vp-dir", type=Path, default=None)
     parser.add_argument("--allow-synthetic", action="store_true", help="Allow dry-run vectors for smoke tests")
+    parser.add_argument("--allow-missing-vp", action="store_true", help="Allow global fallback if VP dir/shard is missing when alpha > 0")
     parser.add_argument("--vp-coverage-policy", choices=("full", "preserve-unscored"), default="full")
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -410,6 +440,7 @@ def main() -> None:
         alpha=args.alpha,
         vp_dir=args.vp_dir,
         allow_synthetic=args.allow_synthetic,
+        strict_vp=not args.allow_missing_vp,
         vp_coverage_policy=args.vp_coverage_policy,
         out_dir=args.out_dir,
     )

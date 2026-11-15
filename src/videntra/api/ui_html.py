@@ -94,19 +94,22 @@ UI_HTML = """<!DOCTYPE html>
     .card-footer { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 
     /* Modal Inspector */
-    .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.88); display: none; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); padding: 16px; }
-    .modal { background: var(--card-bg); width: 100%; max-width: min(1320px, 96vw); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 94vh; transition: max-width 0.18s ease, height 0.18s ease; }
-    .modal.theater { max-width: 98vw; height: 96vh; max-height: 96vh; }
-    .modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.88); display: none; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); padding: 12px; }
+    .modal { background: var(--card-bg); width: 100%; max-width: min(1480px, 96vw); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 95vh; transition: max-width 0.18s ease, height 0.18s ease; }
+    .modal.theater { max-width: 98vw; width: 98vw; height: 96vh; max-height: 96vh; }
+    .modal-header { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; }
     .modal-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-    .modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0; }
-    .inspector-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 18px; align-items: start; }
-    .modal.theater .inspector-layout { grid-template-columns: 1fr; }
+    .modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; min-height: 0; }
+    .inspector-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+    .inspector-layout.split-view { grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr); }
+    .modal.theater .inspector-layout,
+    .modal.theater .inspector-layout.split-view { grid-template-columns: 1fr; }
     .inspector-primary { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-    .inspector-sidebar { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-    .video-container { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 300px; max-height: 68vh; flex-shrink: 0; background: #000; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); }
-    .modal.theater .video-container { min-height: 380px; max-height: 76vh; }
-    video { width: 100%; height: 100%; max-height: 100%; object-fit: contain; display: block; outline: none; background: #000; }
+    .inspector-sidebar { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; min-width: 0; }
+    .inspector-layout.split-view .inspector-sidebar { display: flex; flex-direction: column; gap: 12px; }
+    .video-container { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 360px; max-height: 74vh; flex-shrink: 0; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+    .modal.theater .video-container { min-height: 440px; max-height: 82vh; }
+    .video-container video, video { position: absolute; inset: 0; width: 100%; height: 100%; max-height: 100%; object-fit: contain; display: block; outline: none; background: #000; }
     .player-status { position: absolute; top: 10px; right: 10px; background: rgba(2, 6, 23, 0.82); color: #e2e8f0; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); display: none; pointer-events: none; }
 
     .timeline-bar-wrap { display: flex; flex-direction: column; gap: 6px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; flex-shrink: 0; }
@@ -133,13 +136,15 @@ UI_HTML = """<!DOCTYPE html>
     .toast { position: fixed; bottom: 20px; right: 20px; background: #0f172a; color: #f8fafc; border: 1px solid var(--primary); padding: 10px 14px; border-radius: 8px; font-size: 13px; z-index: 200; display: none; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
 
     @media (max-width: 960px) {
-      .inspector-layout { grid-template-columns: 1fr; }
+      .inspector-layout,
+      .inspector-layout.split-view { grid-template-columns: 1fr; }
     }
     @media (max-width: 720px) {
       body { padding: 14px; }
       .modal-overlay { padding: 8px; }
       .modal-body { padding: 12px; }
-      .video-container { min-height: 210px; max-height: 52vh; }
+      .video-container { min-height: 220px; max-height: 55vh; }
+      .inspector-sidebar { grid-template-columns: 1fr; }
       .shortcuts-hint { margin-left: 0; width: 100%; }
       .frame-verify-row { flex-direction: column; align-items: flex-start !important; }
     }
@@ -235,12 +240,13 @@ UI_HTML = """<!DOCTYPE html>
           <div id="modalTiming" style="font-size:12px; color:var(--text-muted); margin-top:2px;"></div>
         </div>
         <div class="modal-header-actions">
+          <button id="layoutToggleBtn" class="btn btn-secondary btn-sm" onclick="toggleSplitLayout()">Chia 2 cột</button>
           <button id="theaterToggleBtn" class="btn btn-secondary btn-sm" onclick="toggleTheaterMode()">Phóng to (F)</button>
           <button class="btn btn-secondary btn-sm" onclick="closeModal()">Đóng (Esc)</button>
         </div>
       </div>
       <div class="modal-body">
-        <div class="inspector-layout">
+        <div id="inspectorLayout" class="inspector-layout">
           <div class="inspector-primary">
             <div class="video-container">
               <video id="player" controls preload="metadata" playsinline></video>
@@ -485,6 +491,14 @@ UI_HTML = """<!DOCTYPE html>
       if (!modal || !btn) return;
       const isTheater = modal.classList.toggle("theater");
       btn.textContent = isTheater ? "Thu gọn (F)" : "Phóng to (F)";
+    }
+
+    function toggleSplitLayout() {
+      const layout = document.getElementById("inspectorLayout");
+      const btn = document.getElementById("layoutToggleBtn");
+      if (!layout || !btn) return;
+      const isSplit = layout.classList.toggle("split-view");
+      btn.textContent = isSplit ? "1 cột lớn" : "Chia 2 cột";
     }
 
     // Player buffering & timeline feedback

@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 import unicodedata
 
 from videntra.contracts import validate
@@ -1065,50 +1065,149 @@ class AdaptiveQueryDecomposer:
         model_revision: str | None = None,
         prompt_version: str = "compact-v1",
         enable_disk_cache: bool = True,
+        query_plan_cache: str | Path | None = None,
+        query_plan_revision: str | None = None,
+        rules_only: bool = False,
+        target_datasets: Sequence[str] | set[str] | None = None,
     ):
-        self.llm_backend = llm_backend or LocalSmallLLMBackend(model_revision=model_revision)
+        if (query_plan_cache is None) != (query_plan_revision is None):
+            raise ValueError("query_plan_cache and query_plan_revision must be provided together")
+        if rules_only and query_plan_cache is not None:
+            raise ValueError("rules_only and query_plan_cache are mutually exclusive")
+
         self.complexity_gate = complexity_gate or QueryComplexityGate()
         self.validator = validator or SemanticDecomposerValidator()
         self.rule_parser = rule_parser or RuleBasedQueryParser()
-        self.model_revision = model_revision if model_revision is not None else self.llm_backend.model_revision
         self.prompt_version = prompt_version
-        self.enable_disk_cache = enable_disk_cache
+        self.rules_only = bool(rules_only)
+        self.frozen_cache_path: Path | None = Path(query_plan_cache) if query_plan_cache is not None else None
+        self.frozen_cache_revision: str | None = str(query_plan_revision) if query_plan_revision is not None else None
+        self.target_datasets: frozenset[str] | None = (
+            frozenset(str(d) for d in target_datasets) if target_datasets is not None else None
+        )
+
+        if self.frozen_cache_path is not None and self.frozen_cache_revision is not None:
+            if not self.frozen_cache_revision.strip():
+                raise ValueError("query_plan_revision must be non-empty")
+            if model_revision is not None and model_revision != self.frozen_cache_revision:
+                raise ValueError(
+                    f"model_revision ({model_revision!r}) does not match query_plan_revision ({self.frozen_cache_revision!r})"
+                )
+            self.model_revision = self.frozen_cache_revision
+            self.llm_backend = LocalSmallLLMBackend(enabled=False, model_revision=self.model_revision)
+            self.enable_disk_cache = False
+        elif self.rules_only:
+            fallback_rev = (
+                model_revision
+                if model_revision is not None
+                else (llm_backend.model_revision if llm_backend is not None else LocalSmallLLMBackend.DEFAULT_MODEL_REVISION)
+            )
+            self.model_revision = fallback_rev
+            self.llm_backend = LocalSmallLLMBackend(enabled=False, model_revision=self.model_revision)
+            self.enable_disk_cache = False
+        else:
+            self.llm_backend = llm_backend or LocalSmallLLMBackend(model_revision=model_revision)
+            self.model_revision = model_revision if model_revision is not None else self.llm_backend.model_revision
+            self.enable_disk_cache = enable_disk_cache
+
         self.cache_path = Path(cache_path) if cache_path is not None else self.DEFAULT_CACHE_PATH
         self._ram_cache: dict[str, ModalityRoutingPlan] = {}
         self._disk_loaded = False
+        self._stats: dict[str, int] = {
+            "total_queries": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "llm_live_calls": 0,
+            "rule_tier_count": 0,
+            "fallback_count": 0,
+            "non_target_dataset_count": 0,
+            "rules_only_count": 0,
+        }
 
-    @classmethod
-    def from_frozen_llm_cache(cls, cache_path: Path, model_revision: str) -> AdaptiveQueryDecomposer:
-        """Replay only validated plans from the pinned model, with rule fallback."""
-        decomposer = cls(
-            llm_backend=LocalSmallLLMBackend(enabled=False, model_revision=model_revision),
-            enable_disk_cache=False,
-        )
+        if self.frozen_cache_path is not None and self.frozen_cache_revision is not None:
+            self._load_frozen_llm_cache(self.frozen_cache_path, self.frozen_cache_revision)
+
+    def get_stats(self) -> dict[str, int]:
+        """Return a snapshot of cache hit, fallback, and rule-tier counters."""
+        return dict(self._stats)
+
+    def reset_stats(self) -> None:
+        """Reset all decomposer counters to zero."""
+        for key in self._stats:
+            self._stats[key] = 0
+
+    def _load_frozen_llm_cache(self, cache_path: Path, model_revision: str) -> None:
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Frozen query plan cache not found: {cache_path}")
         with cache_path.open(encoding="utf-8") as stream:
             for line_no, line in enumerate(stream, start=1):
                 if not line.strip():
                     continue
-                record = json.loads(line)
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: malformed JSON") from exc
+                if (
+                    not isinstance(record, dict)
+                    or not isinstance(record.get("key"), str)
+                    or not record["key"]
+                    or not isinstance(record.get("plan"), dict)
+                ):
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: missing key or plan")
                 data = record["plan"]
-                if data["routing_mode"] != "llm_compact":
+                routing_mode = data.get("routing_mode")
+                if not routing_mode:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: missing routing_mode")
+                if routing_mode != "llm_compact":
                     continue
-                plan = cls._plan_from_dict(data)
+                if record.get("model_revision") is not None and record.get("model_revision") != model_revision:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: model_revision mismatch")
+                if record.get("prompt_version") is not None and record.get("prompt_version") != self.prompt_version:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: prompt_version mismatch")
+                try:
+                    plan = self._plan_from_dict(data)
+                except Exception as exc:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: {exc}") from exc
                 parser = plan.query_graph.parser
-                key = decomposer._make_cache_key(plan.original_query)
+                key = self._make_cache_key(plan.original_query)
                 if (
                     parser.status != "validated"
                     or parser.model_revision != model_revision
-                    or parser.prompt_version != decomposer.prompt_version
+                    or parser.prompt_version != self.prompt_version
                     or plan.original_query != plan.query_graph.original_query
                     or record["key"] != key
-                    or key in decomposer._ram_cache
+                    or key in self._ram_cache
                 ):
                     raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}")
-                validate("query_graph", plan.query_graph.to_dict())
-                decomposer._ram_cache[key] = plan
-        if not decomposer._ram_cache:
+                if record.get("query_text_sha256") is not None:
+                    expected_q_sha = hashlib.sha256(plan.original_query.encode("utf-8")).hexdigest()
+                    if str(record["query_text_sha256"]) != expected_q_sha:
+                        raise ValueError(
+                            f"Invalid frozen LLM plan at {cache_path}:{line_no}: query_text_sha256 mismatch"
+                        )
+                try:
+                    validate("query_graph", plan.query_graph.to_dict())
+                except Exception as exc:
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}: {exc}") from exc
+                self._ram_cache[key] = plan
+        if not self._ram_cache:
             raise ValueError(f"No validated LLM plans for {model_revision} in {cache_path}")
-        return decomposer
+        self._disk_loaded = True
+
+    @classmethod
+    def from_frozen_llm_cache(
+        cls,
+        cache_path: Path | str,
+        model_revision: str,
+        target_datasets: Sequence[str] | set[str] | None = None,
+    ) -> AdaptiveQueryDecomposer:
+        """Replay only validated plans from the pinned model, with rule fallback."""
+        return cls(
+            query_plan_cache=cache_path,
+            query_plan_revision=model_revision,
+            enable_disk_cache=False,
+            target_datasets=target_datasets,
+        )
 
     def _make_cache_key(self, query: str) -> str:
         nfc = unicodedata.normalize("NFC", query.strip())
@@ -1318,15 +1417,69 @@ class AdaptiveQueryDecomposer:
                 node.children = [cleaned_preds[0].id]
         return graph
 
-    def decompose(self, query: str, mode: str | None = None) -> ModalityRoutingPlan:
+    def _decompose_via_rules(
+        self,
+        norm_query: str,
+        t0: float,
+        mode: str | None = None,
+        save_short_to_cache: bool = False,
+        cache_key: str | None = None,
+    ) -> ModalityRoutingPlan:
+        """Route query deterministically through ComplexityGate short-tier or RuleBasedQueryParser fallback."""
+        decision = self.complexity_gate.classify(norm_query)
+        if decision.tier == "short" and mode != "force_llm":
+            rule_graph = self._sanitize_rule_graph(self.rule_parser.parse(norm_query), norm_query)
+            validate("query_graph", rule_graph.to_dict())
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            plan = self._build_plan_from_rule_graph(
+                rule_graph,
+                original_query=norm_query,
+                tier="short",
+                routing_mode=decision.routing_mode,
+                latency_ms=latency_ms,
+            )
+            self._stats["rule_tier_count"] += 1
+            if save_short_to_cache and cache_key is not None:
+                self._save_to_cache(cache_key, plan)
+            return plan
+
+        fb_graph = self._sanitize_rule_graph(self.rule_parser.parse(norm_query), norm_query)
+        fb_graph.parser = ParserMetadata(
+            status="fallback",
+            model_revision=self.model_revision,
+            prompt_version=self.prompt_version,
+            confidence_kind="uncalibrated",
+        )
+        validate("query_graph", fb_graph.to_dict())
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        self._stats["fallback_count"] += 1
+        return self._build_plan_from_rule_graph(
+            fb_graph,
+            original_query=norm_query,
+            tier=decision.tier,
+            routing_mode="fallback",
+            latency_ms=latency_ms,
+        )
+
+    def decompose(self, query: str, mode: str | None = None, dataset: str | None = None) -> ModalityRoutingPlan:
         """Decompose query into validated QueryGraph v1 + ModalityRoutingPlan with <1ms fallback."""
         t0 = time.perf_counter()
+        self._stats["total_queries"] += 1
         norm_query = unicodedata.normalize("NFC", query.strip())
-        cache_key = self._make_cache_key(norm_query)
 
+        if self.rules_only:
+            self._stats["rules_only_count"] += 1
+            return self._decompose_via_rules(norm_query, t0=t0, mode=mode)
+
+        if self.target_datasets is not None and dataset is not None and dataset not in self.target_datasets:
+            self._stats["non_target_dataset_count"] += 1
+            return self._decompose_via_rules(norm_query, t0=t0, mode=mode)
+
+        cache_key = self._make_cache_key(norm_query)
         self._load_disk_cache()
         if cache_key in self._ram_cache:
             cached = self._ram_cache[cache_key]
+            self._stats["cache_hits"] += 1
             return ModalityRoutingPlan(
                 original_query=cached.original_query,
                 query_length_tier=cached.query_length_tier,
@@ -1348,54 +1501,53 @@ class AdaptiveQueryDecomposer:
 
         # Short query fast paths (< 1 ms)
         if decision.tier == "short" and mode != "force_llm":
-            rule_graph = self._sanitize_rule_graph(self.rule_parser.parse(norm_query), norm_query)
-            validate("query_graph", rule_graph.to_dict())
-            latency_ms = (time.perf_counter() - t0) * 1000.0
-            plan = self._build_plan_from_rule_graph(
-                rule_graph,
-                original_query=norm_query,
-                tier="short",
-                routing_mode=decision.routing_mode,
-                latency_ms=latency_ms,
+            return self._decompose_via_rules(
+                norm_query,
+                t0=t0,
+                mode=mode,
+                save_short_to_cache=(self.frozen_cache_path is None),
+                cache_key=cache_key,
             )
-            self._save_to_cache(cache_key, plan)
-            return plan
+
+        self._stats["cache_misses"] += 1
 
         # Medium / Long query -> Small-LLM Compact Wire JSON + 5-step Validator
-        try:
-            raw_resp = self.llm_backend.generate(norm_query)
-            if raw_resp is not None:
-                json_str = _extract_json_block(raw_resp)
-                data = json.loads(json_str)
-                graph, plan = self.validator.validate_and_expand(
-                    data,
-                    original_query=norm_query,
-                    query_length_tier=decision.tier,
-                    routing_mode="llm_compact",
-                    model_revision=self.model_revision,
-                    prompt_version=self.prompt_version,
-                )
-                latency_ms = (time.perf_counter() - t0) * 1000.0
-                final_plan = ModalityRoutingPlan(
-                    original_query=plan.original_query,
-                    query_length_tier=plan.query_length_tier,
-                    visual_clauses=plan.visual_clauses,
-                    ocr_phrases=plan.ocr_phrases,
-                    asr_phrases=plan.asr_phrases,
-                    object_requirements=plan.object_requirements,
-                    has_explicit_ocr_intent=plan.has_explicit_ocr_intent,
-                    has_explicit_asr_intent=plan.has_explicit_asr_intent,
-                    has_spatial_constraints=plan.has_spatial_constraints,
-                    has_temporal_constraints=plan.has_temporal_constraints,
-                    query_graph=graph,
-                    routing_mode="llm_compact",
-                    cache_hit=False,
-                    decomposer_latency_ms=latency_ms,
-                )
-                self._save_to_cache(cache_key, final_plan)
-                return final_plan
-        except Exception:
-            pass
+        if self.frozen_cache_path is None:
+            try:
+                raw_resp = self.llm_backend.generate(norm_query)
+                if raw_resp is not None:
+                    json_str = _extract_json_block(raw_resp)
+                    data = json.loads(json_str)
+                    graph, plan = self.validator.validate_and_expand(
+                        data,
+                        original_query=norm_query,
+                        query_length_tier=decision.tier,
+                        routing_mode="llm_compact",
+                        model_revision=self.model_revision,
+                        prompt_version=self.prompt_version,
+                    )
+                    latency_ms = (time.perf_counter() - t0) * 1000.0
+                    final_plan = ModalityRoutingPlan(
+                        original_query=plan.original_query,
+                        query_length_tier=plan.query_length_tier,
+                        visual_clauses=plan.visual_clauses,
+                        ocr_phrases=plan.ocr_phrases,
+                        asr_phrases=plan.asr_phrases,
+                        object_requirements=plan.object_requirements,
+                        has_explicit_ocr_intent=plan.has_explicit_ocr_intent,
+                        has_explicit_asr_intent=plan.has_explicit_asr_intent,
+                        has_spatial_constraints=plan.has_spatial_constraints,
+                        has_temporal_constraints=plan.has_temporal_constraints,
+                        query_graph=graph,
+                        routing_mode="llm_compact",
+                        cache_hit=False,
+                        decomposer_latency_ms=latency_ms,
+                    )
+                    self._stats["llm_live_calls"] += 1
+                    self._save_to_cache(cache_key, final_plan)
+                    return final_plan
+            except Exception:
+                pass
 
         # Deterministic <1ms RuleBasedQueryParser fallback
         fb_graph = self._sanitize_rule_graph(self.rule_parser.parse(norm_query), norm_query)
@@ -1408,6 +1560,7 @@ class AdaptiveQueryDecomposer:
         )
         validate("query_graph", fb_graph.to_dict())
         latency_ms = (time.perf_counter() - t0) * 1000.0
+        self._stats["fallback_count"] += 1
         return self._build_plan_from_rule_graph(
             fb_graph,
             original_query=norm_query,

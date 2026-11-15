@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from typing import Any, Sequence
@@ -64,6 +65,58 @@ def sha256_text(text: str) -> str:
 def compute_gallery_sha256(indexed_videos: Sequence[str] | set[str]) -> str:
     """Compute canonical SHA-256 over sorted indexed video IDs."""
     payload = json.dumps(sorted(str(v) for v in indexed_videos), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _get_git_commit() -> str | None:
+    """Return full HEAD git commit hash if available, else None."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_REPO_ROOT),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def _hash_directory_summary(root: Path, file_hashes: dict[str, str | None]) -> str | None:
+    """Compute a canonical SHA-256 over relative paths and digests for a directory or file."""
+    if not file_hashes:
+        return None
+    normalized = []
+    for path_str, digest in file_hashes.items():
+        p = Path(path_str)
+        try:
+            rel = str(p.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            rel = p.name
+        normalized.append([rel, digest])
+    normalized.sort(key=lambda item: item[0])
+    payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def compute_gallery_fingerprint(
+    *,
+    gallery_sha256: str,
+    indexed_video_count: int,
+    db_sha256: str | None,
+    faiss_sha256: str | None,
+) -> str:
+    """Compute canonical gallery snapshot fingerprint across video IDs and index files."""
+    payload = json.dumps(
+        {
+            "gallery_sha256": gallery_sha256,
+            "indexed_video_count": int(indexed_video_count),
+            "db_sha256": db_sha256,
+            "faiss_sha256": faiss_sha256,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -316,6 +369,7 @@ def capture_pools(
     model_dir: Path = Path("models/siglip2"),
     ltr_model_path: Path | None = Path("models/ranking/videntra_ltr_v1.json"),
     device: str = "cpu",
+    seed: int = 20261115,
     temporal_rerank_lambda: float = 0.0,
     allow_insample_eval: bool = False,
     overwrite_eval_artifacts: bool = False,
@@ -518,6 +572,17 @@ def capture_pools(
                 split_lock_path.unlink()
             else:
                 raise FileExistsError(f"Split lock already exists: {split_lock_path} (pass --overwrite-eval-artifacts to replace)")
+        db_sha256 = sha256_file(db_path) if db_path.is_file() else None
+        faiss_sha256 = sha256_file(faiss_path) if faiss_path.is_file() else None
+        siglip2_files_sha256 = hash_paths([model_dir]) if model_dir.exists() else {}
+        siglip2_weights_sha256 = _hash_directory_summary(model_dir, siglip2_files_sha256)
+        gallery_fingerprint = compute_gallery_fingerprint(
+            gallery_sha256=gallery_sha256,
+            indexed_video_count=len(indexed_videos),
+            db_sha256=db_sha256,
+            faiss_sha256=faiss_sha256,
+        )
+        labels_sha256 = sha256_file(labels_path)
         freeze_split(
             split_lock_records,
             split_lock_path,
@@ -525,32 +590,86 @@ def capture_pools(
                 "split": split,
                 "query_count": len(query_rows),
                 "gallery_sha256": gallery_sha256,
-                "labels_sha256": sha256_file(labels_path),
+                "gallery_fingerprint": gallery_fingerprint,
+                "labels_sha256": labels_sha256,
             },
         )
         if not verify_split_lock(split_lock_path):
             raise RuntimeError(f"Split lock verification failed: {split_lock_path}")
+        split_lock_sha256 = sha256_file(split_lock_path)
+
+        retrieval_config = {
+            "ablation_config": "A5",
+            "mode": "accurate",
+            "ranking_mode": "diverse_video",
+            "top_k": 10,
+            "max_k": max_k,
+            "branch_top_n": branch_top_n,
+            "enable_spatial_patches": True,
+            "enable_vlm_caption_lexical": True,
+            "enable_vlm_caption_dense": True,
+            "enable_temporal_rerank": bool(float(temporal_rerank_lambda) > 0.0),
+            "temporal_rerank_lambda": float(temporal_rerank_lambda),
+        }
+        git_commit = _get_git_commit()
+        q_plan_cache_sha = sha256_file(query_plan_cache) if query_plan_cache else None
+        run_fingerprint_payload = {
+            "git_commit": git_commit,
+            "split": split,
+            "db_sha256": db_sha256,
+            "faiss_sha256": faiss_sha256,
+            "siglip2_weights_sha256": siglip2_weights_sha256,
+            "ltr_model_sha256": gate.get("ltr_model_sha256"),
+            "gallery_fingerprint": gallery_fingerprint,
+            "split_lock_sha256": split_lock_sha256,
+            "retrieval_config": retrieval_config,
+            "seed": int(seed),
+            "device": device,
+            "query_plan_mode": query_plan_source,
+            "query_plan_revision": query_plan_revision,
+            "query_plan_cache_sha256": q_plan_cache_sha,
+        }
+        run_fingerprint = hashlib.sha256(
+            json.dumps(run_fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
         receipt = {
             "schema_version": 1,
+            "git_commit": git_commit,
             "split": split,
             "max_k": max_k,
             "query_count": len(query_rows),
             "indexed_video_count": len(indexed_videos),
             "gallery_sha256": gallery_sha256,
+            "gallery_fingerprint": gallery_fingerprint,
+            "db_path": str(db_path),
+            "db_sha256": db_sha256,
+            "faiss_path": str(faiss_path),
+            "faiss_sha256": faiss_sha256,
+            "model_dir": str(model_dir),
+            "siglip2_weights_sha256": siglip2_weights_sha256,
+            "siglip2_files_sha256": siglip2_files_sha256,
             "ltr_model_path": str(ltr_model_path) if ltr_model_path else None,
             "ltr_model_sha256": gate.get("ltr_model_sha256"),
             "eval_mode": gate.get("eval_mode"),
             "oof_applied_count": oof_applied,
             "oof_fallback_count": oof_fallback,
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
+            "retrieval_config": retrieval_config,
+            "seed": int(seed),
+            "device": device,
             "query_plan_source": query_plan_source,
+            "query_plan_mode": query_plan_source,
             "query_plan_revision": query_plan_revision,
-            "query_plan_cache_sha256": sha256_file(query_plan_cache) if query_plan_cache else None,
+            "query_plan_cache_sha256": q_plan_cache_sha,
+            "query_decomposer_stats": query_decomposer.get_stats() if hasattr(query_decomposer, "get_stats") else None,
+            "run_fingerprint": run_fingerprint,
             "elapsed_seconds": round(time.perf_counter() - t_start, 2),
             "artifact_sha256": hash_paths([queries_path, a5_path, clip_path]),
             "labels_path": str(labels_path),
+            "labels_sha256": labels_sha256,
             "split_lock_path": str(split_lock_path),
+            "split_lock_sha256": split_lock_sha256,
             "clip_branch_missing_feature_videos": len(clip_scorer.missing_feature_videos),
         }
         receipt_path = out_dir / "capture_receipt.json"
@@ -574,6 +693,7 @@ def main() -> None:
     parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
     parser.add_argument("--no-ltr", action="store_true")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--seed", type=int, default=20261115)
     parser.add_argument("--temporal-rerank-lambda", type=float, default=0.0)
     parser.add_argument("--allow-insample-eval", action="store_true")
     parser.add_argument("--overwrite-eval-artifacts", action="store_true")
@@ -594,6 +714,7 @@ def main() -> None:
         model_dir=args.model_dir,
         ltr_model_path=None if args.no_ltr else args.ltr_model_path,
         device=args.device,
+        seed=args.seed,
         temporal_rerank_lambda=args.temporal_rerank_lambda,
         allow_insample_eval=args.allow_insample_eval,
         overwrite_eval_artifacts=args.overwrite_eval_artifacts,
