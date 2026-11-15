@@ -12,7 +12,7 @@
     3. Bảng `fts_vlm_caption` và `faiss_e5_caption_384.bin` từ `P8-5` ([ingest_kaggle_offline_results.py](../scripts/ingest_kaggle_offline_results.py)) cần được nối vào Stage 3 của `unified_pipeline.py`.
 - **Dọn dẹp file tạm & Cập nhật tài liệu:**
   - Xóa các file thử nghiệm tạm thời do đợt sweep tạo ra trong `work/` (`work/analyze_ltr_sweep.py`, `work/ltr_dev859_temp.jsonl`, `work/ltr_temp_model.json`) cùng toàn bộ thư mục `__pycache__` và `.pytest_cache`.
-  - Cập nhật toàn diện [README.md](../README.md) với kiến trúc Phase 8 (`22d Synergistic-CrossLTR`, `NMS-MultiPeak`, các lệnh chạy Kaggle `P8-4`/`P8-5` và bảng kết quả 3 tập).
+  - Viết lại [README.md](../README.md) theo đúng cấu trúc 7 phần chuẩn học thuật & kỹ thuật (Giới thiệu & Điểm mới đột phá $\to$ Pipeline 6 tầng $\to$ 5 Bộ Datasets & Giao thức chia 80/20 $\to$ Hướng dẫn cài đặt, tạo vector embedding Local/Kaggle & huấn luyện LTR $\to$ Cách chạy CLI/Web UI/SDK $\to$ Kết quả Benchmark & Ablation `A0..A5` $\to$ Khẳng định tính mới & Hướng nghiên cứu) và push lên GitHub.
 
 ---
 
