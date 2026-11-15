@@ -1,4 +1,4 @@
-# VIDENTRA — Hệ Thống Truy Xuất Video Đa Phương Thức & Định Vị Khoảnh Khắc Chính Xác Cao
+﻿# VIDENTRA — Hệ Thống Truy Xuất Video Đa Phương Thức & Định Vị Khoảnh Khắc Chính Xác Cao
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-864D%20Subspace%20%2B%20Small--LLM%20%2B%2022D%20CrossLTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
@@ -32,7 +32,7 @@ Hầu hết các hệ thống tìm kiếm video hiện nay (như các hệ thố
 | :--- | :--- |
 | **1. Vector nhúng thị giác thuần túy (`512d`/`768d`) bị mù số lượng & vị trí không gian** | **Không gian Vector Mở rộng Trực giao 864 Chiều (`864d Augmented Subspace`)**: Ghép nối có kiểm soát năng lượng giữa ngữ nghĩa toàn cục `SigLIP2` (`768d`) + biểu đồ 80 lớp đối tượng `YOLOv11n` có trọng số IDF (`80d`) + lưới bố cục không gian $3\times 3$ (`16d`). |
 | **2. Đưa nguyên câu truy vấn dài vào mọi nhánh gây nhiễu (Cross-Modal Pollution)** | **Phân rã & Định tuyến Truy vấn bằng Small-LLM (`Qwen2.5-1.5B-Instruct` GGUF)**: Tự động bóc tách câu truy vấn thành các phần riêng biệt cho `Visual`, `OCR`, `ASR`, `Spatial` và thứ tự thời gian (`before`/`after`/`then`), kèm cơ chế cache JSONL và fallback `< 1ms`. |
-| **3. Nhận diện chữ (OCR) & lời thoại (ASR) đơn ngữ thường sai dấu tiếng Việt** | **Định tuyến Chuyên gia Song ngữ Anh – Việt (`PaddleOCR` + `VietOCR` & `Faster-Whisper` + `PhoWhisper-small`)**: Kết hợp `PaddleOCR`/`RapidOCR` với **`VietOCR` (`vgg_transformer`)** qua bộ định tuyến thích ứng `OCRRouter`, và kết hợp `Faster-Whisper` với **`PhoWhisper-small` (`vinai/PhoWhisper-small`)** cho tiếng Việt, kèm chuẩn hóa kép có dấu / không dấu (`fold_diacritics`). |
+| **3. OCR & ASR đơn ngữ thường sai dấu tiếng Việt** | **Kiến trúc chuyên gia song ngữ (đang hoàn thiện)**: dữ liệu hiện tại được trích bằng `RapidOCR` (ONNX) + `Faster-Whisper`; các thành phần `VietOCR` (`vgg_transformer.pth`) và `PhoWhisper-small` đã có checkpoint/khung định tuyến `OCRRouter` nhưng **chưa được nối vào luồng ingest chính** (xem báo cáo audit, mục B2). Văn bản được chuẩn hóa kép có dấu / không dấu (`fold_diacritics`). |
 | **4. Tính thời gian theo công thức xấp xỉ `frame_idx / FPS` (sai lệch nặng trên video VFR)** | **Sổ cái Thời gian Giải mã Chính xác (`Presentation-Order PTS Ledger`)**: Mọi khung hình và bằng chứng OCR/ASR đều được neo trực tiếp vào `PTS / time_base` thực tế từ luồng giải mã PyAV, không dùng phép nhân FPS xấp xỉ. |
 | **5. Hợp nhất điểm bằng trọng số cộng tay tĩnh (dễ bị nhiễu lời thoại ASR cướp hạng 1)** | **Bộ Xếp Hạng Học Máy 22 Chiều Có Ràng Buộc Đơn Điệu (`Synergistic-CrossLTR 22d`) + Cổng Chặn Nhiễu**: Học trọng số bằng 5-Fold GroupKFold Cross-Validation kết hợp đặc trưng tương tác nhân tính (`vis_lexical_synergy`) và cổng kiểm chứng hình ảnh, đưa tỷ lệ `Pure-ASR False Positive Top-1 = 0`. |
 | **6. So khớp từng mệnh đề độc lập, bỏ qua thứ tự trước – sau của hành động** | **Đối sánh Tập Mệnh đề `MV-SetSim` & Quy hoạch động `SE-Viterbi`**: Vừa ép ứng viên phải thỏa mãn mệnh đề yếu nhất (`subclause_weakest_link`), vừa căn chỉnh chuỗi sự kiện theo đúng chiều mũi tên thời gian. |
@@ -64,8 +64,8 @@ flowchart TD
 2. **Stage 2 — Mã hóa Đa Biểu diễn 864 Chiều & Truy xuất Thị giác (`864d Visual Retrieval & MV-SetSim`)**:
    - Mã hóa truy vấn bằng cơ chế Dual-Prompt Ensemble (`0.75 * raw_query + 0.25 * frame_prompt`) qua `SigLIP2` (`768d`), sau đó ghép nối trực giao với vector đối tượng `COCO-IDF` (`80d`) và vector bố cục lưới $3\times 3$ (`16d`) để tạo thành vector `864d`.
    - Truy vấn chỉ mục `FAISS IndexFlatIP` (`864d`) kết hợp tính điểm bao phủ mệnh đề **`MV-SetSim`** (`subclause_weakest_link`) và căn chỉnh thứ tự sự kiện bằng quy hoạch động **`SE-Viterbi`** (`viterbi_subevent_localization`).
-3. **Stage 3 — Truy xuất Từ vựng Song ngữ (`PaddleOCR + VietOCR` / `Faster-Whisper + PhoWhisper`) & Ngữ nghĩa Dày đặc (`Dense E5`)**:
-   - Bằng chứng chữ trên màn hình được trích xuất qua bộ định tuyến `OCRRouter` ([src/videntra/ocr/routing.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ocr/routing.py)) kết hợp **`PaddleOCR`/`RapidOCR`** với mô hình chuyên gia tiếng Việt **`VietOCR` (`vgg_transformer`)**; bằng chứng lời thoại được nhận dạng qua **`Faster-Whisper`** kết hợp chuyên gia tiếng Việt **`PhoWhisper-small` (`vinai/PhoWhisper-small`)** ([src/videntra/asr/transcription.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/asr/transcription.py)).
+3. **Stage 3 — Truy xuất Từ vựng (`RapidOCR` / `Faster-Whisper` → `FTS5`) & Ngữ nghĩa Dày đặc (`Dense E5`)**:
+   - Bằng chứng chữ trên màn hình hiện được trích bằng `RapidOCR` ([scripts/update_real_ocr.py](scripts/update_real_ocr.py)) và lời thoại bằng `Faster-Whisper` ([scripts/update_real_asr.py](scripts/update_real_asr.py)). Khung chuyên gia tiếng Việt (`OCRRouter` + `VietOCR`, `PhoWhisperTranscriber`) nằm trong `src/videntra/ocr` và `src/videntra/asr`, nhưng `VietOCRRecognizer`/`GeneralOCRRecognizer` hiện là **stub trả chuỗi cố định** và chưa được dùng cho dữ liệu benchmark.
    - Tìm kiếm độc lập trên bảng `ocr_fts` và `asr_fts` trong `SQLite FTS5` (lưu song song cả văn bản nguyên dấu và văn bản gập dấu `fold_diacritics`) với bộ lọc độ đặc hiệu từ khóa (`high_spec_tokens`), gốc từ hình thái học và ghép cặp từ liền kề (`compound_tokens` chống lỗi dính chữ OCR).
    - Nếu truy vấn có ý định tìm chữ/thoại (`has_lexical_modality_intent`) nhưng kết quả FTS5 thưa (`< 5` ứng viên do lỗi chính tả OCR hoặc từ đồng nghĩa), hệ thống tự động kích hoạt nhánh **`Dense E5` (`intfloat/multilingual-e5-small` 384d FAISS)**.
 4. **Stage 4 — Hợp nhất RRF Thích ứng & Gom cụm Thời gian (`Cross-Modal RRF & Temporal Clustering`)**:
@@ -118,7 +118,7 @@ pip install -r requirements.txt
 pip install -e .
 
 # 4. Kiểm tra trạng thái đường dẫn và tài nguyên hệ thống
-.\.venv\Scripts\python.exe -m videntra check-paths
+.\.venv\Scripts\python.exe scripts/verify_asset_roots.py
 ```
 
 ---
@@ -128,8 +128,8 @@ pip install -e .
 Hệ thống sử dụng các mô hình cục bộ nằm trong thư mục `models/` (đã được cấu hình tự động):
 - `models/siglip2/`: Trọng số mô hình thị giác – ngôn ngữ `google/siglip2-base-patch16-224` (`768d`).
 - `models/llm/`: Trọng số mô hình phân rã truy vấn `qwen2.5-1.5b-instruct-q4_k_m.gguf` (chạy trên CPU/GPU qua `llama-cpp-python`) hoặc thư mục HuggingFace `qwen2.5-1.5b-instruct/`.
-- `models/ocr/`: Trọng số nhận diện chữ trên màn hình gồm **`VietOCR` (`models/ocr/vietocr/vgg_transformer.pth`)** chuyên biệt cho tiếng Việt có dấu và **`PaddleOCR` (`models/ocr/paddleocr_en/`)** cho phát hiện hộp chữ & nhận diện đa ngôn ngữ (được điều phối tự động qua `OCRRouter`).
-- `models/asr/`: Trọng số nhận diện lời thoại gồm **`PhoWhisper-small` (`models/asr/phowhisper_small/` — `vinai/PhoWhisper-small`)** chuyên biệt cho tiếng Việt (`PhoWhisperTranscriber`) và **`Faster-Whisper` (`models/asr/faster_whisper_small.pointer.json`)** cho tiếng Anh/đa ngôn ngữ.
+- `models/ocr/`: checkpoint `vietocr/vgg_transformer.pth` và `paddleocr_en/` (hiện **chưa được nạp** bởi luồng ingest chính; dữ liệu dùng `RapidOCR`).
+- `models/asr/`: `phowhisper_small/` (dùng được qua `PhoWhisperTranscriber`, chưa nằm trong luồng ingest chính) và `faster_whisper_small.pointer.json` (đang dùng cho `update_real_asr.py`).
 - `models/detection/`: Trọng số phát hiện 80 lớp đối tượng COCO `YOLOv11n`.
 - `models/ranking/videntra_ltr_v1.json`: Trọng số bộ xếp hạng học máy 22 chiều (`LearnedRankerLTR`).
 
@@ -143,8 +143,12 @@ Hệ thống sử dụng các mô hình cục bộ nằm trong thư mục `model
   # Trích xuất keyframes từ video gốc trong data/raw/
   .\.venv\Scripts\python.exe scripts/extract_all_keyframes.py
 
-  # Chạy bộ xử lý offline (SigLIP2 768d + YOLOv11n 80d + Spatial 16d -> 864d FAISS + OCR/ASR SQLite)
-  .\.venv\Scripts\python.exe scripts/offline_processor.py
+  # Chỉ mục thị giác thật được tạo bằng worker SigLIP2 trên Kaggle (xem bước Kaggle bên dưới).
+  # CẢNH BÁO: KHÔNG chạy scripts/offline_processor.py trên data/processed hiện có: script này dùng vector
+  # NGẪU NHIÊN làm placeholder và ghi đè data/processed/faiss_index.bin (xem báo cáo audit, lỗi B1).
+  # OCR/ASR thật: scripts/update_real_ocr.py (RapidOCR) và scripts/update_real_asr.py (Faster-Whisper).
+  .\.venv\Scripts\python.exe scripts/update_real_ocr.py
+  .\.venv\Scripts\python.exe scripts/update_real_asr.py --model-size small
   ```
 
 - **Đóng gói đưa lên Kaggle Dual-T4 GPU để trích xuất embedding nặng (`spatial_patches_fp16.npy`, `Florence-2` VLM Captions & `SigLIP2`):**
@@ -199,7 +203,7 @@ $env:VIDENTRA_LLM_DEADLINE_MS="30000"
 ### 5.1. Chạy tìm kiếm trực tiếp qua dòng lệnh (CLI)
 
 ```powershell
-.\.venv\Scripts\python.exe -m videntra search `
+.\.venv\Scripts\python.exe -m videntra search --backend unified `
   --query "A woman in a white blouse speaks to the camera while a news banner appears at the bottom" `
   --top-k 5
 ```
@@ -208,7 +212,7 @@ Nếu muốn bật suy luận trực tiếp mô hình `Qwen2.5-1.5B-Instruct` (`
 ```powershell
 $env:VIDENTRA_LLM_ENABLED="1"
 $env:VIDENTRA_LLM_DEADLINE_MS="15000"
-.\.venv\Scripts\python.exe -m videntra search `
+.\.venv\Scripts\python.exe -m videntra search --backend unified `
   --query "First a chef chops vegetables on a wooden board, then he pours them into a boiling pot" `
   --top-k 5
 ```
@@ -220,10 +224,10 @@ $env:VIDENTRA_LLM_DEADLINE_MS="15000"
 Khởi động máy chủ web để sử dụng giao diện tìm kiếm trực quan trên trình duyệt (cho phép nhập câu truy vấn, xem phân rã tín hiệu `Visual`/`OCR`/`ASR`, xem điểm xếp hạng và phát video ngay tại khoảnh khắc `[start_sec, end_sec]`):
 
 ```powershell
-.\.venv\Scripts\uvicorn.exe videntra.api.app:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m videntra serve --backend unified --host 127.0.0.1 --port 8000
 ```
 - **Giao diện Web UI Inspector:** Mở trình duyệt tại **`http://127.0.0.1:8000/`**
-- **Tài liệu REST API (Swagger UI):** Mở tại **`http://127.0.0.1:8000/docs`**
+- **Tài liệu REST API (Swagger UI):** Mở tại **`http://127.0.0.1:8000/docs` (endpoint tìm kiếm: `POST /v1/search`)**
 
 ---
 
@@ -238,8 +242,8 @@ pipeline = UnifiedMultimodalSearchPipeline()
 query = 'A man in a dark suit talks in an interview after a title card reading "BREAKING NEWS"'
 
 # Truy xuất Top-5 khoảnh khắc video phù hợp nhất kèm metadata
-response = pipeline.search_with_metadata(query=query, top_k=5)
-for rank, moment in enumerate(response.moments, start=1):
+response = pipeline.search_with_metadata(snapshot_id="corpus_current", query=query, top_k=5)
+for rank, moment in enumerate(response["moments"], start=1):
     print(
         f"Hạng #{rank} | Video: {moment.video_id} "
         f"| Khoảnh khắc: [{moment.moment_start_seconds:.1f}s -> {moment.moment_end_seconds:.1f}s] "
@@ -313,3 +317,4 @@ Dự án đã chuẩn bị sẵn sàng toàn bộ nền tảng mã nguồn cho *
 2. **Tối ưu hóa Phần dư Trực tiếp cho Bộ Xếp hạng Học máy (`Base-Anchored Residual Pairwise Logistic LTR`)**: Huấn luyện `LearnedRankerLTR` trực tiếp trên phần dư quanh điểm cơ sở `video_score` để tập trung 100% năng lực phân lớp vào các cặp ứng viên nhập nhằng sát nút (`Hard Negative Pairs`).
 3. **Căn chỉnh Chuỗi Hành động bằng Vận chuyển Tối ưu Có Ràng buộc Thời gian (`Temporal Sinkhorn Optimal Transport — T-SOT`)**: Tìm ma trận ghép cặp tối ưu toàn cục giữa tập mệnh đề hành động và tập khung hình theo thứ tự nhân quả thời gian.
 4. **Hợp nhất Đa Khung hình có Trọng số Chú ý Không Tham số (`Parameter-Free Multi-Frame Temporal Attention Pooler`)**: Khai thác tính chất lồi trên mặt cầu đơn vị $\mathbb{S}^{767}$ để phân biệt các hành động động học kéo dài qua nhiều khung hình với các khung hình tĩnh trùng lặp ngẫu nhiên (`F4_FINE_GRAINED_VISUAL_CONFUSION`).
+

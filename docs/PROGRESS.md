@@ -1,5 +1,9 @@
-# Tiến độ triển khai VIDENTRA
+﻿# Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Audit code `8b4ac80` ([VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md](../VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md))
+
+- Phát hiện (chưa sửa code, chỉ ghi hướng dẫn): `offline_processor.py` dùng vector ngẫu nhiên và ghi đè `faiss_index.bin` (B1); `VietOCRRecognizer`/`GeneralOCRRecognizer` là stub, `PhoWhisperTranscriber` bịa transcript khi lỗi, dữ liệu thật dùng RapidOCR + Faster-Whisper (B2); T-SOT ≈ trung bình toàn video (B3); attention pooler thưởng khung rời rạc (B4); `dev_150` nằm trong tập train LTR (B5); E5 caption bị chặn bởi cổng lexical (B6); Phase 7–8 thấp hơn Phase 6 trên cả 3 tập, latency +47% (B7); `benchmark/` còn là Phase 6 (B9).
+- Sửa [README.md](../README.md): lệnh CLI/serve/API/SDK đúng với code, gỡ hướng dẫn chạy `offline_processor.py`, ghi đúng trạng thái VietOCR/PhoWhisper. Chưa chạy lại pytest/benchmark trong lượt này.
 ## 15/11/2026 — Vá 3 Điểm Kiểm Toán Phần II (`f80740b`), Huấn luyện Phần Dư Trực Tiếp LTR, Nối `P8-5` VLM Captions, `T-SOT` & `Temporal Attention Pooler`
 
 - **Vá 3 điểm kỹ thuật từ [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md):**
@@ -1454,3 +1458,4 @@ Theo kế hoạch tại `VIDENTRA_BENCHMARK_REVIEW_AND_NDCG_UPGRADE_PLAN.md` qua
     - **Moment Hit@1 ($t\text{IoU} \ge 0.5$):** **72.73%**, **Moment nDCG@5:** **0.5303**.
     - **Failure Taxonomy (`dev_150`):** `PASS`: 90, `F4_FINE_GRAINED_VISUAL_CONFUSION`: 27 (giảm từ 28), `F1_VISUAL_CANDIDATE_MISS`: 22, `F2_LEXICAL_DISTRACTOR_OVERTHROW`: 8, `F5_BOUNDARY_LOCALIZATION_DRIFT`: 3.
   - Giới hạn: kết quả `dev_full_859` / `heldout_test_201` đầy đủ và phép đo trên phần cứng đích NVIDIA RTX 3060 6GB VRAM chưa chạy lại trong lượt nâng cấp này.
+
