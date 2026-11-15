@@ -1,5 +1,13 @@
 # Tiến độ triển khai VIDENTRA
 
+## Tái kiểm bốn bản sửa tại commit `a710e37`
+
+- Giả lập CUDA xác nhận mặc định tắt LLM và `VIDENTRA_LLM_ENABLED=1` bật được. Tạo cache fixture qua exporter rồi xác nhận hit với cả `extractive-v2` và `lora-sft-v1`. Kiểm receipt từ chối cache bị sửa một byte.
+- Chạy lại evaluator trên bản sao sửa target và xác nhận bị từ chối do `labels_sha256 mismatch`. Manifest thiếu split bị từ chối. Đối chiếu lại replay K=20 bằng labels gốc tái lập 312/809 (A5 rules) và 252/809 (Qwen `compact-v1`), delta −7,42 điểm phần trăm, 16 thắng và 76 thua.
+- Validator đã chặn ví dụ `a dog flies an airplane` cho query về chó bơi. Tuy nhiên `the dog is not really swimming in the pool` vẫn cho `swimming in the pool`, và `two brown dogs are swimming in the pool` vẫn cho `dogs are swimming in the pool`. Kiểm tra token ngay trước span bỏ sót ràng buộc khi có trạng từ hoặc tính từ xen giữa. `visual_clauses` được mã hóa thành truy vấn phụ trong retrieval, nên cần thêm kiểm thử phạm vi phủ định và số lượng ở cấp cụm.
+- Kaggle CLI xác nhận notebook Qwen cũ đã hoàn thành. Receipt cache local ghi `compact-v1`, trùng với benchmark ghép cặp đã lưu. Trong các notebook Kaggle và artifacts local kiểm tra được, chưa thấy cache thật hoặc báo cáo Hit@1 của `extractive-v2`, hay adapter/kết quả LoRA. Điều kiện so Hit@1 để quyết định chạy LoRA còn chờ benchmark `extractive-v2`.
+- Full suite độc lập với `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` trên Windows đạt **576 passed, 3 warnings trong 97,86 giây**.
+
 ## 15/11/2026 — Sửa 4 lỗi Audit & Nghiệm thu Pipeline MSR-VTT (`extractive-v2`, Cache/Receipt, Split Lock, Extractive Validator)
 
 - **Xác nhận & sửa đủ 4 lỗi từ `VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md`** (qua swarm 3 workers + nghiệm thu tự động):
