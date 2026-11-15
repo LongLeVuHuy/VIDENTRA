@@ -1,5 +1,14 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Rà soát độc lập sau commit `4ed61f8`
+
+- Đối chiếu replay ghép cặp đã lưu của 809 query MSR-VTT dev. A5 rules đạt 312/809 Hit@1, Qwen `compact-v1` đạt 252/809, với 16 thắng, 76 thua và −7,42 điểm phần trăm (CI 95% từ −9,64 đến −5,19). Lát cắt 604 query có clause placeholder giảm từ 227 còn 176 hit, 205 query còn lại giảm từ 85 còn 76. Báo cáo đối chứng lưu local tại `work/experiments/msrvtt_stage2_qwen_20261115/compare_R00_Q00_k20/benchmark_report.md`.
+- Repro với phát hiện CUDA mô phỏng và `VIDENTRA_LLM_ENABLED` chưa đặt. Decomposer mặc định tự bật backend live với prompt `compact-v1`. Việc benchmark dùng `--rules-only` chưa đưa mặc định này sang CLI/API chạy trên máy có CUDA và model local phù hợp.
+- Repro cache exporter tạo plan hợp lệ với `lora-sft-v1`, nhưng loader mà CLI capture sử dụng ghim mặc định `compact-v1` và từ chối với `prompt_version mismatch`. Cần đưa prompt version vào normal entry point và receipt để đối chứng được `extractive-v2` và LoRA.
+- Repro evaluator vẫn chấm khi đổi một target trong bản sao labels cùng split lock. Điểm baseline thay từ 312/809 thành 313/809. Bộ lọc `tune` cũng nhận dòng JSONL thiếu split. Cần xác minh labels SHA-256 đã ghi trong lock và yêu cầu nhãn split tường minh khi lọc. Artifacts benchmark gốc giữ nguyên.
+- Repro validator `extractive-v2` nhận clause bịa hành động và đối tượng nếu có một từ trùng với query. Nên siết kiểm source span và chấm riêng prompt mới trước khi đo hiệu quả LoRA. Smoke tokenizer Qwen trên 400 mẫu sinh với seed mặc định ghi tối đa 580 token, trong giới hạn cấu hình trainer mặc định 768.
+- Lệnh `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` chạy trên Windows đạt **560 passed**, 3 warnings về CPU quantization, trong 103,36 giây. Kaggle CLI báo VideoPrism `CANCEL_ACKNOWLEDGED`. Lượt review đối chiếu artifacts và tái hiện lỗi bằng fixture hoặc bản sao tạm, đồng thời để ngỏ kết quả GPU LoRA, benchmark mới và kiểm tra bố cục Video Inspector trên browser.
+
 ## 15/11/2026 — Sửa Prompt `extractive-v2` & Bộ Script LoRA SFT cho Qwen2.5‑1.5B
 
 - **Tìm & sửa nguyên nhân gốc Qwen `compact-v1` sinh nhãn trừu tượng ([llm.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/query/llm.py), [test_llm_decomposer.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/query/test_llm_decomposer.py)):**
