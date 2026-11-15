@@ -33,11 +33,16 @@ LTR_FEATURE_NAMES_18D: tuple[str, ...] = (
     "llm_modality_alignment",
 )
 
-LTR_FEATURE_NAMES: tuple[str, ...] = LTR_FEATURE_NAMES_18D + (
+LTR_FEATURE_NAMES_22D: tuple[str, ...] = LTR_FEATURE_NAMES_18D + (
     "vis_lexical_synergy",
     "unverified_lexical_hazard",
     "subclause_weakest_link",
     "window_energy_concentration",
+)
+
+LTR_FEATURE_NAMES: tuple[str, ...] = LTR_FEATURE_NAMES_22D + (
+    "temporal_attention_coherence",
+    "rrf_vis_caption",
 )
 
 
@@ -232,6 +237,22 @@ def extract_ltr_features_22d(
 
     if return_dict:
         return values
+    return np.array([values[name] for name in LTR_FEATURE_NAMES_22D], dtype=np.float32)
+
+
+def extract_ltr_features_24d(
+    candidate: Mapping[str, Any],
+    z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+    *,
+    return_dict: bool = False,
+) -> np.ndarray | dict[str, float]:
+    """Extract the 24 continuous LTR features (22D + temporal_attention_coherence + rrf_vis_caption)."""
+    values = dict(extract_ltr_features_22d(candidate, z_stats=z_stats, return_dict=True))
+    values["temporal_attention_coherence"] = _safe_float(candidate.get("temporal_attention_coherence"))
+    values["rrf_vis_caption"] = _safe_float(candidate.get("rrf_vis_caption"))
+
+    if return_dict:
+        return values
     return np.array([values[name] for name in LTR_FEATURE_NAMES], dtype=np.float32)
 
 
@@ -239,10 +260,10 @@ def extract_ltr_features_batch(
     candidates: Sequence[Mapping[str, Any]],
     z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
 ) -> np.ndarray:
-    """Extract an (N, 22) float32 feature matrix for a batch of candidates."""
+    """Extract an (N, 24) float32 feature matrix for a batch of candidates."""
     if not candidates:
         return np.zeros((0, len(LTR_FEATURE_NAMES)), dtype=np.float32)
-    rows = [extract_ltr_features_22d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
+    rows = [extract_ltr_features_24d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
     return np.vstack(rows).astype(np.float32, copy=False)
 
 

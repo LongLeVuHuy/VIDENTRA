@@ -33,6 +33,12 @@ E5_REVISION = os.environ.get("VIDENTRA_E5_REVISION", "c007d7ef6fd86656326059b283
 E5_EMBEDDING_DIM = 384
 FLORENCE2_MODEL_ID = "microsoft/Florence-2-base"
 FLORENCE2_REVISION = os.environ.get("VIDENTRA_FLORENCE2_REVISION", "5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac")
+PHOWHISPER_MODEL_ID = "vinai/PhoWhisper-small"
+PHOWHISPER_REVISION = os.environ.get("VIDENTRA_PHOWHISPER_REVISION", "vinai/PhoWhisper-small@main")
+VIETOCR_MODEL_ID = "vietocr/vgg_transformer"
+VIETOCR_REVISION = os.environ.get("VIDENTRA_VIETOCR_REVISION", "vgg_transformer")
+PADDLEOCR_MODEL_ID = "paddleocr_en"
+PADDLEOCR_REVISION = os.environ.get("VIDENTRA_PADDLEOCR_REVISION", "paddleocr-en")
 ASR_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
 A5_MODEL_FILES = {
     "whisper-small/config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
@@ -737,16 +743,284 @@ def run_p85_keyframe_backfill(
     return summary
 
 
+def _sha256_file_if_exists(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_ocr_asr_extraction(
+    *,
+    keyframes_manifest: Path | None = None,
+    out_dir: Path = Path("/kaggle/working"),
+    images_dir: Path | None = None,
+    media_dir: Path | None = None,
+    ocr_backend: str = "paddleocr_en",
+    enable_vietocr: bool = True,
+    vietocr_weights: Path | None = None,
+    asr_backend: str = "phowhisper_small",
+    asr_model_dir: Path | None = None,
+    device: str | None = None,
+    dry_run: bool = False,
+    ocr_router: Any | None = None,
+    detector_fn: Any | None = None,
+    asr_transcriber: Any | None = None,
+) -> dict[str, Any]:
+    """Kaggle GPU OCR + ASR extraction mode outputting JSONL observations/segments + pinned receipt."""
+    kf_records: list[dict[str, Any]] = []
+    if keyframes_manifest is not None:
+        if not keyframes_manifest.is_file():
+            raise FileNotFoundError(f"Keyframes manifest not found: {keyframes_manifest}")
+        with keyframes_manifest.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    kf_records.append(json.loads(line))
+
+    video_files: list[Path] = []
+    if media_dir is not None:
+        if not media_dir.is_dir():
+            raise FileNotFoundError(f"Media directory not found: {media_dir}")
+        video_files = sorted(media_dir.glob("**/*.mp4"))
+
+    img_root = images_dir or (keyframes_manifest.parent / "images" if keyframes_manifest else None)
+    if dry_run:
+        return {
+            "mode": "ocr_asr",
+            "keyframes_manifest": str(keyframes_manifest) if keyframes_manifest else None,
+            "images_dir": str(img_root) if img_root else None,
+            "media_dir": str(media_dir) if media_dir else None,
+            "num_keyframes": len(kf_records),
+            "num_videos": len(video_files),
+            "ocr_backend": ocr_backend,
+            "enable_vietocr": enable_vietocr,
+            "asr_backend": asr_backend,
+            "out_dir": str(out_dir),
+            "dry_run": True,
+        }
+
+    start_time = time.time()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for out_name in ("ocr_observations.jsonl", "asr_segments.jsonl", "ocr_asr_receipt.json"):
+        if (out_dir / out_name).exists():
+            raise FileExistsError(f"Output artifact already exists: {out_dir / out_name}")
+
+    import torch
+    resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 1. OCR Extraction
+    ocr_observations: list[dict[str, Any]] = []
+    if kf_records:
+        from PIL import Image
+        from videntra.evidence.normalize import has_vietnamese_diacritics, normalize_text
+        from videntra.ocr.recognition import GeneralOCRRecognizer, VietOCRRecognizer
+        from videntra.ocr.routing import OCRRouter
+
+        if ocr_router is None:
+            general_rec = GeneralOCRRecognizer(
+                model_id="RapidOCR" if ocr_backend == "rapidocr" else PADDLEOCR_MODEL_ID,
+                use_rapidocr=(ocr_backend == "rapidocr"),
+                allow_rapidocr_fallback=True,
+                device=resolved_device,
+            )
+            general_rec._ensure_loaded()
+            viet_rec = None
+            if enable_vietocr:
+                viet_rec = VietOCRRecognizer(model_path=vietocr_weights, device=resolved_device)
+                viet_rec._ensure_loaded()
+            ocr_router = OCRRouter(
+                general_recognizer=general_rec,
+                vietnamese_recognizer=viet_rec or general_rec,
+                prefer_vietnamese=bool(viet_rec is not None),
+            )
+
+        for idx, rec in enumerate(kf_records):
+            img_file = rec.get("image_file")
+            kf_path = Path(str(rec["keyframe_path"])) if rec.get("keyframe_path") else (img_root / str(img_file))
+            if not kf_path.is_file():
+                continue
+            ts_ms = rec.get("timestamp_ms")
+            if ts_ms is None:
+                ts_ms = int(round(float(rec.get("timestamp_seconds", 0.0)) * 1000.0))
+            kf_id = str(rec.get("keyframe_id") or rec.get("sampled_frame_id") or f"kf_{idx:05d}")
+            vid_id = str(rec["video_id"])
+
+            with Image.open(kf_path) as im:
+                img_rgb = np.array(im.convert("RGB"))
+            h_im, w_im = img_rgb.shape[:2]
+
+            if detector_fn is not None:
+                det_items = detector_fn(img_rgb)
+            else:
+                from videntra.ocr.detection import OCRDetector
+                det_boxes = OCRDetector().detect(img_rgb)
+                det_items = [
+                    ((b.x1, b.y1, b.x2, b.y2), "", b.confidence)
+                    for b in det_boxes
+                ]
+
+            for b_idx, (bbox_norm, hint_txt, det_conf) in enumerate(det_items):
+                bx1, by1, bx2, by2 = bbox_norm
+                x1_px = max(0, int(round(bx1 * w_im)))
+                y1_px = max(0, int(round(by1 * h_im)))
+                x2_px = min(w_im, int(round(bx2 * w_im)))
+                y2_px = min(h_im, int(round(by2 * h_im)))
+                if x2_px <= x1_px or y2_px <= y1_px:
+                    continue
+                crop = img_rgb[y1_px:y2_px, x1_px:x2_px]
+                rec_res, _reason = ocr_router.route_and_recognize(crop, hint_text=hint_txt or None)
+                clean_txt = normalize_text(rec_res.text)
+                if not clean_txt or float(rec_res.confidence) < 0.35:
+                    continue
+                ocr_observations.append({
+                    "observation_id": f"{kf_id}__ocr_{b_idx}",
+                    "video_id": vid_id,
+                    "keyframe_id": kf_id,
+                    "timestamp_ms": int(ts_ms),
+                    "model_id": rec_res.model_id,
+                    "raw_text": clean_txt,
+                    "bbox_x1": round(float(bx1), 4),
+                    "bbox_y1": round(float(by1), 4),
+                    "bbox_x2": round(float(bx2), 4),
+                    "bbox_y2": round(float(by2), 4),
+                    "confidence": round(float(rec_res.confidence), 4),
+                    "language": "vi" if has_vietnamese_diacritics(clean_txt) else "en",
+                })
+
+    # 2. ASR Extraction
+    asr_segments: list[dict[str, Any]] = []
+    if video_files:
+        if asr_transcriber is None and asr_backend == "phowhisper_small":
+            from videntra.asr.transcription import PhoWhisperTranscriber
+            asr_transcriber = PhoWhisperTranscriber(
+                model_path=asr_model_dir,
+                device=resolved_device,
+                local_files_only=(asr_model_dir is not None),
+            )
+            asr_transcriber._ensure_loaded()
+
+        fw_model = None
+        if asr_transcriber is None and asr_backend == "faster_whisper":
+            from faster_whisper import WhisperModel
+            fw_path = str(asr_model_dir) if asr_model_dir else "small"
+            fw_model = WhisperModel(
+                fw_path,
+                device=resolved_device,
+                compute_type="float16" if resolved_device == "cuda" else "int8",
+                local_files_only=(asr_model_dir is not None),
+            )
+
+        for v_path in video_files:
+            vid_id = v_path.stem
+            if asr_transcriber is not None:
+                import av
+                resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+                chunks: list[np.ndarray] = []
+                with av.open(str(v_path)) as container:
+                    if container.streams.audio:
+                        stream = container.streams.audio[0]
+                        for frame in container.decode(stream):
+                            for out_f in resampler.resample(frame):
+                                chunks.append(out_f.to_ndarray().reshape(-1).astype(np.float32))
+                audio = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)
+                if len(audio) > 0:
+                    chunk_samples = 30 * 16000
+                    for c_idx, st_s in enumerate(range(0, len(audio), chunk_samples)):
+                        chunk = audio[st_s : st_s + chunk_samples]
+                        res = asr_transcriber.transcribe_chunk(chunk, sample_rate=16000)
+                        if getattr(res, "status", "ok") == "ok" and res.text:
+                            asr_segments.append({
+                                "segment_id": f"{vid_id}__asr_{c_idx}",
+                                "video_id": vid_id,
+                                "model_id": "phowhisper_small",
+                                "start_ms": int((st_s / 16000.0) * 1000),
+                                "end_ms": int(((st_s + len(chunk)) / 16000.0) * 1000),
+                                "raw_text": res.text,
+                                "language": res.language,
+                                "confidence": round(float(res.confidence), 4),
+                            })
+            elif fw_model is not None:
+                segs, info = fw_model.transcribe(str(v_path), beam_size=1, vad_filter=True, temperature=0.0)
+                detected_lang = getattr(info, "language", None) or "unknown"
+                for s_idx, seg in enumerate(segs):
+                    txt = seg.text.strip()
+                    if not txt:
+                        continue
+                    avg_lp = float(getattr(seg, "avg_logprob", -0.1))
+                    conf = min(1.0, max(0.0, math.exp(avg_lp))) if avg_lp <= 0 else min(1.0, avg_lp)
+                    asr_segments.append({
+                        "segment_id": f"{vid_id}__asr_{s_idx}",
+                        "video_id": vid_id,
+                        "model_id": "faster_whisper_small",
+                        "start_ms": int(seg.start * 1000),
+                        "end_ms": int(seg.end * 1000),
+                        "raw_text": txt,
+                        "language": detected_lang,
+                        "confidence": round(conf, 4),
+                    })
+
+    # Write JSONL artifacts
+    with (out_dir / "ocr_observations.jsonl").open("w", encoding="utf-8") as fh:
+        for row in ocr_observations:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    with (out_dir / "asr_segments.jsonl").open("w", encoding="utf-8") as fh:
+        for row in asr_segments:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    receipt = {
+        "status": "success",
+        "mode": "ocr_asr",
+        "device": resolved_device,
+        "ocr_models": {
+            "general": {
+                "model_id": "RapidOCR" if ocr_backend == "rapidocr" else PADDLEOCR_MODEL_ID,
+                "revision": "rapidocr-onnxruntime-1.4.4" if ocr_backend == "rapidocr" else PADDLEOCR_REVISION,
+            },
+            "vietocr": {
+                "enabled": enable_vietocr,
+                "model_id": VIETOCR_MODEL_ID if enable_vietocr else None,
+                "revision": VIETOCR_REVISION if enable_vietocr else None,
+                "weights_sha256": _sha256_file_if_exists(vietocr_weights),
+            },
+        },
+        "asr_models": {
+            "backend": asr_backend,
+            "model_id": PHOWHISPER_MODEL_ID if asr_backend == "phowhisper_small" else "Systran/faster-whisper-small",
+            "revision": PHOWHISPER_REVISION if asr_backend == "phowhisper_small" else ASR_REVISION,
+            "model_dir_sha256": _sha256_file_if_exists(asr_model_dir / "model.bin") if asr_model_dir else None,
+        },
+        "total_ocr_observations": len(ocr_observations),
+        "total_asr_segments": len(asr_segments),
+        "elapsed_seconds": round(time.time() - start_time, 2),
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    (out_dir / "ocr_asr_receipt.json").write_text(json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8")
+    return receipt
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VIDENTRA Multi-Modal Offline GPU Worker for Kaggle.")
+    parser.add_argument("--mode", choices=("full", "p85", "ocr_asr"), default=None, help="Worker execution mode.")
     parser.add_argument("--out-dir", type=Path, default=Path("/kaggle/working"))
     parser.add_argument(
         "--keyframes-manifest",
         type=Path,
         default=None,
-        help="Optional keyframes_manifest.jsonl for P8-5 keyframe backfill mode.",
+        help="Optional keyframes_manifest.jsonl for P8-5 keyframe backfill or ocr_asr mode.",
     )
     parser.add_argument("--images-dir", type=Path, default=None, help="Optional images directory for --keyframes-manifest.")
+    parser.add_argument("--media-dir", type=Path, default=None, help="Optional media directory (.mp4) for ocr_asr ASR.")
+    parser.add_argument("--ocr-backend", choices=("paddleocr_en", "rapidocr"), default="paddleocr_en")
+    parser.add_argument("--enable-vietocr", dest="enable_vietocr", action="store_true", default=True)
+    parser.add_argument("--no-enable-vietocr", dest="enable_vietocr", action="store_false")
+    parser.add_argument("--vietocr-weights", type=Path, default=None)
+    parser.add_argument("--asr-backend", choices=("phowhisper_small", "faster_whisper"), default="phowhisper_small")
+    parser.add_argument("--asr-model-dir", type=Path, default=None)
     parser.add_argument("--enable-florence2", dest="enable_florence2", action="store_true", default=True)
     parser.add_argument("--no-enable-florence2", dest="enable_florence2", action="store_false")
     parser.add_argument("--require-florence2", action="store_true", default=False)
@@ -758,7 +1032,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None):
     args = _build_parser().parse_args([] if argv is None else argv)
-    if args.keyframes_manifest is not None:
+    if args.mode == "ocr_asr":
+        res = run_ocr_asr_extraction(
+            keyframes_manifest=args.keyframes_manifest,
+            out_dir=args.out_dir,
+            images_dir=args.images_dir,
+            media_dir=args.media_dir,
+            ocr_backend=args.ocr_backend,
+            enable_vietocr=args.enable_vietocr,
+            vietocr_weights=args.vietocr_weights,
+            asr_backend=args.asr_backend,
+            asr_model_dir=args.asr_model_dir,
+            dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        return res
+    if args.mode == "p85" or (args.mode is None and args.keyframes_manifest is not None):
         res = run_p85_keyframe_backfill(
             keyframes_manifest=args.keyframes_manifest,
             out_dir=args.out_dir,

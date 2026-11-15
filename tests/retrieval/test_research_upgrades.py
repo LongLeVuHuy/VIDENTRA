@@ -507,7 +507,7 @@ def test_window_energy_concentration_local_consensus_bounded():
     orig_score_matrix = pipeline.ltr_ranker.score_matrix
 
     def _spy_score_matrix(mat):
-        captured.append({"shape": mat.shape, "win_conc": mat[:, -1].tolist()})
+        captured.append({"shape": mat.shape, "win_conc": mat[:, 21].tolist()})
         return orig_score_matrix(mat)
 
     if pipeline.ltr_ranker.is_loaded:
@@ -518,5 +518,67 @@ def test_window_energy_concentration_local_consensus_bounded():
     if captured:
         for val in captured[0]["win_conc"]:
             assert 0.0 <= val <= 1.5
+
+
+def test_b6_e5_caption_decoupled_and_b11_degraded_diagnostics(tmp_path: Path, caplog):
+    import faiss
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    # Corrupt spatial patches & caption index files trigger B11 warning + degraded diagnostics
+    (tmp_path / "spatial_patches_fp16.npy").write_text("not a valid npy", encoding="utf-8")
+    (tmp_path / "faiss_e5_caption_384.bin").write_text("not a valid faiss", encoding="utf-8")
+    (tmp_path / "e5_caption_manifest.json").write_text("[]", encoding="utf-8")
+
+    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    with caplog.at_level("WARNING"):
+        loaded = pipeline.load_optional_phase74_artifacts(tmp_path)
+    assert loaded["spatial_patches"] is False
+    assert "spatial_patches" in pipeline._degraded_channels
+    assert "e5_caption_index" in pipeline._degraded_channels
+    assert any("Failed to load" in rec.message for rec in caplog.records)
+
+    # B6: Decoupled E5 caption search runs even without lexical modality intent
+    n = 3
+    raw_768 = np.zeros((n, 768), dtype=np.float32)
+    raw_768[:, 0] = 1.0
+    aug_864 = np.zeros((n, 864), dtype=np.float32)
+    aug_864[:, 0] = 1.0
+    pipeline.all_embeddings = raw_768
+    pipeline.augmented_embeddings = aug_864
+    pipeline.keyframe_map = {
+        i: {"video_id": f"v{i}", "pts_time": float(i * 2.0), "source_frame_index": i * 60, "keyframe_path": f"k{i}.jpg"}
+        for i in range(n)
+    }
+    pipeline.video_keyframes = {
+        f"v{i}": [{"faiss_id": i, "pts_time": float(i * 2.0), "source_frame_index": i * 60}]
+        for i in range(n)
+    }
+    pipeline.video_durations = {f"v{i}": 10.0 for i in range(n)}
+    pipeline.aug_index = faiss.IndexFlatIP(864)
+    pipeline.aug_index.add(aug_864)
+    pipeline.index = faiss.IndexFlatIP(768)
+    pipeline.index.add(raw_768)
+    pipeline.encode_texts = lambda texts: np.tile(np.array([[1.0] + [0.0] * 767], dtype=np.float32), (len(texts), 1))  # type: ignore[method-assign]
+
+    cap_vec = np.zeros((1, 384), dtype=np.float32)
+    cap_vec[0, 0] = 1.0
+    cap_idx = faiss.IndexFlatIP(384)
+    cap_idx.add(cap_vec)
+    pipeline.e5_caption_index = cap_idx
+    pipeline.e5_caption_manifest = [{"video_id": "v1", "faiss_id": 1, "timestamp_ms": 2000, "caption_text": "cat on sofa"}]
+
+    e5_calls = []
+    def _mock_e5(q: str):
+        e5_calls.append(q)
+        return cap_vec[0]
+    pipeline.encode_e5_query = _mock_e5  # type: ignore[method-assign]
+
+    resp = pipeline.search_with_metadata(snapshot_id="test_b6_b11", query="cat sleeping on sofa", top_k=3, ablation_config="A5")
+    assert len(e5_calls) == 1
+    assert "degraded" in resp["diagnostics"]
+    assert "spatial_patches" in resp["diagnostics"]["degraded"]
+    ltr_v1 = resp["diagnostics"]["candidate_ltr_features"].get("v1", {})
+    assert ltr_v1.get("rrf_vis_caption", 0.0) > 0.0
+    assert "temporal_attention_coherence" in ltr_v1
 
 

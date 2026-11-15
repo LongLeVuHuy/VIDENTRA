@@ -55,7 +55,12 @@ from videntra.evaluation.evaluator import (
     compute_moment_map_range,
     compute_paired_sign_test_pvalue,
 )
-from videntra.evaluation.provenance import hash_paths, verify_hashes
+from videntra.evaluation.provenance import (
+    evaluate_provenance_gate,
+    hash_paths,
+    load_ltr_model_info,
+    verify_hashes,
+)
 
 # Force UTF-8 on Windows console
 if hasattr(sys.stdout, "reconfigure"):
@@ -298,12 +303,55 @@ def load_validation_queries(
     return queries
 
 
+def _snapshot_ltr_ranker_state(ltr_ranker: Any) -> dict[str, Any]:
+    return {
+        "is_loaded": ltr_ranker.is_loaded,
+        "model_type": ltr_ranker.model_type,
+        "weights": ltr_ranker.weights.copy(),
+        "bias": ltr_ranker.bias,
+        "feature_mean": ltr_ranker.feature_mean.copy(),
+        "feature_std": ltr_ranker.feature_std.copy(),
+        "trees": list(ltr_ranker.trees),
+    }
+
+
+def _restore_ltr_ranker_state(ltr_ranker: Any, state: dict[str, Any]) -> None:
+    ltr_ranker.is_loaded = state["is_loaded"]
+    ltr_ranker.model_type = state["model_type"]
+    ltr_ranker.weights = state["weights"].copy()
+    ltr_ranker.bias = state["bias"]
+    ltr_ranker.feature_mean = state["feature_mean"].copy()
+    ltr_ranker.feature_std = state["feature_std"].copy()
+    ltr_ranker.trees = list(state["trees"])
+
+
+def _apply_ltr_fold_payload(ltr_ranker: Any, fold_payload: dict[str, Any]) -> None:
+    if "model_type" in fold_payload:
+        ltr_ranker.model_type = str(fold_payload["model_type"]).lower()
+    elif "trees" in fold_payload:
+        ltr_ranker.model_type = "tree_ensemble"
+    elif "weights" in fold_payload:
+        ltr_ranker.model_type = "pairwise_logistic"
+    if "weights" in fold_payload:
+        ltr_ranker.weights = np.asarray(fold_payload["weights"], dtype=np.float64)
+    if "bias" in fold_payload:
+        ltr_ranker.bias = float(fold_payload["bias"])
+    if "feature_mean" in fold_payload:
+        ltr_ranker.feature_mean = np.asarray(fold_payload["feature_mean"], dtype=np.float64)
+    if "feature_std" in fold_payload:
+        ltr_ranker.feature_std = np.asarray(fold_payload["feature_std"], dtype=np.float64)
+    if "trees" in fold_payload:
+        ltr_ranker.trees = list(fold_payload["trees"])
+    ltr_ranker.is_loaded = True
+
+
 def evaluate_query_set(
     runner: MultimodalBenchmarkRunner,
     queries: list[dict[str, Any]],
     split_label: str = "dev_150",
     ablation_config: str = "A5",
     show_progress: bool = True,
+    fold_query_map: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Runs evaluation on a query list and returns (summary_dict, per_query_records)."""
     if not queries:
@@ -359,6 +407,9 @@ def evaluate_query_set(
 
     pure_asr_fp_top1_count = 0
     taxonomy_counts: dict[str, int] = defaultdict(int)
+    degraded_channels: set[str] = set()
+    ltr_ranker = getattr(getattr(runner, "pipeline", None), "ltr_ranker", None)
+    orig_ltr_state = _snapshot_ltr_ranker_state(ltr_ranker) if (ltr_ranker is not None and fold_query_map) else None
 
     ds_stats: dict[str, dict[str, list[Any]]] = defaultdict(
         lambda: {
@@ -379,9 +430,25 @@ def evaluate_query_set(
         target_vids = set(q["target_videos"])
         target_wins = q.get("target_windows", [])
 
-        preds = runner.search_multimodal(q_text, top_k=10, ablation_config=ablation_config)
+        if ltr_ranker is not None and fold_query_map:
+            qid_str = str(q["query_id"])
+            if qid_str in fold_query_map:
+                _apply_ltr_fold_payload(ltr_ranker, fold_query_map[qid_str])
+            elif orig_ltr_state is not None:
+                _restore_ltr_ranker_state(ltr_ranker, orig_ltr_state)
+
+        try:
+            preds = runner.search_multimodal(q_text, top_k=10, ablation_config=ablation_config)
+        finally:
+            if ltr_ranker is not None and orig_ltr_state is not None:
+                _restore_ltr_ranker_state(ltr_ranker, orig_ltr_state)
         timings = runner.timings
         diag = runner.diagnostics
+        raw_degraded = diag.get("degraded") or []
+        if isinstance(raw_degraded, (list, tuple, set)):
+            degraded_channels.update(str(d) for d in raw_degraded if d)
+        elif isinstance(raw_degraded, str) and raw_degraded:
+            degraded_channels.add(raw_degraded)
 
         required_timings = {"t_total_ms", "t_non_neural_ms", "t_faiss_ms", "t_fts5_ms",
                             "t_fusion_ms", "t_boundary_ms"}
@@ -669,6 +736,7 @@ def evaluate_query_set(
             },
         },
         "per_dataset_metrics": {},
+        "degraded_channels": sorted(degraded_channels),
         "_raw_arrays": {
             "hits1": hits1,
             "mrrs": mrrs,
@@ -736,11 +804,14 @@ def run_benchmark(
     out_dir: Path = Path("benchmark"),
     max_msrvtt: int = 100,
     run_all_splits: bool = True,
+    allow_insample_eval: bool = False,
+    ltr_model_path: Path = Path("models/ranking/videntra_ltr_v1.json"),
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
+    ltr_info = load_ltr_model_info(ltr_model_path)
     src_videntra_files = [
         p for p in sorted(Path("src/videntra").rglob("*"))
         if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
@@ -755,22 +826,45 @@ def run_benchmark(
         Path("data/processed/faiss_index.bin"),
         Path("data/processed/faiss_text_e5_384.bin"),
         Path("data/processed/e5_text_manifest.json"),
-        Path("models/ranking/videntra_ltr_v1.json"),
+        ltr_model_path,
         Path("models/siglip2"),
         Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
     ]
     input_hashes = hash_paths(input_paths)
     runner = MultimodalBenchmarkRunner()
 
+    def _can_use_oof(queries_list: list[dict[str, Any]]) -> bool:
+        if not ltr_info.get("has_fold_weights"):
+            return False
+        fold_map = ltr_info["fold_query_map"]
+        trained_set = {str(q) for q in ltr_info.get("trained_query_ids", [])}
+        overlapping = [str(q["query_id"]) for q in queries_list if not trained_set or str(q["query_id"]) in trained_set]
+        return bool(overlapping) and all(qid in fold_map for qid in overlapping)
+
+    used_oof_splits: set[str] = set()
+    split_query_ids: dict[str, list[str]] = {}
+    all_degraded_channels: set[str] = set()
+
     print("\n2. Đang thu thập câu truy vấn cho các tập đánh giá (dev_150, dev_full_859, heldout_test_201)...")
     queries_dev150 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=max_msrvtt)
+    split_query_ids["dev_150"] = [str(q["query_id"]) for q in queries_dev150]
     print(f"   - dev_150          : {len(queries_dev150)} queries")
+
+    dev150_fold_map = ltr_info["fold_query_map"] if _can_use_oof(queries_dev150) else None
+    if dev150_fold_map is not None:
+        used_oof_splits.add("dev_150")
 
     print("\n3. BẮT ĐẦU CHẠY ĐÁNH GIÁ CHÍNH TRÊN TẬP DEV_150 (A5 FULL PIPELINE)...")
     print("=" * 95)
     dev150_summary, dev150_records = evaluate_query_set(
-        runner, queries_dev150, split_label="dev_150", ablation_config="A5", show_progress=True
+        runner,
+        queries_dev150,
+        split_label="dev_150",
+        ablation_config="A5",
+        show_progress=True,
+        fold_query_map=dev150_fold_map,
     )
+    all_degraded_channels.update(dev150_summary.get("degraded_channels", []))
 
     ablation_summaries: dict[str, dict[str, Any]] = {}
     multi_split_summaries: dict[str, dict[str, Any]] = {
@@ -781,8 +875,14 @@ def run_benchmark(
         print("\n4. ĐANG CHẠY MA TRẬN ABLATION 6 BƯỚC (A0 -> A5) TRÊN TẬP DEV_150...")
         for cfg in ["A0", "A1", "A2", "A3", "A4"]:
             s_cfg, cfg_records = evaluate_query_set(
-                runner, queries_dev150, split_label="ablation", ablation_config=cfg, show_progress=True
+                runner,
+                queries_dev150,
+                split_label="ablation",
+                ablation_config=cfg,
+                show_progress=True,
+                fold_query_map=dev150_fold_map,
             )
+            all_degraded_channels.update(s_cfg.get("degraded_channels", []))
             ablation_summaries[cfg] = s_cfg
             with (out_dir / f"ablation_{cfg}_evaluation.jsonl").open("w", encoding="utf-8") as stream:
                 for record in cfg_records:
@@ -803,10 +903,20 @@ def run_benchmark(
 
         # Evaluate dev_full_859
         queries_dev859 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=None)
+        split_query_ids["dev_full_859"] = [str(q["query_id"]) for q in queries_dev859]
+        dev859_fold_map = ltr_info["fold_query_map"] if _can_use_oof(queries_dev859) else None
+        if dev859_fold_map is not None:
+            used_oof_splits.add("dev_full_859")
         print(f"\n5. ĐANG CHẠY TRÊN TOÀN BỘ TẬP VALIDATION (dev_full_859: {len(queries_dev859)} queries)...")
         dev859_summary, dev859_records = evaluate_query_set(
-            runner, queries_dev859, split_label="dev_full_859", ablation_config="A5", show_progress=True
+            runner,
+            queries_dev859,
+            split_label="dev_full_859",
+            ablation_config="A5",
+            show_progress=True,
+            fold_query_map=dev859_fold_map,
         )
+        all_degraded_channels.update(dev859_summary.get("degraded_channels", []))
         multi_split_summaries["dev_full_859"] = {k: v for k, v in dev859_summary.items() if k != "_raw_arrays"}
         with (out_dir / "dev_full_evaluation.jsonl").open("w", encoding="utf-8") as stream:
             for record in dev859_records:
@@ -815,10 +925,12 @@ def run_benchmark(
         # Evaluate heldout_test_201 (Zero-Tuning Evaluation)
         if test_dir.exists():
             queries_test201 = load_validation_queries(test_dir, runner.indexed_videos, max_msrvtt=None)
+            split_query_ids["heldout_test_201"] = [str(q["query_id"]) for q in queries_test201]
             print(f"\n6. ĐANG CHẠY TRÊN TẬP HELDOUT TEST (heldout_test_201: {len(queries_test201)} queries)...")
             test201_summary, test201_records = evaluate_query_set(
                 runner, queries_test201, split_label="heldout_test_201", ablation_config="A5", show_progress=True
             )
+            all_degraded_channels.update(test201_summary.get("degraded_channels", []))
             multi_split_summaries["heldout_test_201"] = {k: v for k, v in test201_summary.items() if k != "_raw_arrays"}
             with open(out_dir / "heldout_test_201_evaluation.jsonl", "w", encoding="utf-8") as f:
                 for r in test201_records:
@@ -862,13 +974,34 @@ def run_benchmark(
             "non_neural_latency_p50_ms": ov_c["non_neural_latency_p50_ms"],
         }
 
+    gate = evaluate_provenance_gate(
+        ltr_info=ltr_info,
+        split_query_ids=split_query_ids,
+        used_oof_splits=used_oof_splits,
+        allow_insample_eval=allow_insample_eval,
+        degraded_channels=all_degraded_channels,
+    )
+    run_config = {
+        "max_msrvtt": max_msrvtt,
+        "run_all_splits": run_all_splits,
+        "allow_insample_eval": allow_insample_eval,
+        "ltr_model_path": str(ltr_model_path),
+        "ablation_config": "A5",
+    }
+
     git_sha = get_git_sha()
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
     final_summary = {
-        "status": "provisional_pending_provenance_verification",
+        "status": "completed_leakage_free" if gate["leakage_free"] else "fit_all_leakage_detected",
         "run_id": run_id,
         "benchmark_timestamp": ts_str,
         "git_sha": git_sha,
+        "ltr_model_sha256": gate["ltr_model_sha256"],
+        "eval_mode": gate["eval_mode"],
+        "overlap_with_eval": gate["overlap_with_eval"],
+        "degraded_channels": gate["degraded_channels"],
+        "leakage_free": gate["leakage_free"],
+        "config": run_config,
         "total_queries_evaluated": len(queries_dev150),
         "metrics_overall": dev150_summary["metrics_overall"],
         "per_dataset_metrics": dev150_summary["per_dataset_metrics"],
@@ -901,17 +1034,45 @@ def run_benchmark(
 
     inputs_unchanged = verify_hashes(input_hashes) and hash_paths(input_paths) == input_hashes
     output_hashes = hash_paths([p for p in out_dir.iterdir() if p.is_file()])
-    provenance = {"run_id": run_id, "input_sha256": input_hashes, "output_sha256": output_hashes,
-                  "inputs_unchanged": inputs_unchanged, "outputs_verified": verify_hashes(output_hashes),
-                  "runtime": {"python": sys.version, "platform": platform.platform(),
-                              "numpy": np.__version__, "device": runner.device, "argv": sys.argv,
-                              "disk_cache": False},
-                  "config": {"max_msrvtt": max_msrvtt, "run_all_splits": run_all_splits},
-                  "limitations": ["Hashes identify local files, not media rights or independently verified model license.",
-                                  "No source-video duplicate grouping or pinned snapshot ID is established."]}
+    provenance = {
+        "run_id": run_id,
+        "git_sha": git_sha,
+        "ltr_model_sha256": gate["ltr_model_sha256"],
+        "ltr_trained_on": gate["ltr_trained_on"],
+        "overlap_with_eval": gate["overlap_with_eval"],
+        "eval_mode": gate["eval_mode"],
+        "eval_mode_by_split": gate["eval_mode_by_split"],
+        "leakage_free": gate["leakage_free"],
+        "allow_insample_eval": gate["allow_insample_eval"],
+        "gate_passed": gate["gate_passed"],
+        "degraded_channels": gate["degraded_channels"],
+        "input_sha256": input_hashes,
+        "output_sha256": output_hashes,
+        "inputs_unchanged": inputs_unchanged,
+        "outputs_verified": verify_hashes(output_hashes),
+        "runtime": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "numpy": np.__version__,
+            "device": runner.device,
+            "argv": sys.argv,
+            "disk_cache": False,
+        },
+        "config": run_config,
+        "limitations": [
+            "Hashes identify local files, not media rights or independently verified model license.",
+            "No source-video duplicate grouping or pinned snapshot ID is established.",
+        ],
+    }
     (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8")
     if not inputs_unchanged or not verify_hashes(output_hashes):
         raise RuntimeError("Benchmark provenance verification failed; retain output for inspection")
+    if not gate["gate_passed"]:
+        raise RuntimeError(
+            f"Provenance leakage gate failed: eval_mode={gate['eval_mode']}, "
+            f"overlap_with_eval={gate['overlap_with_eval']}, leakage_free={gate['leakage_free']}. "
+            "Pass --allow-insample-eval to override non-heldout overlap."
+        )
 
     # E9: Save immutable provenance snapshot in work/experiments/<timestamp>_<split>_<git_sha>/
     exp_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -999,7 +1160,10 @@ def generate_markdown_report(report_path: Path, summary: dict[str, Any], records
 
     content = f"""# Báo Cáo Kiểm Toán & Đánh Giá Toàn Diện Hệ Thống Tìm Kiếm Đa Phương Thức VIDENTRA (P0–P4)
 
-**Thời điểm thực thi:** {summary['benchmark_timestamp']} | **Git SHA:** `{summary.get('git_sha', 'HEAD')}`  
+**Thời điểm thực thi:** {summary['benchmark_timestamp']} | **Run ID:** `{summary.get('run_id', 'unknown')}` | **Git SHA:** `{summary.get('git_sha', 'HEAD')}`  
+**LTR Model SHA256:** `{summary.get('ltr_model_sha256', 'none')}` | **Eval Mode:** `{summary.get('eval_mode', 'unknown')}` | **Leakage Free:** `{summary.get('leakage_free', 'unknown')}`  
+**Overlap With Eval:** `{json.dumps(summary.get('overlap_with_eval', {}), ensure_ascii=False)}` | **Degraded Channels:** `{json.dumps(summary.get('degraded_channels', []), ensure_ascii=False)}`  
+**Config:** `{json.dumps(summary.get('config', {}), ensure_ascii=False)}`  
 **Kiến trúc:** `UnifiedMultimodalSearchPipeline` (Single Source of Truth — SSOT 7-Stage Pipeline)  
 **Cơ sở dữ liệu và phần cứng:** chưa được thu thập tự động cho báo cáo này.  
 **Giới hạn:** các số lịch sử bên dưới chưa được xác minh lại và không dùng để nghiệm thu.  
@@ -1171,6 +1335,7 @@ if __name__ == "__main__":
     parser.add_argument("--out-dir", type=Path, default=Path("work/experiments") / ("run_" + time.strftime("%Y%m%d_%H%M%S")))
     parser.add_argument("--max-msrvtt", type=int, default=100)
     parser.add_argument("--single-split-only", action="store_true")
+    parser.add_argument("--allow-insample-eval", action="store_true")
     args = parser.parse_args()
 
     run_benchmark(
@@ -1179,4 +1344,5 @@ if __name__ == "__main__":
         out_dir=args.out_dir,
         max_msrvtt=args.max_msrvtt,
         run_all_splits=not args.single_split_only,
+        allow_insample_eval=args.allow_insample_eval,
     )

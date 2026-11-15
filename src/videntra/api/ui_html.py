@@ -9,6 +9,7 @@ UI_HTML = """<!DOCTYPE html>
   <style>
     :root {
       --bg: #0f172a;
+      --bg-elevated: #0b1120;
       --card-bg: #1e293b;
       --text: #f8fafc;
       --text-muted: #94a3b8;
@@ -19,153 +20,234 @@ UI_HTML = """<!DOCTYPE html>
       --badge-partial: #eab308;
       --badge-contradicted: #ef4444;
       --badge-unknown: #64748b;
+      --warn-bg: rgba(245, 158, 11, 0.14);
+      --warn-border: rgba(245, 158, 11, 0.45);
+      --err-bg: rgba(239, 68, 68, 0.14);
+      --err-border: rgba(239, 68, 68, 0.45);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
-    .header { margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+    body { background: var(--bg); color: var(--text); padding: 20px 24px; min-height: 100vh; }
+    .container { max-width: 1400px; margin: 0 auto; }
+
+    .header { margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
     .header h1 { font-size: 24px; font-weight: 700; color: var(--primary); letter-spacing: -0.5px; }
-    .header .subtitle { font-size: 13px; color: var(--text-muted); }
+    .header .subtitle { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+    .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
-    .search-panel { background: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 20px; }
-    .query-box { display: flex; gap: 12px; margin-bottom: 16px; }
-    .query-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: #0b1120; color: var(--text); font-size: 15px; outline: none; }
+    .search-panel { background: var(--card-bg); padding: 18px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 16px; }
+    .query-box { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .query-input { flex: 1; min-width: 240px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); font-size: 15px; outline: none; transition: border-color 0.15s; }
     .query-input:focus { border-color: var(--primary); }
-    .btn { padding: 12px 24px; border-radius: 8px; background: var(--primary); color: #0b1120; font-weight: 600; cursor: pointer; border: none; font-size: 14px; transition: background 0.2s; }
-    .btn:hover { background: var(--primary-hover); }
-    .btn-secondary { background: var(--border); color: var(--text); margin-left: 8px; }
-    .btn-secondary:hover { background: #475569; }
+    .btn { padding: 10px 18px; border-radius: 8px; background: var(--primary); color: #0b1120; font-weight: 600; cursor: pointer; border: none; font-size: 14px; transition: background 0.15s, opacity 0.15s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-secondary { background: var(--border); color: var(--text); }
+    .btn-secondary:hover:not(:disabled) { background: #475569; }
+    .btn-sm { padding: 6px 11px; font-size: 12px; border-radius: 6px; }
 
-    .controls { display: flex; gap: 16px; align-items: center; font-size: 13px; color: var(--text-muted); flex-wrap: wrap; }
-    .select-ctl { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: #0b1120; color: var(--text); font-size: 13px; }
+    .controls { display: flex; gap: 14px; align-items: center; font-size: 13px; color: var(--text-muted); flex-wrap: wrap; }
+    .control-item { display: inline-flex; align-items: center; gap: 6px; }
+    .select-ctl, .input-ctl { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); font-size: 13px; outline: none; }
+    .select-ctl:focus, .input-ctl:focus { border-color: var(--primary); }
+    .checkbox-ctl { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--text); }
+    .checkbox-ctl input { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
+
+    /* Status Banners */
+    .banner { display: none; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; border: 1px solid transparent; }
+    .banner-degraded { background: var(--warn-bg); border-color: var(--warn-border); color: #fde68a; }
+    .banner-error { background: var(--err-bg); border-color: var(--err-border); color: #fecaca; }
+    .banner-loading { background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.35); color: #bae6fd; align-items: center; gap: 10px; }
+    .spinner { width: 16px; height: 16px; border: 2px solid rgba(56, 189, 248, 0.3); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* QueryGraph Inspector Panel */
-    .graph-panel { display: none; background: #0b1120; border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
-    .graph-title { font-size: 13px; font-weight: 600; color: var(--primary); margin-bottom: 10px; display: flex; justify-content: space-between; }
+    .graph-panel { display: none; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+    .graph-title { font-size: 13px; font-weight: 600; color: var(--primary); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
     .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 2px 4px 2px 0; background: var(--card-bg); border: 1px solid var(--border); }
     .chip-entity { border-color: #38bdf8; color: #38bdf8; }
     .chip-pred { border-color: #a855f7; color: #c084fc; }
     .chip-logic { border-color: #f59e0b; color: #fbbf24; }
+    .chip-btn { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+    .chip-btn:hover { background: #1e293b; border-color: var(--primary); color: #fff; }
 
-    .meta-bar { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; display: flex; justify-content: space-between; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+    .meta-bar { font-size: 13px; color: var(--text-muted); margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 18px; }
     .card { background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; transition: transform 0.15s, border-color 0.15s; }
     .card:hover { transform: translateY(-2px); border-color: var(--primary); }
-    .thumb { width: 100%; height: 160px; background: #020617; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 13px; object-fit: contain; }
-    .card-body { padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+    .thumb-wrap { position: relative; background: #020617; cursor: pointer; }
+    .thumb { width: 100%; height: 170px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 13px; object-fit: cover; }
+    .thumb-time-pill { position: absolute; bottom: 8px; right: 8px; background: rgba(2, 6, 23, 0.85); color: #f8fafc; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .card-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
     .vid-title { font-weight: 600; color: var(--primary); word-break: break-all; font-family: monospace; font-size: 12px; }
     .time-info { color: var(--text); font-weight: 500; }
     .frame-info { color: var(--text-muted); font-size: 12px; }
-    .score-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 4px; flex-wrap: wrap; }
-    .badge { padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; font-size: 10px; }
+    .score-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 2px; flex-wrap: wrap; }
+    .evidence-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+    .badge { padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.3px; }
     .badge-supported { background: rgba(34, 197, 94, 0.2); color: var(--badge-supported); }
     .badge-partial { background: rgba(234, 179, 8, 0.2); color: var(--badge-partial); }
     .badge-contradicted { background: rgba(239, 68, 68, 0.2); color: var(--badge-contradicted); }
-    .card-footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; }
+    .badge-unknown { background: rgba(100, 116, 139, 0.25); color: #cbd5e1; }
+    .badge-visual { background: rgba(56, 189, 248, 0.16); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); }
+    .badge-ocr { background: rgba(168, 85, 247, 0.18); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.35); }
+    .badge-asr { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); }
+    .card-footer { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 
     /* Modal Inspector */
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: none; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); }
-    .modal { background: var(--card-bg); width: 90%; max-width: 920px; border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 90vh; }
-    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-    .modal-body { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
-    .video-container { background: #000; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; }
-    video { max-width: 100%; max-height: 400px; }
-    .frame-preview { border-radius: 8px; border: 1px solid var(--border); max-width: 100%; max-height: 250px; object-fit: contain; background: #000; }
-    .inspector-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .kbd { background: #0b1120; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-family: monospace; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.88); display: none; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); padding: 16px; }
+    .modal { background: var(--card-bg); width: 100%; max-width: 960px; border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 92vh; }
+    .modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .modal-body { padding: 18px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    .video-container { position: relative; background: #000; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; border: 1px solid var(--border); }
+    video { width: 100%; max-height: 440px; outline: none; }
+    .player-status { position: absolute; top: 10px; right: 10px; background: rgba(2, 6, 23, 0.82); color: #e2e8f0; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); display: none; }
+
+    .jump-pills { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .jump-pill { padding: 4px 10px; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); font-size: 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .jump-pill:hover { border-color: var(--primary); background: #172554; }
+    .jump-pill-primary { border-color: rgba(56, 189, 248, 0.5); color: var(--primary); }
+
+    .inspector-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .kbd { background: var(--bg-elevated); border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; font-size: 11px; font-family: monospace; color: var(--text); }
+    .shortcuts-hint { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+    .frame-preview { border-radius: 8px; border: 1px solid var(--border); max-width: 100%; max-height: 240px; object-fit: contain; background: #000; }
+
+    .toast { position: fixed; bottom: 20px; right: 20px; background: #0f172a; color: #f8fafc; border: 1px solid var(--primary); padding: 10px 14px; border-radius: 8px; font-size: 13px; z-index: 200; display: none; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+
+    @media (max-width: 720px) {
+      body { padding: 14px; }
+      .shortcuts-hint { margin-left: 0; width: 100%; }
+      .frame-verify-row { flex-direction: column; align-items: flex-start !important; }
+    }
   </style>
 </head>
 <body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>VIDENTRA</h1>
+        <div class="subtitle">Multi-Modal Video Retrieval Engine • Snapshot: current</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" onclick="exportData('csv')">Export CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportData('json')">Export JSON</button>
+      </div>
+    </div>
 
-  <div class="header">
-    <div>
-      <h1>VIDENTRA</h1>
-      <div class="subtitle">Multi-Modal Video Retrieval Engine • Snapshot: current</div>
+    <div class="search-panel">
+      <div class="query-box">
+        <input type="text" id="queryInput" class="query-input" placeholder="Tìm người mặc áo đỏ, xe máy rẽ trái, chữ SALE, tiếng nói..." autofocus>
+        <button id="searchBtn" class="btn" onclick="performSearch()">Tìm kiếm</button>
+      </div>
+      <div class="controls">
+        <label class="control-item">Top-K:
+          <select id="topKSelect" class="select-ctl">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+        <label class="control-item">Chế độ:
+          <select id="modeSelect" class="select-ctl">
+            <option value="fast">Fast (Visual Vector)</option>
+            <option value="accurate" selected>Accurate (QueryGraph + Multimodal)</option>
+          </select>
+        </label>
+        <label class="control-item">Xếp hạng:
+          <select id="rankModeSelect" class="select-ctl">
+            <option value="moment" selected>Moment Ranking</option>
+            <option value="diverse_video">Diverse Video</option>
+          </select>
+        </label>
+        <label class="control-item">Dataset:
+          <input id="datasetInput" class="input-ctl" type="text" placeholder="Tất cả (tuỳ chọn)" style="width:130px;">
+        </label>
+        <label class="control-item">Backend:
+          <select id="backendSelect" class="select-ctl">
+            <option value="auto" selected>Auto</option>
+            <option value="siglip2">SigLIP2</option>
+            <option value="clip">CLIP</option>
+          </select>
+        </label>
+        <label class="checkbox-ctl">
+          <input type="checkbox" id="verifyRelationsChk">
+          <span>Verify relations</span>
+        </label>
+      </div>
     </div>
-    <div>
-      <button class="btn btn-secondary" onclick="exportData('csv')">Export CSV</button>
-      <button class="btn btn-secondary" onclick="exportData('json')">Export JSON</button>
+
+    <div id="loadingBar" class="banner banner-loading">
+      <span class="spinner"></span>
+      <span>Đang truy vấn đa phương thức và tổng hợp khoảnh khắc...</span>
     </div>
+    <div id="errorBanner" class="banner banner-error"></div>
+    <div id="degradedBanner" class="banner banner-degraded"></div>
+
+    <!-- QueryGraph Inspector -->
+    <div class="graph-panel" id="graphPanel">
+      <div class="graph-title">
+        <span>Phân tích Truy vấn (QueryGraph v1)</span>
+        <span id="graphStatusBadge" class="badge badge-supported">validated</span>
+      </div>
+      <div id="graphEntities" style="margin-bottom: 6px;"></div>
+      <div id="graphPredicates"></div>
+    </div>
+
+    <div class="meta-bar">
+      <span id="resultsMeta">Chưa có tìm kiếm. Nhập câu hỏi và nhấn Tìm kiếm (hoặc Enter).</span>
+      <span id="timingsMeta"></span>
+    </div>
+
+    <div class="grid" id="resultsGrid"></div>
   </div>
-
-  <div class="search-panel">
-    <div class="query-box">
-      <input type="text" id="queryInput" class="query-input" placeholder="Tìm người mặc áo đỏ, xe máy rẽ trái, chữ SALE, tiếng nói..." autofocus>
-      <button class="btn" onclick="performSearch()">Tìm kiếm</button>
-    </div>
-    <div class="controls">
-      <label>Top-K:
-        <select id="topKSelect" class="select-ctl">
-          <option value="5">5</option>
-          <option value="10" selected>10</option>
-          <option value="20">20</option>
-          <option value="50">50</option>
-        </select>
-      </label>
-      <label>Chế độ:
-        <select id="modeSelect" class="select-ctl">
-          <option value="fast">Fast (Visual Vector)</option>
-          <option value="accurate" selected>Accurate (QueryGraph + Multimodal)</option>
-        </select>
-      </label>
-      <label>Xếp hạng:
-        <select id="rankModeSelect" class="select-ctl">
-          <option value="moment" selected>Moment Ranking</option>
-          <option value="diverse_video">Diverse Video</option>
-        </select>
-      </label>
-    </div>
-  </div>
-
-  <!-- QueryGraph Inspector -->
-  <div class="graph-panel" id="graphPanel">
-    <div class="graph-title">
-      <span>📐 Phân tích Truy vấn (QueryGraph v1)</span>
-      <span id="graphStatusBadge" class="badge badge-supported">validated</span>
-    </div>
-    <div id="graphEntities" style="margin-bottom: 6px;"></div>
-    <div id="graphPredicates"></div>
-  </div>
-
-  <div class="meta-bar">
-    <span id="resultsMeta">Chưa có tìm kiếm. Nhập câu hỏi và nhấn Tìm kiếm (hoặc Enter).</span>
-    <span id="timingsMeta"></span>
-  </div>
-
-  <div class="grid" id="resultsGrid"></div>
 
   <!-- Modal Inspector -->
   <div class="modal-overlay" id="modalOverlay" onclick="closeModalOnBg(event)">
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalVideoId">
       <div class="modal-header">
         <div>
           <strong id="modalVideoId" style="color:var(--primary); font-family:monospace; font-size:13px;"></strong>
           <div id="modalTiming" style="font-size:12px; color:var(--text-muted); margin-top:2px;"></div>
         </div>
-        <button class="btn btn-secondary" style="padding:6px 12px;" onclick="closeModal()">Đóng (Esc)</button>
+        <button class="btn btn-secondary btn-sm" onclick="closeModal()">Đóng (Esc)</button>
       </div>
       <div class="modal-body">
         <div class="video-container">
-          <video id="player" controls preload="metadata"></video>
+          <video id="player" controls preload="metadata" playsinline></video>
+          <div id="playerStatus" class="player-status">Đang tải...</div>
         </div>
 
+        <div id="momentJumpPills" class="jump-pills"></div>
+
         <div class="inspector-controls">
-          <button class="btn" style="padding:6px 14px;" onclick="replayMoment()">Replay Moment (<span class="kbd">R</span>)</button>
-          <button class="btn btn-secondary" style="padding:6px 14px;" onclick="stepFrame(-1)">−1 Frame (<span class="kbd">,</span>)</button>
-          <button class="btn btn-secondary" style="padding:6px 14px;" onclick="stepFrame(1)">+1 Frame (<span class="kbd">.</span>)</button>
-          <button class="btn btn-secondary" style="padding:6px 14px;" onclick="copyInfo()">Copy Video + Frame</button>
-          <span style="font-size:12px; color:var(--text-muted); margin-left:auto;">
-            Phím tắt: <span class="kbd">Space</span> Play/Pause • <span class="kbd">Esc</span> Đóng
+          <button class="btn btn-sm" onclick="replayMoment()">Replay Moment (<span class="kbd">R</span>)</button>
+          <button class="btn btn-secondary btn-sm" onclick="seekRelative(-5)">−5s (<span class="kbd">←</span>)</button>
+          <button class="btn btn-secondary btn-sm" onclick="seekRelative(5)">+5s (<span class="kbd">→</span>)</button>
+          <label class="control-item" style="font-size:12px; color:var(--text-muted);">Tốc độ:
+            <select id="playbackSpeedSelect" class="select-ctl" style="padding:4px 8px; font-size:12px;" onchange="setPlaybackSpeed(this.value)">
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+            </select>
+          </label>
+          <button class="btn btn-secondary btn-sm" onclick="stepFrame(-1)">−1 Frame (<span class="kbd">,</span>)</button>
+          <button class="btn btn-secondary btn-sm" onclick="stepFrame(1)">+1 Frame (<span class="kbd">.</span>)</button>
+          <button class="btn btn-secondary btn-sm" onclick="copyInfo()">Copy Video + Frame</button>
+          <span class="shortcuts-hint">
+            <span class="kbd">Space</span> Play/Pause • <span class="kbd">←</span>/<span class="kbd">→</span> ±5s • <span class="kbd">Esc</span> Đóng
           </span>
         </div>
 
-        <div id="modalEvidenceBox" style="background:#0b1120; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12px;">
+        <div id="modalEvidenceBox" style="background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12px;">
           <strong style="color:var(--primary);">Bằng chứng đa phương thức (Evidence Items):</strong>
-          <div id="modalEvidenceList" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
+          <div id="modalEvidenceList" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;"></div>
         </div>
 
         <div style="border-top:1px solid var(--border); padding-top:12px;">
           <h4 style="font-size:13px; color:var(--primary); margin-bottom:8px;">Exact Bit-Level Decoded Frame (Ledger Verification)</h4>
-          <div style="display:flex; gap:16px; align-items:center;">
+          <div class="frame-verify-row" style="display:flex; gap:16px; align-items:center;">
             <img id="exactFrameImg" class="frame-preview" alt="Exact Frame">
             <div id="frameDetails" style="font-size:12px; color:var(--text-muted); line-height:1.6;"></div>
           </div>
@@ -174,52 +256,189 @@ UI_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="toast" class="toast"></div>
+
   <script>
     let currentResults = [];
     let activeMoment = null;
     let currentOrdinal = 0;
+    let inspectorToken = 0;
+    let seekAbortController = null;
+    let currentFrameObjectUrl = null;
+    let toastTimer = null;
+
+    function escapeHtml(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById("toast");
+      toast.textContent = msg;
+      toast.style.display = "block";
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.style.display = "none"; }, 2200);
+    }
+
+    function setLoading(isLoading) {
+      const loadingBar = document.getElementById("loadingBar");
+      const searchBtn = document.getElementById("searchBtn");
+      loadingBar.style.display = isLoading ? "flex" : "none";
+      searchBtn.disabled = isLoading;
+      searchBtn.textContent = isLoading ? "Đang tìm..." : "Tìm kiếm";
+    }
+
+    function showErrorBanner(msg) {
+      const el = document.getElementById("errorBanner");
+      if (!msg) {
+        el.style.display = "none";
+        el.textContent = "";
+        return;
+      }
+      el.textContent = msg;
+      el.style.display = "block";
+    }
+
+    function renderDegradedBanner(data) {
+      const el = document.getElementById("degradedBanner");
+      const branchStatuses = data.branch_statuses || {};
+      const degradedChannels = Object.entries(branchStatuses)
+        .filter(([, st]) => ["degraded", "error", "missing_index", "unavailable", "failed"].includes(String(st).toLowerCase()))
+        .map(([ch, st]) => `${ch}: ${st}`);
+      const isDegraded = data.status === "degraded" || degradedChannels.length > 0;
+      const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+
+      if (!isDegraded && warnings.length === 0) {
+        el.style.display = "none";
+        el.innerHTML = "";
+        return;
+      }
+
+      const parts = [];
+      if (isDegraded) {
+        const detail = degradedChannels.length > 0 ? degradedChannels.join(", ") : "một số kênh bị suy giảm";
+        parts.push(`<strong>Chế độ suy giảm (Degraded):</strong> ${escapeHtml(detail)}`);
+      }
+      if (warnings.length > 0) {
+        parts.push(`<strong>Lưu ý:</strong> ${warnings.map(escapeHtml).join(" • ")}`);
+      }
+      el.innerHTML = parts.join("<br>");
+      el.style.display = "block";
+    }
 
     document.getElementById("queryInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") performSearch();
     });
 
     window.addEventListener("keydown", (e) => {
-      if (document.getElementById("modalOverlay").style.display === "flex") {
-        if (e.key === "Escape") closeModal();
-        if (e.key === "r" || e.key === "R") replayMoment();
-        if (e.key === ",") stepFrame(-1);
-        if (e.key === ".") stepFrame(1);
+      const overlay = document.getElementById("modalOverlay");
+      if (overlay.style.display !== "flex") return;
+
+      const tag = (document.activeElement && document.activeElement.tagName || "").toLowerCase();
+      const inFormControl = tag === "input" || tag === "textarea" || tag === "select";
+
+      if (e.key === "Escape") {
+        closeModal();
+        return;
+      }
+      if (inFormControl) return;
+
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlayPause();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        seekRelative(-5);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        seekRelative(5);
+      } else if (e.key === "r" || e.key === "R") {
+        replayMoment();
+      } else if (e.key === ",") {
+        stepFrame(-1);
+      } else if (e.key === ".") {
+        stepFrame(1);
       }
     });
+
+    // Player buffering feedback
+    (function setupPlayerEvents() {
+      const player = document.getElementById("player");
+      const statusEl = document.getElementById("playerStatus");
+      player.addEventListener("waiting", () => {
+        statusEl.textContent = "Đang đệm video...";
+        statusEl.style.display = "block";
+      });
+      player.addEventListener("seeking", () => {
+        statusEl.textContent = "Đang tua...";
+        statusEl.style.display = "block";
+      });
+      ["canplay", "seeked", "playing", "pause"].forEach((evt) => {
+        player.addEventListener(evt, () => { statusEl.style.display = "none"; });
+      });
+      player.addEventListener("error", () => {
+        if (player.getAttribute("src")) {
+          statusEl.textContent = "Không thể phát luồng video.";
+          statusEl.style.display = "block";
+        }
+      });
+    })();
 
     async function performSearch() {
       const query = document.getElementById("queryInput").value.trim();
       if (!query) return;
 
-      const topK = parseInt(document.getElementById("topKSelect").value);
+      const topK = parseInt(document.getElementById("topKSelect").value, 10);
       const mode = document.getElementById("modeSelect").value;
       const rankMode = document.getElementById("rankModeSelect").value;
+      const dataset = document.getElementById("datasetInput").value.trim();
+      const backend = document.getElementById("backendSelect").value;
+      const verifyRelations = document.getElementById("verifyRelationsChk").checked;
 
+      const filters = {};
+      if (dataset) filters.dataset = dataset;
+      if (backend && backend !== "auto") filters.backend = backend;
+
+      showErrorBanner("");
+      setLoading(true);
       document.getElementById("resultsMeta").textContent = "Đang tìm kiếm...";
 
       try {
         const resp = await fetch("/v1/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, top_k: topK, mode, ranking_mode: rankMode })
+          body: JSON.stringify({
+            query,
+            top_k: topK,
+            mode,
+            ranking_mode: rankMode,
+            filters,
+            verify_relations: verifyRelations,
+          }),
         });
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
         const data = await resp.json();
         currentResults = data.results || [];
 
+        renderDegradedBanner(data);
         document.getElementById("resultsMeta").textContent = `${currentResults.length} kết quả cho "${query}" • Status: ${data.status}`;
-        document.getElementById("timingsMeta").textContent = `${data.timings.elapsed_ms} ms`;
+        document.getElementById("timingsMeta").textContent = data.timings && data.timings.elapsed_ms != null
+          ? `${data.timings.elapsed_ms} ms`
+          : "";
 
-        // Render QueryGraph panel if available
         renderQueryGraph(data.query_graph);
-
         renderGrid(currentResults);
       } catch (err) {
-        document.getElementById("resultsMeta").textContent = `Lỗi tìm kiếm: ${err.message}`;
+        showErrorBanner(`Lỗi tìm kiếm: ${err.message}`);
+        document.getElementById("resultsMeta").textContent = "Tìm kiếm thất bại.";
+      } finally {
+        setLoading(false);
       }
     }
 
@@ -231,14 +450,15 @@ UI_HTML = """<!DOCTYPE html>
       }
       panel.style.display = "block";
       const statusBadge = document.getElementById("graphStatusBadge");
-      statusBadge.textContent = qg.parser?.status || "unknown";
-      statusBadge.className = `badge ${qg.parser?.status === "validated" ? "badge-supported" : "badge-partial"}`;
+      const parserStatus = qg.parser?.status || "unknown";
+      statusBadge.textContent = parserStatus;
+      statusBadge.className = `badge ${parserStatus === "validated" ? "badge-supported" : "badge-partial"}`;
 
       const entDiv = document.getElementById("graphEntities");
       entDiv.innerHTML = "<strong>Thực thể:</strong> ";
       if (qg.entities && qg.entities.length > 0) {
-        qg.entities.forEach(e => {
-          entDiv.innerHTML += `<span class="chip chip-entity">${e.mention} (${e.type})</span>`;
+        qg.entities.forEach((e) => {
+          entDiv.innerHTML += `<span class="chip chip-entity">${escapeHtml(e.mention)} (${escapeHtml(e.type)})</span>`;
         });
       } else {
         entDiv.innerHTML += "<span style='color:var(--text-muted); font-size:12px;'>Không có thực thể riêng lẻ</span>";
@@ -247,14 +467,32 @@ UI_HTML = """<!DOCTYPE html>
       const predDiv = document.getElementById("graphPredicates");
       predDiv.innerHTML = "<strong>Vị từ:</strong> ";
       if (qg.predicates && qg.predicates.length > 0) {
-        qg.predicates.forEach(p => {
-          const val = p.value ? `: "${p.value}"` : "";
+        qg.predicates.forEach((p) => {
+          const val = p.value ? `: "${escapeHtml(p.value)}"` : "";
           const pol = p.polarity === "negative" ? " [NOT]" : "";
-          predDiv.innerHTML += `<span class="chip chip-pred">${p.kind}${pol}${val}</span>`;
+          predDiv.innerHTML += `<span class="chip chip-pred">${escapeHtml(p.kind)}${pol}${val}</span>`;
         });
       } else {
         predDiv.innerHTML += "<span style='color:var(--text-muted); font-size:12px;'>Không có ràng buộc vị từ</span>";
       }
+    }
+
+    function summarizeEvidenceBadges(item) {
+      const evs = Array.isArray(item.evidence) ? item.evidence : [];
+      const counts = { visual: 0, ocr: 0, asr: 0, other: 0 };
+      evs.forEach((ev) => {
+        const k = String(ev.kind || ev.modality || "").toLowerCase();
+        if (k.includes("ocr")) counts.ocr += 1;
+        else if (k.includes("asr") || k.includes("audio") || k.includes("speech")) counts.asr += 1;
+        else if (k.includes("visual") || k.includes("frame")) counts.visual += 1;
+        else counts.other += 1;
+      });
+      const badges = [];
+      if (counts.visual > 0) badges.push(`<span class="badge badge-visual">Visual ×${counts.visual}</span>`);
+      if (counts.ocr > 0) badges.push(`<span class="badge badge-ocr">OCR ×${counts.ocr}</span>`);
+      if (counts.asr > 0) badges.push(`<span class="badge badge-asr">ASR ×${counts.asr}</span>`);
+      if (counts.other > 0) badges.push(`<span class="badge badge-unknown">Evidence ×${counts.other}</span>`);
+      return badges.join("");
     }
 
     function renderGrid(results) {
@@ -269,76 +507,169 @@ UI_HTML = """<!DOCTYPE html>
       results.forEach((item, idx) => {
         const card = document.createElement("div");
         card.className = "card";
-        const thumbUrl = `/v1/frames/${encodeURIComponent(item.video_id)}/${item.representative_original_frame_index || 0}`;
-        const startSec = item.moment_start_seconds.toFixed(2);
-        const endSec = item.moment_end_seconds.toFixed(2);
-        const score = item.ranking_score.toFixed(4);
+        const repOrd = item.representative_original_frame_index || 0;
+        const thumbUrl = `/v1/frames/${encodeURIComponent(item.video_id)}/${repOrd}`;
+        const startVal = Number(item.moment_start_seconds || 0);
+        const endVal = Number(item.moment_end_seconds || startVal);
+        const startSec = startVal.toFixed(2);
+        const endSec = endVal.toFixed(2);
+        const durSec = Math.max(0, endVal - startVal).toFixed(2);
+        const score = Number(item.ranking_score || 0).toFixed(4);
 
         let badgeClass = "badge-partial";
         if (item.match_status === "supported") badgeClass = "badge-supported";
         else if (item.match_status === "contradicted") badgeClass = "badge-contradicted";
+        else if (item.match_status === "unknown") badgeClass = "badge-unknown";
 
         const unresolvedWarn = (item.unresolved_predicates && item.unresolved_predicates.length > 0)
-          ? `<div style="font-size:11px; color:#f87171;">⚠️ Chưa giải quyết: ${item.unresolved_predicates.join(", ")}</div>`
+          ? `<div style="font-size:11px; color:#f87171;">Chưa giải quyết: ${item.unresolved_predicates.map(escapeHtml).join(", ")}</div>`
           : "";
 
+        const evidenceBadges = summarizeEvidenceBadges(item);
+
         card.innerHTML = `
-          <img src="${thumbUrl}" class="thumb" alt="Thumbnail" loading="lazy" onerror="this.src=''; this.alt='Không có thumbnail';">
+          <div class="thumb-wrap" onclick="openInspector(${idx})">
+            <img src="${thumbUrl}" class="thumb" alt="Thumbnail" loading="lazy" onerror="this.removeAttribute('src'); this.alt='Không có thumbnail';">
+            <span class="thumb-time-pill">${startSec}s – ${endSec}s</span>
+          </div>
           <div class="card-body">
-            <div class="vid-title" title="${item.video_id}">${item.video_id}</div>
-            <div class="time-info">⏱ ${startSec}s → ${endSec}s (${(endSec - startSec).toFixed(2)}s)</div>
-            <div class="frame-info">Frame ordinal: ${item.start_original_frame_index} → ${item.end_original_frame_index} (rep: ${item.representative_original_frame_index})</div>
+            <div class="vid-title" title="${escapeHtml(item.video_id)}">${escapeHtml(item.video_id)}</div>
+            <div class="time-info">${startSec}s → ${endSec}s (${durSec}s)</div>
+            <div class="frame-info">Frame ordinal: ${item.start_original_frame_index ?? 0} → ${item.end_original_frame_index ?? 0} (rep: ${repOrd})</div>
             <div class="score-badge">
-              <span class="badge ${badgeClass}">${item.match_status}</span>
-              <span style="color:var(--text-muted);">Rank score: <strong>${score}</strong></span>
+              <span class="badge ${badgeClass}">${escapeHtml(item.match_status || "unknown")}</span>
+              <span style="color:var(--text-muted);">Score: <strong>${score}</strong></span>
             </div>
+            ${evidenceBadges ? `<div class="evidence-badges">${evidenceBadges}</div>` : ""}
             ${unresolvedWarn}
           </div>
           <div class="card-footer">
-            <button class="btn btn-secondary" style="padding:4px 10px; font-size:12px;" onclick='openInspector(${idx})'>Mở Inspector</button>
-            <button class="btn btn-secondary" style="padding:4px 10px; font-size:12px;" onclick='copySingle("${item.video_id}", ${item.representative_original_frame_index})'>Copy ID</button>
+            <button class="btn btn-sm" onclick="openInspector(${idx})">Mở Inspector</button>
+            <button class="btn btn-secondary btn-sm" onclick='copySingle(${JSON.stringify(item.video_id)}, ${repOrd})'>Copy ID</button>
           </div>
         `;
         grid.appendChild(card);
       });
     }
 
+    function seekPlayerSafely(targetSeconds, autoPlay = false) {
+      const player = document.getElementById("player");
+      const token = inspectorToken;
+      const safeTarget = Number.isFinite(targetSeconds) ? Math.max(0, targetSeconds) : 0;
+
+      if (seekAbortController) {
+        seekAbortController.abort();
+        seekAbortController = null;
+      }
+
+      const applySeek = () => {
+        if (token !== inspectorToken) return;
+        const maxDur = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : null;
+        const clamped = maxDur !== null ? Math.min(safeTarget, Math.max(0, maxDur - 0.05)) : safeTarget;
+        try {
+          player.currentTime = clamped;
+        } catch (_) {
+          // Ignore seek errors if media is not yet seekable
+        }
+        if (autoPlay) {
+          player.play().catch(() => {});
+        }
+      };
+
+      if (player.readyState >= 1) {
+        applySeek();
+      } else {
+        seekAbortController = new AbortController();
+        player.addEventListener("loadedmetadata", applySeek, {
+          once: true,
+          signal: seekAbortController.signal,
+        });
+      }
+    }
+
+    function renderJumpPills(item) {
+      const container = document.getElementById("momentJumpPills");
+      container.innerHTML = "";
+      const startSec = Number(item.moment_start_seconds || 0);
+      const endSec = Number(item.moment_end_seconds || startSec);
+      const midSec = (startSec + endSec) / 2;
+
+      const pills = [
+        { label: `Bắt đầu (${startSec.toFixed(2)}s)`, sec: startSec, primary: true },
+        { label: `Giữa (${midSec.toFixed(2)}s)`, sec: midSec, primary: false },
+        { label: `Kết thúc (${endSec.toFixed(2)}s)`, sec: endSec, primary: false },
+      ];
+
+      pills.forEach((p) => {
+        const btn = document.createElement("button");
+        btn.className = `jump-pill ${p.primary ? "jump-pill-primary" : ""}`;
+        btn.textContent = p.label;
+        btn.onclick = () => seekPlayerSafely(p.sec, true);
+        container.appendChild(btn);
+      });
+    }
+
     function openInspector(idx) {
       const item = currentResults[idx];
+      if (!item) return;
+      inspectorToken += 1;
       activeMoment = item;
       currentOrdinal = item.representative_original_frame_index || item.start_original_frame_index || 0;
 
       document.getElementById("modalVideoId").textContent = item.video_id;
-      document.getElementById("modalTiming").textContent = `Khoảnh khắc: ${item.moment_start_seconds}s → ${item.moment_end_seconds}s | Rank Score: ${item.ranking_score} | Match: ${item.match_status}`;
+      const startSec = Number(item.moment_start_seconds || 0);
+      const endSec = Number(item.moment_end_seconds || startSec);
+      document.getElementById("modalTiming").textContent =
+        `Khoảnh khắc: ${startSec.toFixed(2)}s → ${endSec.toFixed(2)}s | Score: ${Number(item.ranking_score || 0).toFixed(4)} | Match: ${item.match_status || "unknown"}`;
 
-      // Populate evidence items
+      renderJumpPills(item);
+
+      // Populate clickable evidence items
       const evList = document.getElementById("modalEvidenceList");
       evList.innerHTML = "";
       if (item.evidence && item.evidence.length > 0) {
-        item.evidence.forEach(ev => {
-          evList.innerHTML += `<span class="chip chip-logic">${ev.kind}: ${ev.evidence_id || ev.timestamp_us + 'µs'}</span>`;
+        item.evidence.forEach((ev) => {
+          const chip = document.createElement("span");
+          const hasTs = Number.isFinite(ev.timestamp_us);
+          chip.className = `chip chip-logic ${hasTs ? "chip-btn" : ""}`;
+          const label = ev.evidence_id || (hasTs ? `${(ev.timestamp_us / 1e6).toFixed(2)}s` : "item");
+          chip.textContent = `${ev.kind || "evidence"}: ${label}`;
+          if (hasTs) {
+            chip.title = "Nhấn để nhảy tới thời điểm bằng chứng";
+            chip.onclick = () => seekPlayerSafely(ev.timestamp_us / 1e6, true);
+          }
+          evList.appendChild(chip);
         });
       } else {
         evList.innerHTML = "<span style='color:var(--text-muted);'>Chỉ có bằng chứng khung hình đại diện.</span>";
       }
 
       const player = document.getElementById("player");
-      player.onloadedmetadata = () => {
-        if (Number.isFinite(item.moment_start_seconds)) {
-          player.currentTime = item.moment_start_seconds;
-        }
-      };
+      const speedSel = document.getElementById("playbackSpeedSelect");
+      player.playbackRate = parseFloat(speedSel.value || "1");
+      document.getElementById("playerStatus").style.display = "none";
+
+      const targetStart = Number.isFinite(item.start_ms)
+        ? item.start_ms / 1000.0
+        : startSec;
       player.src = `/v1/media/${encodeURIComponent(item.video_id)}`;
+      seekPlayerSafely(targetStart, false);
 
       loadExactFrame(item.video_id, currentOrdinal);
-
       document.getElementById("modalOverlay").style.display = "flex";
     }
 
     function closeModal() {
+      inspectorToken += 1;
+      if (seekAbortController) {
+        seekAbortController.abort();
+        seekAbortController = null;
+      }
       const player = document.getElementById("player");
       player.pause();
-      player.src = "";
+      player.removeAttribute("src");
+      player.load();
+      document.getElementById("playerStatus").style.display = "none";
       document.getElementById("modalOverlay").style.display = "none";
     }
 
@@ -346,11 +677,35 @@ UI_HTML = """<!DOCTYPE html>
       if (e.target.id === "modalOverlay") closeModal();
     }
 
+    function togglePlayPause() {
+      const player = document.getElementById("player");
+      if (player.paused) {
+        player.play().catch(() => {});
+      } else {
+        player.pause();
+      }
+    }
+
+    function seekRelative(deltaSeconds) {
+      const player = document.getElementById("player");
+      const next = Math.max(0, (player.currentTime || 0) + deltaSeconds);
+      seekPlayerSafely(next, false);
+    }
+
+    function setPlaybackSpeed(rate) {
+      const player = document.getElementById("player");
+      const parsed = parseFloat(rate);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        player.playbackRate = parsed;
+      }
+    }
+
     function replayMoment() {
       if (!activeMoment) return;
-      const player = document.getElementById("player");
-      player.currentTime = activeMoment.moment_start_seconds;
-      player.play();
+      const targetStart = Number.isFinite(activeMoment.start_ms)
+        ? activeMoment.start_ms / 1000.0
+        : Number(activeMoment.moment_start_seconds || 0);
+      seekPlayerSafely(targetStart, true);
     }
 
     function stepFrame(delta) {
@@ -377,7 +732,11 @@ UI_HTML = """<!DOCTYPE html>
         const rev = resp.headers.get("X-Timeline-Revision") || "N/A";
 
         const blob = await resp.blob();
-        img.src = URL.createObjectURL(blob);
+        if (currentFrameObjectUrl) {
+          URL.revokeObjectURL(currentFrameObjectUrl);
+        }
+        currentFrameObjectUrl = URL.createObjectURL(blob);
+        img.src = currentFrameObjectUrl;
 
         const parsedTs = parseInt(tsUs, 10);
         const tsDisplay = Number.isFinite(parsedTs)
@@ -385,49 +744,56 @@ UI_HTML = """<!DOCTYPE html>
           : "N/A";
         details.innerHTML = `
           <div><strong>Ordinal:</strong> ${ordinal}</div>
-          <div><strong>PTS:</strong> ${pts}</div>
-          <div><strong>Timestamp:</strong> ${tsDisplay}</div>
-          <div><strong>Revision:</strong> ${rev}</div>
+          <div><strong>PTS:</strong> ${escapeHtml(pts)}</div>
+          <div><strong>Timestamp:</strong> ${escapeHtml(tsDisplay)}</div>
+          <div><strong>Revision:</strong> ${escapeHtml(rev)}</div>
         `;
       } catch (err) {
-        details.innerHTML = `<span style="color:#f87171;">Lỗi: ${err.message}</span>`;
+        details.innerHTML = `<span style="color:#f87171;">Lỗi: ${escapeHtml(err.message)}</span>`;
       }
     }
 
     function copyInfo() {
       if (!activeMoment) return;
       const text = `${activeMoment.video_id}:${currentOrdinal} [${activeMoment.moment_start_seconds}-${activeMoment.moment_end_seconds}s]`;
-      navigator.clipboard.writeText(text);
-      alert("Đã sao chép: " + text);
+      navigator.clipboard.writeText(text).then(() => showToast("Đã sao chép: " + text)).catch(() => {});
     }
 
     function copySingle(vid, ord) {
       const text = `${vid}:${ord}`;
-      navigator.clipboard.writeText(text);
-      alert("Đã sao chép: " + text);
+      navigator.clipboard.writeText(text).then(() => showToast("Đã sao chép: " + text)).catch(() => {});
     }
 
     async function exportData(format) {
       if (!currentResults || currentResults.length === 0) {
-        alert("Chưa có kết quả để xuất.");
+        showToast("Chưa có kết quả để xuất.");
         return;
       }
       try {
         const resp = await fetch(`/v1/exports?format=${format}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(currentResults)
+          body: JSON.stringify(currentResults),
         });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const blob = await resp.blob();
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
+        const objUrl = URL.createObjectURL(blob);
+        a.href = objUrl;
         a.download = `videntra_export.${format}`;
         a.click();
+        setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+        showToast(`Đã xuất file ${format.toUpperCase()}`);
       } catch (err) {
-        alert("Lỗi xuất file: " + err.message);
+        showToast("Lỗi xuất file: " + err.message);
       }
     }
   </script>
 </body>
 </html>
 """
+
+
+def render_ui_html() -> str:
+    """Return the embedded standalone Search & Playback Inspector HTML."""
+    return UI_HTML

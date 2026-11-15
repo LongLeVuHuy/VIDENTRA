@@ -263,6 +263,156 @@ def ingest_p85_artifacts(
     return result
 
 
+def _load_jsonl(path: Path) -> list[dict]:
+    records: list[dict] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line_no, line in enumerate(fh, 1):
+            raw = line.strip()
+            if not raw:
+                continue
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                raise ValueError(f"{path.name}:{line_no} must be a JSON object")
+            records.append(obj)
+    return records
+
+
+def _rebuild_ocr_asr_fts(conn: sqlite3.Connection) -> None:
+    """Rebuild fts_ocr and fts_asr cleanly from OCREvidenceGroups and ASREvidenceGroups."""
+    conn.execute("DELETE FROM fts_ocr;")
+    ocr_groups = conn.execute(
+        "SELECT group_id, video_id, keyframe_id, timestamp_ms, consensus_text, normalized_text FROM OCREvidenceGroups;"
+    ).fetchall()
+    fts_ocr_rows = [
+        (
+            norm_txt or normalize_text(cons_txt),
+            fold_diacritics(norm_txt or normalize_text(cons_txt)),
+            vid_id,
+            grp_id,
+            kf_id,
+            int(ts_ms),
+        )
+        for grp_id, vid_id, kf_id, ts_ms, cons_txt, norm_txt in ocr_groups
+        if (cons_txt or "").strip()
+    ]
+    if fts_ocr_rows:
+        conn.executemany(
+            "INSERT INTO fts_ocr (normalized_text, unaccented_text, video_id, group_id, keyframe_id, timestamp_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?);",
+            fts_ocr_rows,
+        )
+
+    conn.execute("DELETE FROM fts_asr;")
+    asr_groups = conn.execute(
+        "SELECT group_id, video_id, start_ms, end_ms, consensus_text, normalized_text, models_involved FROM ASREvidenceGroups;"
+    ).fetchall()
+    fts_asr_rows = [
+        (
+            norm_txt or normalize_text(cons_txt),
+            fold_diacritics(norm_txt or normalize_text(cons_txt)),
+            vid_id,
+            grp_id,
+            f"grp_{grp_id}",
+            int(start_ms),
+            int(end_ms),
+            models_inv or "",
+        )
+        for grp_id, vid_id, start_ms, end_ms, cons_txt, norm_txt, models_inv in asr_groups
+        if (cons_txt or "").strip()
+    ]
+    if fts_asr_rows:
+        conn.executemany(
+            "INSERT INTO fts_asr (normalized_text, unaccented_text, video_id, group_id, segment_id, start_ms, end_ms, model_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            fts_asr_rows,
+        )
+
+
+def ingest_ocr_asr_artifacts(
+    outputs_dir: Path,
+    db_path: Path,
+    *,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    """Safely merge Kaggle OCR/ASR JSONL outputs into an existing metadata.db and rebuild FTS5."""
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
+
+    receipt_path = outputs_dir / "ocr_asr_receipt.json"
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or receipt.get("status") != "success":
+            raise ValueError("ocr_asr_receipt.json must report status='success' before ingest")
+
+    ocr_file = outputs_dir / "ocr_observations.jsonl"
+    asr_file = outputs_dir / "asr_segments.jsonl"
+    if not ocr_file.is_file() and not asr_file.is_file():
+        raise FileNotFoundError(f"Neither ocr_observations.jsonl nor asr_segments.jsonl found in {outputs_dir}")
+
+    ocr_obs = _load_jsonl(ocr_file) if ocr_file.is_file() else []
+    for idx, obs in enumerate(ocr_obs):
+        for req in ("observation_id", "video_id", "keyframe_id", "timestamp_ms", "model_id", "raw_text",
+                    "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"):
+            if req not in obs:
+                raise ValueError(f"OCR observation {idx} missing required field '{req}'")
+        conf = obs.get("confidence", 1.0)
+        if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
+            raise ValueError(f"OCR observation {idx} has invalid confidence: {conf}")
+
+    asr_segs = _load_jsonl(asr_file) if asr_file.is_file() else []
+    for idx, seg in enumerate(asr_segs):
+        for req in ("segment_id", "video_id", "model_id", "start_ms", "end_ms", "raw_text"):
+            if req not in seg:
+                raise ValueError(f"ASR segment {idx} missing required field '{req}'")
+        conf = seg.get("confidence", 1.0)
+        if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
+            raise ValueError(f"ASR segment {idx} has invalid confidence: {conf}")
+
+    ocr_groups_count = 0
+    asr_groups_count = 0
+
+    if not dry_run:
+        store = OfflineMetadataStore(db_path)
+        if ocr_obs:
+            store.insert_ocr_observations(ocr_obs)
+            obs_by_kf: dict[tuple[str, str, int], list[dict]] = {}
+            for obs in ocr_obs:
+                key = (str(obs["video_id"]), str(obs["keyframe_id"]), int(obs["timestamp_ms"]))
+                obs_by_kf.setdefault(key, []).append(obs)
+            for (vid, kf_id, ts_ms), kf_obs in obs_by_kf.items():
+                groups, members = OCREvidenceGrouper.group_keyframe_observations(vid, kf_id, ts_ms, kf_obs)
+                if groups:
+                    store.insert_ocr_evidence_groups(groups, members)
+                    ocr_groups_count += len(groups)
+
+        if asr_segs:
+            store.insert_asr_segments(asr_segs)
+            segs_by_vid: dict[str, list[dict]] = {}
+            for seg in asr_segs:
+                segs_by_vid.setdefault(str(seg["video_id"]), []).append(seg)
+            for vid, v_segs in segs_by_vid.items():
+                groups, members = ASREvidenceGrouper.group_video_segments(vid, v_segs)
+                if groups:
+                    store.insert_asr_evidence_groups(groups, members)
+                    asr_groups_count += len(groups)
+
+        with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+            _rebuild_ocr_asr_fts(conn)
+            conn.commit()
+
+    return {
+        "mode": "ocr_asr",
+        "outputs_dir": str(outputs_dir),
+        "db_path": str(db_path),
+        "ocr_observations_ingested": len(ocr_obs),
+        "ocr_groups_upserted": ocr_groups_count,
+        "asr_segments_ingested": len(asr_segs),
+        "asr_groups_upserted": asr_groups_count,
+        "fts_rebuilt": not dry_run,
+        "dry_run": dry_run,
+    }
+
+
 def validate_worker_outputs(outputs_dir: Path) -> None:
     """Reject incomplete runs and values incompatible with legacy ASR confidence."""
     with (outputs_dir / "summary.json").open(encoding="utf-8") as stream:
@@ -505,17 +655,24 @@ def ingest_kaggle_offline_outputs(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest Kaggle offline GPU outputs into local storage.")
-    parser.add_argument("--mode", choices=("full", "p85"), default="full")
+    parser.add_argument("--mode", choices=("full", "p85", "ocr_asr"), default="full")
     parser.add_argument("--outputs-dir", type=Path, default=Path("work/kaggle/offline_outputs"))
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
     parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
     parser.add_argument("--processed-dir", type=Path, default=None, help="Target dir for P8-5 artifacts (defaults to db_path.parent).")
     parser.add_argument("--allow-partial-keyframes", action="store_true", help="Allow spatial_patches row count != Keyframes count in p85 mode.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate P8-5 artifacts without modifying DB or files.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate artifacts without modifying DB or files.")
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()
 
-    if args.mode == "p85":
+    if args.mode == "ocr_asr":
+        res = ingest_ocr_asr_artifacts(
+            outputs_dir=args.outputs_dir,
+            db_path=args.db_path,
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+    elif args.mode == "p85":
         res = ingest_p85_artifacts(
             outputs_dir=args.outputs_dir,
             db_path=args.db_path,

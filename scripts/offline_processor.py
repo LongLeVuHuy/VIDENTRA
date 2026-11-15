@@ -9,8 +9,10 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 import sys
 import time
+from typing import Any
 import numpy as np
 
 # Force UTF-8 on Windows console
@@ -46,23 +48,69 @@ def print_progress(step_idx: int, total_steps: int, step_name: str, step_pct: fl
         sys.stdout.write("\n")
 
 
+def _guard_and_backup_path(target_path: Path, i_understand_overwrite: bool, label: str) -> Path | None:
+    """Require explicit overwrite flag and create *.bak-<timestamp> backup before overwriting."""
+    if not target_path.exists():
+        return None
+    if not i_understand_overwrite:
+        raise RuntimeError(
+            f"Refusing to overwrite existing {label} at '{target_path}' without --i-understand-overwrite."
+        )
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = target_path.with_name(f"{target_path.name}.bak-{ts}")
+    shutil.copy2(target_path, backup_path)
+    return backup_path
+
+
 class OfflineProcessingPipeline:
     def __init__(
         self,
         db_path: Path = Path("data/processed/metadata.db"),
-        faiss_path: Path = Path("data/processed/faiss_index.bin"),
+        faiss_path: Path = Path("work/offline_scratch/faiss_index.bin"),
         raw_data_dir: Path = Path("data/raw"),
         keyframes_dir: Path = Path("data/raw/keyframes"),
         models_dir: Path = Path("models"),
+        encoder: Any | None = None,
+        i_understand_overwrite: bool = False,
     ):
         self.db_path = db_path
         self.faiss_path = faiss_path
         self.raw_data_dir = raw_data_dir
         self.keyframes_dir = keyframes_dir
         self.models_dir = models_dir
+        self.encoder = encoder
+        self.i_understand_overwrite = i_understand_overwrite
         self.store = OfflineMetadataStore(self.db_path)
 
-    def run_all(self, video_limit: int | None = None, dataset_filter: str | None = None) -> dict:
+    def _resolve_encoder(self) -> Any:
+        if self.encoder is not None:
+            return self.encoder
+        try:
+            from videntra.encoders.siglip2 import SigLIP2Encoder
+
+            siglip_dir = self.models_dir / "siglip2"
+            encoder = SigLIP2Encoder(model_path=siglip_dir if siglip_dir.exists() else None)
+            # Verify weights can be resolved before running full pipeline
+            encoder.config.resolve_model_path()
+            self.encoder = encoder
+            return self.encoder
+        except Exception as exc:
+            raise NotImplementedError(
+                f"Real SigLIP2Encoder is unavailable and placeholder embeddings are forbidden: {exc}"
+            ) from exc
+
+    def run_all(
+        self,
+        video_limit: int | None = None,
+        dataset_filter: str | None = None,
+        i_understand_overwrite: bool | None = None,
+    ) -> dict:
+        overwrite = self.i_understand_overwrite if i_understand_overwrite is None else i_understand_overwrite
+        if self.faiss_path.exists() and not overwrite:
+            raise RuntimeError(
+                f"Refusing to overwrite existing FAISS index at '{self.faiss_path}' without --i-understand-overwrite."
+            )
+
         total_steps = 6
         start_time = time.time()
         print(f"\n{'='*75}")
@@ -219,23 +267,40 @@ class OfflineProcessingPipeline:
             except Exception:
                 yolo_model = None
 
-        # 2. Initialize OCR models
+        # 2. Initialize SigLIP 2 Encoder (fail closed if unavailable)
+        encoder = self._resolve_encoder()
+
+        # 3. Initialize OCR models (optional if weights/libs are absent)
         from videntra.ocr.detection import OCRDetector
         from videntra.ocr.recognition import GeneralOCRRecognizer, VietOCRRecognizer
+        from videntra.ocr.routing import OCRRouter
         ocr_det = OCRDetector()
-        ocr_a = GeneralOCRRecognizer()
-        ocr_b = VietOCRRecognizer()
+        ocr_router = None
+        try:
+            ocr_router = OCRRouter(
+                general_recognizer=GeneralOCRRecognizer(use_rapidocr=True),
+                vietnamese_recognizer=VietOCRRecognizer(),
+            )
+        except Exception:
+            ocr_router = None
+
+        if all_keyframes:
+            from PIL import Image
+            kf_images = []
+            for kf in all_keyframes:
+                kf_p = Path(kf["keyframe_path"])
+                if not kf_p.exists():
+                    raise FileNotFoundError(f"Keyframe image missing for embedding: {kf_p}")
+                with Image.open(kf_p) as im:
+                    kf_images.append(im.convert("RGB"))
+            emb_matrix = encoder.encode_images(kf_images)
+            raw_embs = [emb_matrix[i] for i in range(len(all_keyframes))]
 
         for idx, kf in enumerate(all_keyframes):
             vid_id = kf["video_id"]
             kf_id = kf["keyframe_id"]
             ts_ms = kf["timestamp_ms"]
             kf_path = Path(kf["keyframe_path"])
-
-            # Visual embedding placeholder (normalized vector dim 768)
-            vec = np.random.randn(768).astype(np.float32)
-            vec /= np.linalg.norm(vec)
-            raw_embs.append(vec)
 
             # Object detection with YOLOv8 if image exists
             if yolo_model and kf_path.exists():
@@ -267,56 +332,37 @@ class OfflineProcessingPipeline:
                 except Exception:
                     pass
 
-            # OCR observations from 2 independent models
-            # Model A (PP-OCRv5 Latin)
-            raw_ocr_obs.append({
-                "observation_id": f"{kf_id}__ocr_a",
-                "video_id": vid_id,
-                "keyframe_id": kf_id,
-                "timestamp_ms": ts_ms,
-                "model_id": "PP-OCRv5",
-                "raw_text": f"CANH BAO AN TOAN {idx}",
-                "bbox_x1": 0.1, "bbox_y1": 0.1, "bbox_x2": 0.4, "bbox_y2": 0.25,
-                "confidence": 0.88,
-            })
-            # Model B (VietOCR Specialist)
-            raw_ocr_obs.append({
-                "observation_id": f"{kf_id}__ocr_b",
-                "video_id": vid_id,
-                "keyframe_id": kf_id,
-                "timestamp_ms": ts_ms,
-                "model_id": "VietOCR",
-                "raw_text": f"Cảnh báo an toàn {idx}",
-                "bbox_x1": 0.1, "bbox_y1": 0.1, "bbox_x2": 0.4, "bbox_y2": 0.25,
-                "confidence": 0.94,
-            })
+            if ocr_router is not None and kf_path.exists():
+                try:
+                    import cv2
+                    img_bgr = cv2.imread(str(kf_path))
+                    if img_bgr is not None:
+                        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                        h_im, w_im = img_rgb.shape[:2]
+                        for b_idx, box in enumerate(ocr_det.detect(img_rgb)):
+                            x1, y1 = max(0, int(box.x1 * w_im)), max(0, int(box.y1 * h_im))
+                            x2, y2 = min(w_im, int(box.x2 * w_im)), min(h_im, int(box.y2 * h_im))
+                            if x2 > x1 and y2 > y1:
+                                crop = img_rgb[y1:y2, x1:x2]
+                                rec_res, _ = ocr_router.route_and_recognize(crop)
+                                if rec_res.text:
+                                    raw_ocr_obs.append({
+                                        "observation_id": f"{kf_id}__ocr_{b_idx}",
+                                        "video_id": vid_id,
+                                        "keyframe_id": kf_id,
+                                        "timestamp_ms": ts_ms,
+                                        "model_id": rec_res.model_id,
+                                        "raw_text": rec_res.text,
+                                        "bbox_x1": box.x1, "bbox_y1": box.y1,
+                                        "bbox_x2": box.x2, "bbox_y2": box.y2,
+                                        "confidence": round(float(rec_res.confidence), 4),
+                                    })
+                except Exception:
+                    pass
 
             step_pct = ((idx + 1) / total_kf) * 100.0 if total_kf > 0 else 100.0
             overall_pct = 35.0 + (step_pct / 100.0) * 30.0
             print_progress(3, total_steps, "Model Inference", step_pct, overall_pct)
-
-        # Generate sample ASR segments for videos with audio
-        for v_rec in registered_vids:
-            vid_id = v_rec["video_id"]
-            if v_rec["has_audio"]:
-                raw_asr_segs.append({
-                    "segment_id": f"{vid_id}__asr_a_0",
-                    "video_id": vid_id,
-                    "model_id": "Faster-Whisper",
-                    "start_ms": 500,
-                    "end_ms": 3500,
-                    "raw_text": "Chào mừng bạn đến với chương trình",
-                    "confidence": 0.91,
-                })
-                raw_asr_segs.append({
-                    "segment_id": f"{vid_id}__asr_b_0",
-                    "video_id": vid_id,
-                    "model_id": "PhoWhisper",
-                    "start_ms": 550,
-                    "end_ms": 3450,
-                    "raw_text": "Chào mừng bạn đến với chương trình",
-                    "confidence": 0.96,
-                })
 
         # ---------------------------------------------------------------------
         # BƯỚC 4: Evidence Grouping & Raw Observation Persistence (65% -> 80%)
@@ -358,6 +404,7 @@ class OfflineProcessingPipeline:
         print("\n--- BƯỚC 5/6: Xây Dựng Chỉ Mục Vector FAISS & Ánh Xạ SQLite ---")
         faiss_mappings = []
         if raw_embs:
+            _guard_and_backup_path(self.faiss_path, overwrite, "FAISS index")
             emb_matrix = np.vstack(raw_embs).astype(np.float32)
             index = faiss.IndexFlatIP(768)
             index.add(emb_matrix)
@@ -419,15 +466,26 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default=None, help="Process specific dataset (e.g. qvhighlights, avc, msrvtt)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of videos for rapid staging")
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
+    parser.add_argument("--faiss-path", type=Path, default=Path("work/offline_scratch/faiss_index.bin"))
     parser.add_argument("--reset", action="store_true", help="Reset existing database and index before running")
+    parser.add_argument(
+        "--i-understand-overwrite",
+        action="store_true",
+        help="Required to overwrite or --reset existing metadata.db / faiss_index.bin (creates *.bak-<timestamp> backup).",
+    )
     args = parser.parse_args()
 
     if args.reset:
+        _guard_and_backup_path(args.db_path, args.i_understand_overwrite, "metadata.db")
+        _guard_and_backup_path(args.faiss_path, args.i_understand_overwrite, "FAISS index")
         if args.db_path.exists():
             args.db_path.unlink()
         if args.faiss_path.exists():
             args.faiss_path.unlink()
 
-    pipeline = OfflineProcessingPipeline(db_path=args.db_path, faiss_path=args.faiss_path)
+    pipeline = OfflineProcessingPipeline(
+        db_path=args.db_path,
+        faiss_path=args.faiss_path,
+        i_understand_overwrite=args.i_understand_overwrite,
+    )
     pipeline.run_all(video_limit=args.limit, dataset_filter=args.dataset)

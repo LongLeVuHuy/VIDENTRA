@@ -22,7 +22,7 @@ import numpy as np
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
     compute_query_z_scores,
-    extract_ltr_features_22d,
+    extract_ltr_features_24d,
 )
 
 DEFAULT_DATASET_PATH = Path("work/ltr_dev859_features.jsonl")
@@ -51,6 +51,8 @@ POSITIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "vis_lexical_synergy",
     "subclause_weakest_link",
     "window_energy_concentration",
+    "temporal_attention_coherence",
+    "rrf_vis_caption",
 })
 
 NEGATIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
@@ -383,7 +385,7 @@ def run_group_kfold_cv(
     base_arr = np.asarray(base_scores, dtype=np.float64) if base_scores is not None else None
 
     fold_metrics: list[dict[str, float]] = []
-    fold_weights: list[np.ndarray] = []
+    fold_weights: list[dict[str, Any]] = []
 
     use_lgb = backend == "lightgbm"
     if backend == "auto":
@@ -413,7 +415,15 @@ def run_group_kfold_cv(
             base_scores_train=base_tr,
             blend_weight=blend_weight,
         )
-        fold_weights.append(w)
+        fold_weights.append({
+            "fold": fold_idx,
+            "eval_query_ids": sorted({str(q) for q in q_val}),
+            "eval_source_video_ids": sorted({str(source_video_ids[i]) for i in val_idx}),
+            "weights": [round(float(v), 6) for v in w],
+            "bias": round(float(bias), 6),
+            "feature_mean": [round(float(v), 6) for v in f_mean],
+            "feature_std": [round(float(v), 6) for v in f_std],
+        })
 
         ltr_val_scores = ((X_val - f_mean) / f_std) @ w + bias
         if base_arr is not None:
@@ -456,8 +466,11 @@ def run_group_kfold_cv(
             "feature_std": [round(float(v), 6) for v in final_std],
         }
 
+    artifact["fold_weights"] = fold_weights
     artifact["metadata"] = {
         "dataset": "dev_full_859",
+        "trained_split": "dev_full_859",
+        "trained_query_ids": sorted({str(q) for q in query_ids}),
         "cv_strategy": f"{n_splits}-fold GroupKFold",
         "grouped_by": "source_video_id",
         "l2_reg": float(l2_reg),
@@ -495,8 +508,13 @@ def load_ltr_jsonl_dataset(
             item = json.loads(line)
             if "features" in item and isinstance(item["features"], list) and len(item["features"]) == len(LTR_FEATURE_NAMES):
                 vec = np.asarray(item["features"], dtype=np.float32)
+            elif "features" in item and isinstance(item["features"], list) and len(item["features"]) == 22:
+                vec = np.concatenate([
+                    np.asarray(item["features"], dtype=np.float32),
+                    np.zeros(2, dtype=np.float32),
+                ])
             else:
-                vec = extract_ltr_features_22d(item, return_dict=False)
+                vec = extract_ltr_features_24d(item, return_dict=False)
             rows.append(vec)
             labels.append(float(item.get("label", item.get("is_relevant", 0))))
             query_ids.append(str(item["query_id"]))
@@ -659,7 +677,7 @@ def extract_dev859_ltr_dataset(
                         "graph_relation_score": 0.0,
                         "llm_modality_alignment": 1.0 if has_lex else 0.0,
                     }
-                vec = extract_ltr_features_22d(cand_dict, z_stats=z_stats, return_dict=False)
+                vec = extract_ltr_features_24d(cand_dict, z_stats=z_stats, return_dict=False)
                 lbl = 1.0 if vid in target_set else 0.0
                 base_sc = float(m.ranking_score)
 

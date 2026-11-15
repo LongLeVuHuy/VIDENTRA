@@ -14,6 +14,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections import defaultdict, OrderedDict
 import hashlib
+import logging
 import math
 import os
 from pathlib import Path
@@ -60,8 +61,10 @@ from videntra.retrieval.alignment import (
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
 from videntra.ranking.calibration import calibrate_asr_confidence
-from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_22d
+from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_24d
 from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
+
+logger = logging.getLogger(__name__)
 
 
 def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
@@ -451,6 +454,7 @@ class TextEmbeddingDiskCache:
         self.cache_file = Path(cache_file)
         self._memory_cache: dict[str, np.ndarray] = {}
         self._dirty = False
+        self.last_error: str | None = None
         self._load()
 
     @staticmethod
@@ -464,8 +468,9 @@ class TextEmbeddingDiskCache:
                 with np.load(str(self.cache_file)) as data:
                     for k in data.files:
                         self._memory_cache[k] = data[k]
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = str(exc)
+                logger.warning("Failed to load text embedding cache %s: %s", self.cache_file, exc, exc_info=True)
 
     def get(self, text: str) -> np.ndarray | None:
         k = self.normalize_key(text)
@@ -483,8 +488,9 @@ class TextEmbeddingDiskCache:
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(str(self.cache_file), **self._memory_cache)
             self._dirty = False
-        except Exception:
-            pass
+        except Exception as exc:
+            self.last_error = str(exc)
+            logger.warning("Failed to save text embedding cache %s: %s", self.cache_file, exc, exc_info=True)
 
     def __len__(self) -> int:
         return len(self._memory_cache)
@@ -561,6 +567,11 @@ class UnifiedMultimodalSearchPipeline:
             warnings.warn("Legacy text cache is not model-namespaced; do not use it for evaluation", RuntimeWarning)
         self.cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.cache_path) if use_disk_cache else None
         self.e5_cache: TextEmbeddingDiskCache | None = TextEmbeddingDiskCache(self.e5_cache_path) if use_disk_cache else None
+        self._degraded_channels: dict[str, str] = {}
+        if self.cache is not None and self.cache.last_error:
+            self._degraded_channels["text_cache"] = self.cache.last_error
+        if self.e5_cache is not None and self.e5_cache.last_error:
+            self._degraded_channels["e5_cache"] = self.e5_cache.last_error
         self.last_timings: dict[str, float] = {}
         self.last_diagnostics: dict[str, Any] = {}
         self._search_lock = threading.RLock()
@@ -1240,8 +1251,10 @@ class UnifiedMultimodalSearchPipeline:
             try:
                 self.spatial_patches = np.load(str(patches_path), mmap_mode="r")
                 loaded["spatial_patches"] = True
-            except Exception:
+            except Exception as exc:
                 self.spatial_patches = None
+                self._degraded_channels["spatial_patches"] = str(exc)
+                logger.warning("Failed to load spatial patches %s: %s", patches_path, exc, exc_info=True)
 
         import json as _json
 
@@ -1252,9 +1265,11 @@ class UnifiedMultimodalSearchPipeline:
                 self.e5_text_index = faiss.read_index(str(e5_idx_path))
                 self.e5_text_manifest = _json.loads(e5_manifest_path.read_text(encoding="utf-8"))
                 loaded["e5_text_index"] = True
-            except Exception:
+            except Exception as exc:
                 self.e5_text_index = None
                 self.e5_text_manifest = []
+                self._degraded_channels["e5_text_index"] = str(exc)
+                logger.warning("Failed to load E5 text index %s: %s", e5_idx_path, exc, exc_info=True)
 
         cap_idx_path = root / "faiss_e5_caption_384.bin"
         cap_manifest_path = root / "e5_caption_manifest.json"
@@ -1263,9 +1278,11 @@ class UnifiedMultimodalSearchPipeline:
                 self.e5_caption_index = faiss.read_index(str(cap_idx_path))
                 self.e5_caption_manifest = _json.loads(cap_manifest_path.read_text(encoding="utf-8"))
                 loaded["e5_caption_index"] = True
-            except Exception:
+            except Exception as exc:
                 self.e5_caption_index = None
                 self.e5_caption_manifest = []
+                self._degraded_channels["e5_caption_index"] = str(exc)
+                logger.warning("Failed to load E5 caption index %s: %s", cap_idx_path, exc, exc_info=True)
         return loaded
 
     def _score_late_interaction_window(
@@ -1292,7 +1309,9 @@ class UnifiedMultimodalSearchPipeline:
         try:
             window_patches = np.asarray(self.spatial_patches[fids], dtype=np.float32)
             return float(compute_late_interaction_maxsim(query_vec_768, None, window_patches))
-        except Exception:
+        except Exception as exc:
+            self._degraded_channels["late_interaction"] = str(exc)
+            logger.warning("Late interaction scoring failed for video %s: %s", vid, exc, exc_info=True)
             return 0.0
 
     def _ensure_e5_encoder(self) -> bool:
@@ -1309,9 +1328,11 @@ class UnifiedMultimodalSearchPipeline:
             model.eval()
             self.e5_model = model
             return True
-        except Exception:
+        except Exception as exc:
             self.e5_tokenizer = None
             self.e5_model = None
+            self._degraded_channels["e5_encoder"] = str(exc)
+            logger.warning("Failed to load E5 encoder: %s", exc, exc_info=True)
             return False
 
     def encode_e5_query(self, query: str) -> np.ndarray | None:
@@ -1369,8 +1390,12 @@ class UnifiedMultimodalSearchPipeline:
             if self.e5_cache is not None:
                 self.e5_cache.set(prefixed, vec)
                 self.e5_cache.save()
+                if self.e5_cache.last_error:
+                    self._degraded_channels["e5_cache"] = self.e5_cache.last_error
             return vec
-        except Exception:
+        except Exception as exc:
+            self._degraded_channels["e5_encode"] = str(exc)
+            logger.warning("E5 query encoding failed: %s", exc, exc_info=True)
             return None
 
     @staticmethod
@@ -1396,7 +1421,8 @@ class UnifiedMultimodalSearchPipeline:
                     item["score"] = float(sc)
                     out.append(item)
             return out
-        except Exception:
+        except Exception as exc:
+            logger.warning("E5 FAISS index search failed: %s", exc, exc_info=True)
             return []
 
     def _search_e5_text_index(self, query_vec_384: np.ndarray | None, top_k: int = 20) -> list[dict[str, Any]]:
@@ -1764,7 +1790,11 @@ class UnifiedMultimodalSearchPipeline:
                             max_transition_sec=35.0,
                         )
                     if len(sub_clauses) >= 2 and clause_frame_sims.shape[0] >= 2:
-                        t_sot_score = temporal_sinkhorn_alignment_score(clause_frame_sims)
+                        t_sot_score = temporal_sinkhorn_alignment_score(
+                            clause_frame_sims,
+                            timestamps_sec=cand_ts,
+                            max_gap_sec=35.0,
+                        )
                         multi_clause_blend = 0.70 * mv_set_sim + 0.30 * t_sot_score
                         seq_score = (0.80 * seq_score + 0.20 * multi_clause_blend) if seq_score > 0.0 else multi_clause_blend
                     video_seq_scores[cvid] = seq_score
@@ -1987,57 +2017,62 @@ class UnifiedMultimodalSearchPipeline:
             )
             or any(f" {cue} " in _q_lower_e5 for cue in _lexical_intent_cues)
         )
-        if (
+        need_e5_text = (
             self.e5_text_index is not None
             and ablation_config not in ("A0", "A1", "A2")
             and sparse_lexical_yield
             and has_lexical_modality_intent
-        ):
+        )
+        need_e5_caption = (
+            self.e5_caption_index is not None
+            and ablation_config not in ("A0", "A1", "A2")
+        )
+        if need_e5_text or need_e5_caption:
             t_e5_start = time.perf_counter()
             q_e5_384 = self.encode_e5_query(query)
             t_e5_encode_ms = (time.perf_counter() - t_e5_start) * 1000.0
-            if q_e5_384 is not None:
-                existing_ocr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in ocr_candidates}
-                existing_asr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in asr_candidates}
-                for hit in self._search_e5_text_index(q_e5_384, top_k=25):
-                    sc = float(hit.get("score", 0.0))
-                    if sc < 0.855:
-                        continue
-                    src_type = str(hit.get("source_type", "")).lower()
-                    vid = str(hit.get("video_id", ""))
-                    if not vid:
-                        continue
-                    st_sec = float(hit.get("start_ms", 0.0)) / 1000.0
-                    et_sec = float(hit.get("end_ms", hit.get("start_ms", 0.0))) / 1000.0
-                    ts_sec = (st_sec + et_sec) / 2.0 if et_sec > st_sec else st_sec
-                    raw_text = str(hit.get("raw_text", ""))
-                    dense_sc = max(0.1, (sc - 0.80) * 10.0)
-                    if src_type == "ocr":
-                        key = (vid, round(ts_sec, 1))
-                        if key not in existing_ocr:
-                            existing_ocr.add(key)
-                            ocr_candidates.append({
-                                "video_id": vid,
-                                "timestamp_sec": ts_sec,
-                                "score": dense_sc,
-                                "branch": "ocr",
-                                "matched_text": raw_text,
-                                "is_dense_e5": True,
-                            })
-                    elif src_type == "asr":
-                        key = (vid, round(ts_sec, 1))
-                        if key not in existing_asr:
-                            existing_asr.add(key)
-                            asr_candidates.append({
-                                "video_id": vid,
-                                "start_sec": st_sec,
-                                "end_sec": et_sec,
-                                "timestamp_sec": ts_sec,
-                                "score": dense_sc,
-                                "branch": "asr",
-                                "matched_text": raw_text,
-                                "is_dense_e5": True,
-                            })
+        if need_e5_text and q_e5_384 is not None:
+            existing_ocr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in ocr_candidates}
+            existing_asr = {(c["video_id"], round(float(c["timestamp_sec"]), 1)) for c in asr_candidates}
+            for hit in self._search_e5_text_index(q_e5_384, top_k=25):
+                sc = float(hit.get("score", 0.0))
+                if sc < 0.855:
+                    continue
+                src_type = str(hit.get("source_type", "")).lower()
+                vid = str(hit.get("video_id", ""))
+                if not vid:
+                    continue
+                st_sec = float(hit.get("start_ms", 0.0)) / 1000.0
+                et_sec = float(hit.get("end_ms", hit.get("start_ms", 0.0))) / 1000.0
+                ts_sec = (st_sec + et_sec) / 2.0 if et_sec > st_sec else st_sec
+                raw_text = str(hit.get("raw_text", ""))
+                dense_sc = max(0.1, (sc - 0.80) * 10.0)
+                if src_type == "ocr":
+                    key = (vid, round(ts_sec, 1))
+                    if key not in existing_ocr:
+                        existing_ocr.add(key)
+                        ocr_candidates.append({
+                            "video_id": vid,
+                            "timestamp_sec": ts_sec,
+                            "score": dense_sc,
+                            "branch": "ocr",
+                            "matched_text": raw_text,
+                            "is_dense_e5": True,
+                        })
+                elif src_type == "asr":
+                    key = (vid, round(ts_sec, 1))
+                    if key not in existing_asr:
+                        existing_asr.add(key)
+                        asr_candidates.append({
+                            "video_id": vid,
+                            "start_sec": st_sec,
+                            "end_sec": et_sec,
+                            "timestamp_sec": ts_sec,
+                            "score": dense_sc,
+                            "branch": "asr",
+                            "matched_text": raw_text,
+                            "is_dense_e5": True,
+                        })
 
         # P8-5: VLM keyframe caption FTS5 + optional dense E5 caption index recall
         if ablation_config not in ("A0", "A1", "A2"):
@@ -2602,6 +2637,33 @@ class UnifiedMultimodalSearchPipeline:
             )
             win_energy_conc = min(1.5, coherence_ratio * (1.0 + 0.10 * min(adjacent_pairs, 3)))
 
+            att_sc = 0.0
+            if ablation_config not in ("A0", "A1"):
+                use_768_att = self.all_embeddings is not None and len(self.all_embeddings) > 0 and primary_q_768 is not None
+                att_q = primary_q_768.reshape(-1) if use_768_att else primary_q_864.reshape(-1)
+                att_emb_mat = self.all_embeddings if use_768_att else self.augmented_embeddings
+                if att_emb_mat is not None and len(att_emb_mat) > 0:
+                    kf_list = self.video_keyframes.get(vid, [])
+                    if kf_list:
+                        win_kfs = [
+                            k for k in kf_list
+                            if (best_st - 2.0) <= float(k.get("pts_time", 0.0)) <= (best_et + 2.0)
+                        ]
+                        if not win_kfs:
+                            win_kfs = sorted(
+                                kf_list,
+                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
+                            )[:5]
+                        elif len(win_kfs) > 5:
+                            win_kfs = sorted(
+                                win_kfs,
+                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
+                            )[:5]
+                            win_kfs.sort(key=lambda k: float(k.get("pts_time", 0.0)))
+                        valid_fids = [int(k["faiss_id"]) for k in win_kfs if 0 <= int(k["faiss_id"]) < len(att_emb_mat)]
+                        if valid_fids:
+                            att_sc = float(query_guided_temporal_attention_score(att_q, att_emb_mat[valid_fids], tau=12.0))
+
             raw_ltr_cand: dict[str, Any] = {
                 "s_vis_blend_max": s_vis_blend_val,
                 "s_vis_top3_mean": float(top3_vis_mean),
@@ -2629,9 +2691,11 @@ class UnifiedMultimodalSearchPipeline:
                 ) else 0.0,
                 "subclause_weakest_link": subclause_weak_val,
                 "window_energy_concentration": float(win_energy_conc),
+                "temporal_attention_coherence": float(att_sc),
+                "rrf_vis_caption": float(best_cl.get("rrf_vis_caption", 0.0)),
             }
-            ltr_22d_dict = extract_ltr_features_22d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
-            raw_ltr_cand.update(ltr_22d_dict)
+            ltr_24d_dict = extract_ltr_features_24d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
+            raw_ltr_cand.update(ltr_24d_dict)
             cand_ltr_features[vid] = raw_ltr_cand
             cand_moments.append(RankedMoment(
                 moment_id=f"{vid}_{round(best_rep_t, 1)}",
@@ -2646,54 +2710,9 @@ class UnifiedMultimodalSearchPipeline:
                 match_status=branch_attribution,
             ))
 
-        # Direction 4: Query-Guided Temporal Attention Pooling on Top-15 Stage 5 candidates (up to K=5 keyframes)
-        if cand_moments and ablation_config not in ("A0", "A1"):
-            cand_moments.sort(key=lambda m: float(m.ranking_score), reverse=True)
-            use_768_att = self.all_embeddings is not None and len(self.all_embeddings) > 0 and primary_q_768 is not None
-            att_q = primary_q_768.reshape(-1) if use_768_att else primary_q_864.reshape(-1)
-            att_emb_mat = self.all_embeddings if use_768_att else self.augmented_embeddings
-            if att_emb_mat is not None and len(att_emb_mat) > 0:
-                for idx_m in range(min(15, len(cand_moments))):
-                    m = cand_moments[idx_m]
-                    kf_list = self.video_keyframes.get(m.video_id, [])
-                    if not kf_list:
-                        continue
-                    win_kfs = [
-                        k for k in kf_list
-                        if (m.moment_start_seconds - 2.0) <= float(k.get("pts_time", 0.0)) <= (m.moment_end_seconds + 2.0)
-                    ]
-                    if not win_kfs:
-                        win_kfs = sorted(
-                            kf_list,
-                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - m.representative_timestamp_seconds),
-                        )[:5]
-                    elif len(win_kfs) > 5:
-                        win_kfs = sorted(
-                            win_kfs,
-                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - m.representative_timestamp_seconds),
-                        )[:5]
-                        win_kfs.sort(key=lambda k: float(k.get("pts_time", 0.0)))
-                    valid_fids = [int(k["faiss_id"]) for k in win_kfs if 0 <= int(k["faiss_id"]) < len(att_emb_mat)]
-                    if not valid_fids:
-                        continue
-                    att_sc = query_guided_temporal_attention_score(att_q, att_emb_mat[valid_fids], tau=12.0)
-                    if att_sc > 0.0:
-                        cand_moments[idx_m] = RankedMoment(
-                            moment_id=m.moment_id,
-                            video_id=m.video_id,
-                            moment_start_seconds=m.moment_start_seconds,
-                            moment_end_seconds=m.moment_end_seconds,
-                            start_original_frame_index=m.start_original_frame_index,
-                            end_original_frame_index=m.end_original_frame_index,
-                            representative_original_frame_index=m.representative_original_frame_index,
-                            representative_timestamp_seconds=m.representative_timestamp_seconds,
-                            ranking_score=float(m.ranking_score) + 0.025 * float(att_sc),
-                            match_status=m.match_status,
-                        )
-
         if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
             ltr_matrix = np.vstack([
-                extract_ltr_features_22d(cand_ltr_features[m.video_id], z_stats=z_stats)
+                extract_ltr_features_24d(cand_ltr_features[m.video_id], z_stats=z_stats)
                 for m in cand_moments
             ])
             ltr_scores = self.ltr_ranker.score_matrix(ltr_matrix)
@@ -2912,6 +2931,7 @@ class UnifiedMultimodalSearchPipeline:
             "ocr_candidates": ocr_candidates[:15],
             "asr_candidates": asr_candidates[:15],
             "candidate_ltr_features": cand_ltr_features,
+            "degraded": dict(self._degraded_channels),
         }
 
         # =========================================================================
@@ -2940,8 +2960,9 @@ class UnifiedMultimodalSearchPipeline:
         if self.db_conn is not None:
             try:
                 self.db_conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._degraded_channels["db_close"] = str(exc)
+                logger.warning("Failed to close SQLite connection: %s", exc, exc_info=True)
             self.db_conn = None
 
     def __enter__(self) -> UnifiedMultimodalSearchPipeline:

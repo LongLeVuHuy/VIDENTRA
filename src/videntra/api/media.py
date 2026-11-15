@@ -1,45 +1,85 @@
 """Media playback and streaming endpoints with HTTP 206 Partial Content support."""
 import mimetypes
-import os
 from pathlib import Path
 import re
 from typing import Generator
 
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 import pyarrow.parquet as pq
 
 
 router = APIRouter(prefix="/v1", tags=["media"])
 
+DEFAULT_CHUNK_SIZE = 512 * 1024  # 512 KB chunks for smooth browser video scrubbing
+
+_EXT_MIME_MAP: dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+}
+
+
+def _resolve_mime_type(media_path: Path) -> str:
+    """Resolve accurate Content-Type for common video containers."""
+    ext = media_path.suffix.lower()
+    if ext in _EXT_MIME_MAP:
+        return _EXT_MIME_MAP[ext]
+    guessed, _ = mimetypes.guess_type(str(media_path))
+    return guessed or "application/octet-stream"
+
 
 def _parse_byte_range(range_header: str, file_size: int) -> tuple[int, int]:
-    """Parse 'bytes=start-end' into (start, end) offsets."""
-    if not range_header.startswith("bytes="):
-        raise ValueError("Invalid Range header format")
-    parts = range_header[6:].split("-")
-    start_str = parts[0].strip()
-    end_str = parts[1].strip() if len(parts) > 1 else ""
+    """Parse HTTP Range header ('bytes=start-end', 'bytes=start-', 'bytes=-suffix')."""
+    if file_size <= 0:
+        raise ValueError("Cannot satisfy byte range on empty file")
+
+    header = range_header.strip()
+    if not header.lower().startswith("bytes="):
+        raise ValueError("Invalid Range header unit")
+
+    spec = header[6:].strip()
+    if not spec or "," in spec:
+        raise ValueError("Unsupported or empty byte range specification")
+
+    parts = spec.split("-")
+    if len(parts) != 2:
+        raise ValueError("Malformed byte range specification")
+
+    start_str, end_str = parts[0].strip(), parts[1].strip()
+    if not start_str and not end_str:
+        raise ValueError("Empty byte range bounds")
 
     if start_str and end_str:
         start = int(start_str)
         end = int(end_str)
+        if start < 0 or end < start or start >= file_size:
+            raise ValueError("Byte range out of bounds")
+        end = min(end, file_size - 1)
     elif start_str:
         start = int(start_str)
-        end = file_size - 1
-    elif end_str:
-        start = max(0, file_size - int(end_str))
+        if start < 0 or start >= file_size:
+            raise ValueError("Byte range start out of bounds")
         end = file_size - 1
     else:
-        start = 0
+        suffix_len = int(end_str)
+        if suffix_len <= 0:
+            raise ValueError("Suffix byte range must be positive")
+        start = max(0, file_size - suffix_len)
         end = file_size - 1
 
-    start = max(0, min(start, file_size - 1))
-    end = max(start, min(end, file_size - 1))
     return start, end
 
 
-def _iter_file_chunk(path: Path, start: int, length: int, chunk_size: int = 1024 * 64) -> Generator[bytes, None, None]:
+def _iter_file_chunk(
+    path: Path,
+    start: int,
+    length: int,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+) -> Generator[bytes, None, None]:
     """Yield file byte chunks within [start, start + length)."""
     with open(path, "rb") as f:
         f.seek(start)
@@ -53,7 +93,7 @@ def _iter_file_chunk(path: Path, start: int, length: int, chunk_size: int = 1024
             remaining -= len(chunk)
 
 
-@router.get("/media/{video_id}")
+@router.api_route("/media/{video_id}", methods=["GET", "HEAD"])
 def stream_media(video_id: str, request: Request):
     """Serve media with HTTP Range 206 partial content for HTML5 video player."""
     resolver = getattr(request.app.state, "resolver", None)
@@ -70,27 +110,44 @@ def stream_media(video_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
     if not media_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Media file missing on storage")
+        raise HTTPException(status_code=404, detail="Media file missing on storage")
 
     file_size = media_path.stat().st_size
-    mime_type, _ = mimetypes.guess_type(str(media_path))
-    if not mime_type:
-        mime_type = "video/mp4" if media_path.suffix.lower() == ".mp4" else "video/x-matroska"
+    mime_type = _resolve_mime_type(media_path)
+    is_head = request.method.upper() == "HEAD"
+
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=3600",
+        "Content-Type": mime_type,
+    }
 
     range_header = request.headers.get("Range") or request.headers.get("range")
     if range_header:
         try:
             start, end = _parse_byte_range(range_header, file_size)
-        except Exception:
-            raise HTTPException(status_code=416, detail="Requested range not satisfiable")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
+                detail="Requested range not satisfiable",
+                headers={
+                    "Content-Range": f"bytes */{file_size}",
+                    "Accept-Ranges": "bytes",
+                },
+            )
 
         content_length = end - start + 1
         headers = {
+            **base_headers,
             "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
             "Content-Length": str(content_length),
-            "Content-Type": mime_type,
         }
+        if is_head:
+            return Response(
+                status_code=status.HTTP_206_PARTIAL_CONTENT,
+                headers=headers,
+                media_type=mime_type,
+            )
         return StreamingResponse(
             _iter_file_chunk(media_path, start, content_length),
             status_code=status.HTTP_206_PARTIAL_CONTENT,
@@ -98,12 +155,16 @@ def stream_media(video_id: str, request: Request):
             media_type=mime_type,
         )
 
-    # Full file stream
     headers = {
-        "Accept-Ranges": "bytes",
+        **base_headers,
         "Content-Length": str(file_size),
-        "Content-Type": mime_type,
     }
+    if is_head:
+        return Response(
+            status_code=status.HTTP_200_OK,
+            headers=headers,
+            media_type=mime_type,
+        )
     return StreamingResponse(
         _iter_file_chunk(media_path, 0, file_size),
         status_code=status.HTTP_200_OK,

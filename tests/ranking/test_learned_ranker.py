@@ -18,9 +18,11 @@ from scripts.train_ltr_ranker_cv import (
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
     LTR_FEATURE_NAMES_18D,
+    LTR_FEATURE_NAMES_22D,
     compute_query_z_scores,
     extract_ltr_features_18d,
     extract_ltr_features_22d,
+    extract_ltr_features_24d,
     extract_ltr_features_batch,
     extract_moment_features,
 )
@@ -52,9 +54,12 @@ def test_ltr_feature_names_exact_order():
         "unverified_lexical_hazard",
         "subclause_weakest_link",
         "window_energy_concentration",
+        "temporal_attention_coherence",
+        "rrf_vis_caption",
     )
     assert LTR_FEATURE_NAMES == expected
-    assert len(LTR_FEATURE_NAMES) == 22
+    assert len(LTR_FEATURE_NAMES) == 24
+    assert len(LTR_FEATURE_NAMES_22D) == 22
     assert len(LTR_FEATURE_NAMES_18D) == 18
 
 
@@ -118,10 +123,18 @@ def test_extract_ltr_features_18d_and_derived_fields():
     vec22 = extract_ltr_features_22d(cand, z_stats=z_stats)
     dict22 = extract_ltr_features_22d(cand, z_stats=z_stats, return_dict=True)
     assert vec22.shape == (22,)
-    assert list(dict22.keys()) == list(LTR_FEATURE_NAMES)
+    assert list(dict22.keys()) == list(LTR_FEATURE_NAMES_22D)
     assert pytest.approx(dict22["vis_lexical_synergy"], abs=1e-5) == (0.40 - 0.12) * 0.012
     assert pytest.approx(dict22["subclause_weakest_link"], abs=1e-5) == 0.40
     assert pytest.approx(dict22["window_energy_concentration"], abs=1e-5) == 0.35 / 0.40
+
+    cand24 = dict(cand, temporal_attention_coherence=0.55, rrf_vis_caption=0.015)
+    vec24 = extract_ltr_features_24d(cand24, z_stats=z_stats)
+    dict24 = extract_ltr_features_24d(cand24, z_stats=z_stats, return_dict=True)
+    assert vec24.shape == (24,)
+    assert list(dict24.keys()) == list(LTR_FEATURE_NAMES)
+    assert pytest.approx(dict24["temporal_attention_coherence"], abs=1e-5) == 0.55
+    assert pytest.approx(dict24["rrf_vis_caption"], abs=1e-5) == 0.015
 
     low_vis_cand = dict(cand, s_vis_blend_max=0.11)
     low_vis_dict = extract_ltr_features_22d(low_vis_cand, z_stats=z_stats, return_dict=True)
@@ -137,8 +150,8 @@ def test_extract_ltr_features_18d_and_derived_fields():
     )
     assert pytest.approx(tiny_vis_dict["window_energy_concentration"], abs=1e-5) == 0.01 / 0.05
 
-    batch = extract_ltr_features_batch([cand, {"s_vis_blend_max": float("nan")}])
-    assert batch.shape == (2, 22)
+    batch = extract_ltr_features_batch([cand24, {"s_vis_blend_max": float("nan")}])
+    assert batch.shape == (2, 24)
     assert np.all(np.isfinite(batch))
 
 
@@ -149,7 +162,7 @@ def test_learned_ranker_fallback_and_latency(tmp_path: Path):
     assert ranker.model_type == "fallback_linear"
 
     rng = np.random.default_rng(7)
-    X = rng.standard_normal((120, 22)).astype(np.float32)
+    X = rng.standard_normal((120, 24)).astype(np.float32)
 
     # Warm up and benchmark pure-NumPy scoring latency (< 0.3 ms target)
     _ = ranker.score_matrix(X)
@@ -181,7 +194,7 @@ def test_learned_ranker_tree_ensemble_json(tmp_path: Path):
 
     ranker = LearnedRankerLTR(model_path=model_path)
     assert ranker.is_loaded is True
-    X = np.zeros((2, 22), dtype=np.float32)
+    X = np.zeros((2, 24), dtype=np.float32)
     X[0, 0] = 0.2  # <= 0.3 -> 0.5 + 0.1 * (-1.0) = 0.4
     X[1, 0] = 0.5  # > 0.3 -> 0.5 + 0.1 * (2.0) = 0.7
     scores = ranker.score_matrix(X)
@@ -249,6 +262,12 @@ def test_group_kfold_cv_no_leakage_and_training(tmp_path: Path):
         backend="pairwise_logistic",
     )
     assert artifact["metadata"]["cv_hit_at_1"] >= 0.85
+    assert artifact["metadata"]["trained_split"] == "dev_full_859"
+    assert len(artifact["metadata"]["trained_query_ids"]) == n_queries
+    assert len(artifact["fold_weights"]) == 5
+    for fw in artifact["fold_weights"]:
+        assert "eval_query_ids" in fw and len(fw["eval_query_ids"]) > 0
+        assert len(fw["weights"]) == 24
 
     out_model = tmp_path / "videntra_ltr_v1.json"
     save_ltr_model_json(artifact, out_model)
@@ -285,7 +304,7 @@ def test_ranking_features_standalone_import_no_circular_import():
             sys.executable,
             "-B",
             "-c",
-            "from videntra.ranking.features import LTR_FEATURE_NAMES, extract_ltr_features_18d, extract_ltr_features_22d; assert len(LTR_FEATURE_NAMES) == 22",
+            "from videntra.ranking.features import LTR_FEATURE_NAMES, extract_ltr_features_18d, extract_ltr_features_22d, extract_ltr_features_24d; assert len(LTR_FEATURE_NAMES) == 24",
         ],
         capture_output=True,
         text=True,
@@ -342,6 +361,12 @@ def test_base_anchored_residual_pairwise_training(tmp_path: Path):
     assert artifact["metadata"]["residual_training"] is True
     assert artifact["metadata"]["blend_weight"] == 0.015
     assert artifact["metadata"]["cv_hit_at_1"] >= 0.85
+    assert artifact["metadata"]["trained_split"] == "dev_full_859"
+    assert len(artifact["metadata"]["trained_query_ids"]) == n_queries
+    assert len(artifact["fold_weights"]) == 5
+    for fw in artifact["fold_weights"]:
+        assert "eval_query_ids" in fw and len(fw["eval_query_ids"]) > 0
+        assert len(fw["weights"]) == 24
 
     # Legacy JSONL without base_video_score falls back cleanly
     legacy_rows = [{k: v for k, v in r.items() if k != "base_video_score"} for r in rows]

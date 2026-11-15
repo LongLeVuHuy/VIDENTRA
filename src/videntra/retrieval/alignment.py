@@ -361,16 +361,23 @@ def _logsumexp(x: np.ndarray, axis: int) -> np.ndarray:
 def temporal_sinkhorn_alignment_score(
     clause_frame_sims: np.ndarray,
     *,
+    timestamps_sec: Sequence[float] | np.ndarray | None = None,
+    max_gap_sec: float = 35.0,
     eta: float = 0.15,
-    epsilon: float = 0.08,
-    n_iters: int = 3,
+    epsilon: float = 0.02,
+    n_iters: int = 20,
 ) -> float:
-    """Temporal Sinkhorn Optimal Transport (T-SOT) alignment score.
+    """Unbalanced / Partial Temporal Sinkhorn Optimal Transport (T-SOT) alignment score.
 
     Finds a soft transport plan ``P`` of shape ``(M, T)`` between ``M`` query
     clauses and ``T`` keyframes in a temporal window using stabilized log-domain
-    Sinkhorn-Knopp iterations, penalizing out-of-order clause-to-frame matches:
-        penalty(m, t) = eta * ((m / max(1, M - 1)) - (t / max(1, T - 1))) ** 2
+    Partial Sinkhorn iterations (exact row marginals ``1/M`` and upper-bounded
+    column marginals ``<= 1/min(M, T)`` so irrelevant frames do not dilute
+    the score while single-frame collapse is still penalized).
+
+    When ``timestamps_sec`` is provided, restricts evaluation to the candidate
+    window ``peak ± max_gap_sec`` and uses real timestamp gaps ``Δt`` for the
+    chronological order penalty instead of uniform frame index spacing.
     Returns ``sum(P * clause_frame_sims)``.
     """
     if clause_frame_sims is None:
@@ -391,21 +398,43 @@ def temporal_sinkhorn_alignment_score(
     if t_frames == 1:
         return float(np.mean(sims))
 
+    if timestamps_sec is not None:
+        ts = np.asarray(timestamps_sec, dtype=np.float64).ravel()
+        if ts.size != t_frames:
+            raise ValueError(
+                f"timestamps_sec length ({ts.size}) must match T ({t_frames})"
+            )
+        if max_gap_sec > 0.0 and t_frames > 2:
+            peak_idx = int(np.argmax(np.max(sims, axis=0)))
+            peak_t = float(ts[peak_idx])
+            win_mask = np.abs(ts - peak_t) <= float(max_gap_sec)
+            if int(np.sum(win_mask)) >= 2:
+                sims = sims[:, win_mask]
+                ts = ts[win_mask]
+                t_frames = sims.shape[1]
+        span = float(ts[-1] - ts[0])
+        if span > 1e-6:
+            t_pos = ((ts - ts[0]) / span)[None, :]
+        else:
+            t_pos = np.arange(t_frames, dtype=np.float64)[None, :] / float(max(1, t_frames - 1))
+    else:
+        t_pos = np.arange(t_frames, dtype=np.float64)[None, :] / float(max(1, t_frames - 1))
+
     m_pos = np.arange(m_clauses, dtype=np.float64)[:, None] / float(max(1, m_clauses - 1))
-    t_pos = np.arange(t_frames, dtype=np.float64)[None, :] / float(max(1, t_frames - 1))
     penalty = float(eta) * (m_pos - t_pos) ** 2
 
     eps = max(1e-6, float(epsilon))
     log_k = (sims - penalty) / eps
 
+    # Partial OT: each clause distributes 1/M mass; each frame absorbs at most 1/min(M, T)
     log_a = -np.log(float(m_clauses))
-    log_b = -np.log(float(t_frames))
+    log_b = -np.log(float(min(m_clauses, t_frames)))
     u = np.zeros(m_clauses, dtype=np.float64)
     v = np.zeros(t_frames, dtype=np.float64)
 
     for _ in range(max(1, int(n_iters))):
+        v = np.minimum(0.0, log_b - _logsumexp(log_k + u[:, None], axis=0))
         u = log_a - _logsumexp(log_k + v[None, :], axis=1)
-        v = log_b - _logsumexp(log_k + u[:, None], axis=0)
 
     plan = np.exp(log_k + u[:, None] + v[None, :])
     return float(np.sum(plan * sims))
@@ -416,13 +445,14 @@ def query_guided_temporal_attention_score(
     frame_vecs: np.ndarray,
     *,
     tau: float = 12.0,
+    disp_penalty: float = 0.15,
 ) -> float:
     """Parameter-Free Query-Guided Temporal Attention Pooler.
 
-    Computes attention weights ``alpha_k = softmax(tau * (frame_vecs @ query_vec))``,
-    L2-normalizes ``v_att = sum(alpha_k * frame_vecs)``, and returns
-    ``dot(query_vec, v_att)``. Rewards complementary multi-frame views of the
-    query concept on the unit hypersphere over single-frame coincidences.
+    Computes attention weights ``alpha_k = softmax(tau * cos(q, v_k))`` and
+    returns ``sum(alpha_k * cos(q, v_k)) - disp_penalty * (1 - ||sum(alpha_k * v_k)||_2)``.
+    Rewards high query-aligned frames while penalizing high directional
+    dispersion (e.g., unrelated frames across hard scene cuts).
     """
     if query_vec is None or frame_vecs is None:
         return 0.0
@@ -449,14 +479,16 @@ def query_guided_temporal_attention_score(
     q_unit = (q_arr / q_norm).astype(np.float64)
 
     f_unit = _l2_normalize_rows(f_arr).astype(np.float64)
-    logits = float(tau) * (f_unit @ q_unit)
+    cos_sims = f_unit @ q_unit
+    logits = float(tau) * cos_sims
     logits_shifted = logits - np.max(logits)
     exp_logits = np.exp(logits_shifted)
     alpha = exp_logits / np.sum(exp_logits)
 
+    mean_cos = float(np.dot(alpha, cos_sims))
     v_att = alpha @ f_unit
     v_norm = float(np.linalg.norm(v_att))
     if v_norm <= 1e-8:
         return 0.0
-    v_att_unit = v_att / v_norm
-    return float(np.dot(q_unit, v_att_unit))
+    dispersion = max(0.0, 1.0 - v_norm)
+    return float(mean_cos - float(disp_penalty) * dispersion)

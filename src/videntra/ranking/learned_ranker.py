@@ -45,11 +45,13 @@ _FALLBACK_LINEAR_WEIGHTS: dict[str, float] = {
     "unverified_lexical_hazard": -0.45,
     "subclause_weakest_link": 0.30,
     "window_energy_concentration": 0.20,
+    "temporal_attention_coherence": 0.25,
+    "rrf_vis_caption": 0.25,
 }
 
 
 class LearnedRankerLTR:
-    """Pure-NumPy LTR ranker over the 22 continuous multimodal features."""
+    """Pure-NumPy LTR ranker over the 24 continuous multimodal features."""
 
     def __init__(self, model_path: str | Path | None = DEFAULT_LTR_MODEL_PATH) -> None:
         self.model_path: Path | None = Path(model_path) if model_path is not None else None
@@ -66,6 +68,7 @@ class LearnedRankerLTR:
         self.bias: float = 0.0
         self.learning_rate: float = 1.0
         self.trees: list[dict[str, Any]] = []
+        self.fold_weights: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {}
 
         if self.model_path is not None and self.model_path.is_file():
@@ -77,15 +80,16 @@ class LearnedRankerLTR:
         payload = json.loads(src.read_text(encoding="utf-8"))
 
         names = tuple(payload.get("feature_names", LTR_FEATURE_NAMES))
-        if len(names) not in (18, self.n_features):
+        if len(names) not in (18, 22, self.n_features):
             raise ValueError(
-                f"Expected {self.n_features} (or legacy 18) features in LTR model, got {len(names)}"
+                f"Expected {self.n_features} (or legacy 18/22) features in LTR model, got {len(names)}"
             )
-        legacy_18d = len(names) == 18 and self.n_features == 22
-        self.feature_names = LTR_FEATURE_NAMES if legacy_18d else names
+        legacy_prefix_len = len(names) if len(names) < self.n_features else 0
+        self.feature_names = LTR_FEATURE_NAMES if legacy_prefix_len else names
 
         model_type = str(payload.get("model_type", "pairwise_logistic")).lower()
         self.model_type = model_type
+        self.fold_weights = list(payload.get("fold_weights", []))
         self.metadata = dict(payload.get("metadata", {}))
 
         mean_arr = payload.get("feature_mean")
@@ -96,9 +100,9 @@ class LearnedRankerLTR:
                 raise ValueError(
                     f"Expected {len(names)} feature_mean entries, got {raw_mean.shape}"
                 )
-            if legacy_18d:
+            if legacy_prefix_len:
                 padded_mean = np.zeros(self.n_features, dtype=np.float64)
-                padded_mean[:18] = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
+                padded_mean[:legacy_prefix_len] = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
                 self.feature_mean = padded_mean
             else:
                 self.feature_mean = np.where(np.isfinite(raw_mean), raw_mean, 0.0)
@@ -110,9 +114,9 @@ class LearnedRankerLTR:
                 raise ValueError(
                     f"Expected {len(names)} feature_std entries, got {raw_std.shape}"
                 )
-            if legacy_18d:
+            if legacy_prefix_len:
                 padded_std = np.ones(self.n_features, dtype=np.float64)
-                padded_std[:18] = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
+                padded_std[:legacy_prefix_len] = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
                 self.feature_std = padded_std
             else:
                 self.feature_std = np.where(np.isfinite(raw_std) & (raw_std > 1e-8), raw_std, 1.0)
@@ -134,9 +138,9 @@ class LearnedRankerLTR:
                 raise ValueError(
                     f"Linear/logistic LTR model must provide {len(names)} weights"
                 )
-            if legacy_18d:
+            if legacy_prefix_len:
                 padded_w = np.zeros(self.n_features, dtype=np.float64)
-                padded_w[:18] = np.asarray(raw_weights, dtype=np.float64)
+                padded_w[:legacy_prefix_len] = np.asarray(raw_weights, dtype=np.float64)
                 self.weights = padded_w
             else:
                 self.weights = np.asarray(raw_weights, dtype=np.float64)
@@ -177,19 +181,25 @@ class LearnedRankerLTR:
             X = X.reshape(1, -1)
         if X.shape[0] == 0:
             return np.zeros(0, dtype=np.float64)
-        if X.shape[1] != self.n_features:
-            raise ValueError(f"Expected {self.n_features} feature columns, got {X.shape[1]}")
+        k_cols = X.shape[1]
+        if k_cols not in (18, 22, self.n_features) or k_cols > self.n_features:
+            raise ValueError(f"Expected {self.n_features} (or legacy 18/22) feature columns, got {k_cols}")
 
         X = np.where(np.isfinite(X), X, 0.0)
 
         if self.model_type in {"tree_ensemble", "gbdt", "lightgbm"} and self.trees:
-            scores = np.full(X.shape[0], self.bias, dtype=np.float64)
+            if k_cols < self.n_features:
+                X_eval = np.zeros((X.shape[0], self.n_features), dtype=np.float64)
+                X_eval[:, :k_cols] = X
+            else:
+                X_eval = X
+            scores = np.full(X_eval.shape[0], self.bias, dtype=np.float64)
             for tree in self.trees:
-                scores += self.learning_rate * self._predict_tree_batch(tree, X)
+                scores += self.learning_rate * self._predict_tree_batch(tree, X_eval)
             return scores
 
-        X_norm = (X - self.feature_mean) / self.feature_std
-        return (X_norm @ self.weights) + self.bias
+        X_norm = (X - self.feature_mean[:k_cols]) / self.feature_std[:k_cols]
+        return (X_norm @ self.weights[:k_cols]) + self.bias
 
     def score_candidates(
         self,
