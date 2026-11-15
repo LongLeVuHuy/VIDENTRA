@@ -326,5 +326,5 @@ Khi tìm trên toàn corpus, MSR-VTT đạt **38,57% Hit@1 (312/809)** ở dev �
 ### 7.2. Định hướng nghiên cứu phát triển tiếp theo
 1. **Rerank thị giác trên shortlist MSR-VTT.** Giữ cùng tập ứng viên. So A5 hiện tại với context pooling nhiều frame, spatial patches và caption trong các run riêng. Dùng Kaggle `--mode p85` để tạo patches và captions. Đo Hit@1, Hit@5 và p95 trên dev đầy đủ.
 2. **Đo độ phủ ứng viên theo từng bước.** Ghi Recall@K của visual, union và shortlist thực tế theo dataset. Nếu video đúng còn nằm ngoài shortlist, thử thêm embedding theo clip hoặc lấy mẫu dày hơn quanh chuyển cảnh. Đối chiếu ở cùng số ứng viên để tách hiệu quả coverage khỏi reranking.
-3. **Thử OCR/ASR và LTR theo lát cắt.** Dùng `--mode ocr_asr` cho pilot truy vấn tiếng Việt có nhãn riêng. So có/không LTR khi cùng snapshot. Chọn cấu hình trên dev khóa theo nguồn và đánh giá cấu hình đã chốt trên split mới. [Kế hoạch thí nghiệm](docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md)
+3. **Thử OCR/ASR và LTR theo lát cắt.** Dùng `--mode ocr_asr` cho pilot truy vấn tiếng Việt có nhãn riêng. So có/không LTR khi cùng snapshot. Chọn cấu hình trên dev khóa theo nguồn và đánh giá cấu hình đã chốt trên split mới. [Kế hoạch sửa lỗi và tune MSR‑VTT](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md)
 

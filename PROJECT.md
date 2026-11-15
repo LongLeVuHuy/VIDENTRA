@@ -62,7 +62,7 @@
 
 ## 5. Trạng thái Các Cột mốc (Milestones)
 
-[Kế hoạch sửa lỗi Phase 9 và nâng độ chính xác](docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md) mô tả các việc còn lại trong ingest, evaluator, temporal verifier và các thí nghiệm retrieval tiếp theo.
+[Kế hoạch sửa lỗi và tune MSR‑VTT](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md) mô tả bước hoàn thiện temporal verifier, đo shortlist, kiểm mapping P8‑5 và thử nghiệm nâng độ chính xác sau bản vá Phase 9.
 
 | Cột mốc | Phạm vi chính | Trạng thái |
 | :--- | :--- | :--- |

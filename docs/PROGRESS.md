@@ -1,5 +1,11 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Kế hoạch sửa lỗi và tune MSR‑VTT ở thư mục gốc
+
+- Viết [kế hoạch triển khai](../VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md) và cập nhật liên kết trong README/PROJECT. Kế hoạch có từng bản sửa, regression, baseline và lịch thử pooling nhiều frame, P8‑5, candidate recall và residual LTR. Các nguồn gốc X‑Pool, CLIP4Clip, SigLIP 2, TEMPO‑P, Florence‑2 và LightGBM được dùng để thiết kế thí nghiệm phù hợp pipeline hiện hành và target hardware.
+- Tái hiện bằng fixture tạm. Hai OCR refs khác ID cùng timestamp vẫn có thể được `GraphMatcher` xác nhận `before`. Khoảng caller đối nghịch timestamp thật cũng đổi kết quả từ `CONTRADICTED` sang `SUPPORTED`. Dry-run P8‑5 chấp nhận file 2×9×768 thiếu row map, trong khi runtime lookup bằng `faiss_id`. Kiểm model hiện hành có trọng số 0 cho `s_late_interaction` và `rrf_vis_caption`. Kế hoạch tách việc sửa điều kiện dữ liệu khỏi phép đo đóng góp của từng feature.
+- Chạy lệnh pytest trọng tâm đầu tiên trong kế hoạch trên `.venv` hiện tại, **37 passed in 25.20s**. Đây là kết quả trước khi áp dụng bản sửa đề xuất. Xác minh số đếm MSR‑VTT từ archive và các liên kết code. Chưa có phép đo benchmark hoặc GPU mới trong lượt viết kế hoạch.
+
 ## 15/11/2026 — Kiểm chứng bản vá `3224676` và phân tích MSR‑VTT
 
 - `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` → **507 passed, 3 warnings in 113.74s**. Chạy lại 12 query MSR‑VTT đầu của `dev_150` bằng `MultimodalBenchmarkRunner` trên CPU Intel Core i5-7300U, dùng fold LTR tương ứng. **12/12** khớp thứ tự Top‑10 video trong archive. Kiểm tra artifact cho thấy 742/742 query có fold, tập train/eval của mỗi fold không trùng group và AVC `xvAvN5xn5oY` nằm tại fold 0. Đối chiếu 11/11 output hash và các hash runner, pipeline, SQLite, LTR với run `08626d79ef744e3080c2fb24c4761cad`. Không chạy lại full benchmark hay đo GPU trong lượt này.
