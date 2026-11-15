@@ -324,6 +324,9 @@ def compare_runs(
             "new_in_pool_hit": c_metrics["in_pool_hit"],
             "fallback_reason": fallback_reason,
             "vp_coverage_ok": vp_cov_ok,
+            "vp_partial_applied": bool(c_row.get("vp_partial_applied", False)),
+            "query_plan_mode": c_row.get("query_plan_mode"),
+            "query_plan_cache_hit": c_row.get("query_plan_cache_hit"),
         }
         internal_rows.append(internal)
         paired_records.append({
@@ -340,6 +343,9 @@ def compare_runs(
             "in_pool_hit": internal["in_pool_hit"],
             "fallback_reason": fallback_reason,
             "vp_coverage_ok": vp_cov_ok,
+            "vp_partial_applied": internal["vp_partial_applied"],
+            "query_plan_mode": internal["query_plan_mode"],
+            "query_plan_cache_hit": internal["query_plan_cache_hit"],
         })
 
     by_ds: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -347,7 +353,12 @@ def compare_runs(
         by_ds[r["dataset"]].append(r)
 
     cov_ok_rows = [r for r in internal_rows if r["vp_coverage_ok"]]
-    cov_fb_rows = [r for r in internal_rows if not r["vp_coverage_ok"]]
+    cov_partial_rows = [r for r in internal_rows if r["vp_partial_applied"]]
+    cov_fb_rows = [r for r in internal_rows if not r["vp_coverage_ok"] and not r["vp_partial_applied"]]
+    cached_llm_rows = [
+        r for r in internal_rows
+        if r["query_plan_mode"] == "llm_compact" and r["query_plan_cache_hit"]
+    ]
 
     moment_guardrail: dict[str, Any]
     if mom_labeled_n == 0:
@@ -370,12 +381,18 @@ def compare_runs(
             "pool": base_receipt.get("pool"),
             "alpha": base_receipt.get("alpha"),
             "gallery_sha256": base_receipt.get("gallery_sha256"),
+            "query_plan_source": base_receipt.get("query_plan_source"),
         },
         "challenger": {
             "dir": str(challenger_dir),
             "pool": chal_receipt.get("pool"),
             "alpha": chal_receipt.get("alpha"),
             "gallery_sha256": chal_receipt.get("gallery_sha256"),
+            "vp_dry_run": chal_receipt.get("vp_dry_run"),
+            "vp_coverage_policy": chal_receipt.get("vp_coverage_policy"),
+            "query_plan_source": chal_receipt.get("query_plan_source"),
+            "query_plan_revision": chal_receipt.get("query_plan_revision"),
+            "query_plan_cache_sha256": chal_receipt.get("query_plan_cache_sha256"),
         },
         "overall": _summarize_slice(internal_rows, n_resamples=n_resamples, seed=seed),
         "per_dataset": {
@@ -384,8 +401,10 @@ def compare_runs(
         },
         "coverage_breakdown": {
             "vp_coverage_intersection": _summarize_slice(cov_ok_rows, n_resamples=n_resamples, seed=seed),
+            "vp_partial_coverage": _summarize_slice(cov_partial_rows, n_resamples=n_resamples, seed=seed),
             "fallback_subset": _summarize_slice(cov_fb_rows, n_resamples=n_resamples, seed=seed),
         },
+        "cached_llm_subset": _summarize_slice(cached_llm_rows, n_resamples=n_resamples, seed=seed),
         "guardrails": {
             "qvhighlights": _summarize_slice(by_ds.get("qvhighlights", []), n_resamples=n_resamples, seed=seed),
             "avc": _summarize_slice(by_ds.get("avc", []), n_resamples=n_resamples, seed=seed),
@@ -445,7 +464,13 @@ def _write_markdown_report(path: Path, summary: dict[str, Any]) -> None:
     lines.append("| Coverage Slice | N (Groups) | Hit@1 (Base -> Chal) | Recall@K (Base -> Chal) | MRR@10 | Wins/Losses | Delta (pp) | 95% Paired Group Bootstrap CI |\n")
     lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
     lines.append(_fmt_row("VP Coverage Intersection", summary["coverage_breakdown"]["vp_coverage_intersection"]))
+    if summary["challenger"]["vp_coverage_policy"] == "preserve-unscored":
+        lines.append(_fmt_row("VP Partial Coverage", summary["coverage_breakdown"]["vp_partial_coverage"]))
     lines.append(_fmt_row("Fallback Subset", summary["coverage_breakdown"]["fallback_subset"]))
+    if summary["challenger"]["query_plan_source"] == "frozen_llm_cache":
+        lines.append(_fmt_row("Validated LLM cache hits", summary["cached_llm_subset"]))
+    if summary["challenger"]["vp_dry_run"] is True:
+        lines.append("\nVideoPrism shard used synthetic dry-run vectors.\n")
     lines.append(f"\n## Moment Guardrail\n\n- Status: `{summary['guardrails']['moment'].get('status')}` (n={summary['guardrails']['moment'].get('moment_labeled_n', 0)})\n")
     path.write_text("".join(lines), encoding="utf-8")
 

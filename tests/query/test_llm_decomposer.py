@@ -390,6 +390,17 @@ def test_ram_and_disk_jsonl_cache_hit(tmp_path: Path):
     assert p3.routing_mode == "llm_compact"
     assert p3.visual_clauses == ("chef slicing onions on wooden board",)
 
+    before = cache_file.read_bytes()
+    assert p1.query_graph.parser.model_revision is not None
+    frozen = AdaptiveQueryDecomposer.from_frozen_llm_cache(cache_file, p1.query_graph.parser.model_revision)
+    assert frozen.decompose(query).routing_mode == "llm_compact"
+    assert frozen.decompose(query).cache_hit is True
+    assert frozen.decompose("Someone chopping carrots on a board").routing_mode == "fallback"
+    assert frozen.llm_backend.enabled is False
+    assert cache_file.read_bytes() == before
+    with pytest.raises(ValueError, match="Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer.from_frozen_llm_cache(cache_file, "different-revision")
+
 
 def test_fallback_sanitizes_dangling_temporal_only_rule_graph(tmp_path: Path):
     """Regression: queries yielding only a dangling temporal_order predicate in RuleBasedQueryParser must not crash."""

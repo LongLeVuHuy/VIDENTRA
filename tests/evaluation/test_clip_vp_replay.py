@@ -191,7 +191,14 @@ def _make_vp_dir(
         files_sha["video_vectors.npy"] = "0" * 64
 
     (vp_dir / "receipt.json").write_text(
-        json.dumps({"schema_version": 1, "files": files_sha}),
+        json.dumps({
+            "status": "SUCCESS",
+            "dry_run": False,
+            "files": {
+                name: {"sha256": digest, "bytes": (vp_dir / name).stat().st_size}
+                for name, digest in files_sha.items()
+            },
+        }),
         encoding="utf-8",
     )
     return vp_dir
@@ -326,6 +333,23 @@ def test_missing_artifact_and_missing_vector_fallback(tmp_path: Path) -> None:
     assert recs_p["msr_q1"]["fallback_reason"].startswith("missing_vp_videos:")
     assert recs_p["qvh_q3"]["vp_coverage_ok"] is True
 
+    partial_dir = tmp_path / "preserved_partial"
+    partial = run_replay(
+        pools_dir=pools_dir, k=10, alpha=1.0, vp_dir=vp_partial, out_dir=partial_dir,
+        vp_coverage_policy="preserve-unscored",
+    )
+    assert partial["vp_partial_count"] == 2
+    partial_rows = [
+        json.loads(line)
+        for line in (partial_dir / "per_query_evaluation.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    for record in partial_rows:
+        if record["vp_partial_applied"]:
+            slot = record["base_video_ids"].index("video0003")
+            assert record["ranked_video_ids"][slot] == "video0003"
+            assert set(record["base_video_ids"]) == set(record["ranked_video_ids"])
+            assert record["fallback_reason"] is None
+
 
 def test_duplicate_query_and_hash_mismatch_rejection(tmp_path: Path) -> None:
     pools_dir, labels_path, split_lock_path, _ = _make_synthetic_pools(tmp_path)
@@ -339,6 +363,18 @@ def test_duplicate_query_and_hash_mismatch_rejection(tmp_path: Path) -> None:
     vp_nan = _make_vp_dir(tmp_path / "vp_nan", pools_dir, non_finite_vec=True)
     with pytest.raises(ValueError, match="Non-finite"):
         run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.25, vp_dir=vp_nan, out_dir=tmp_path / "out_nan")
+
+    vp_dry = _make_vp_dir(tmp_path / "vp_dry", pools_dir)
+    receipt_path = vp_dry / "receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["dry_run"] = True
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="Synthetic VideoPrism"):
+        run_replay(pools_dir=pools_dir, vp_dir=vp_dry, alpha=0.25, out_dir=tmp_path / "out_dry")
+    replay = run_replay(
+        pools_dir=pools_dir, vp_dir=vp_dry, alpha=0.25, out_dir=tmp_path / "out_dry", allow_synthetic=True
+    )
+    assert replay["vp_dry_run"] is True
 
     # 3. Duplicate query_id in queries.jsonl -> ValueError
     dup_pools = tmp_path / "dup_pools"

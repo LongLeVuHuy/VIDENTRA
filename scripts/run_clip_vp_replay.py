@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.capture_msr_candidate_pools import apply_clip_reserve, sha256_text
+from scripts.kaggle_videoprism_worker import SHARD_FILENAMES
 from videntra.evaluation.provenance import hash_paths, sha256_file
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -63,39 +64,32 @@ def _dedup_preserve_order(items: Sequence[str]) -> list[str]:
 
 
 def _verify_vp_receipt_hashes(vp_dir: Path, receipt: dict[str, Any]) -> None:
-    """Verify SHA-256 hashes recorded in VideoPrism receipt.json if present."""
-    hash_maps: list[dict[str, str]] = []
-    for key in ("files", "artifact_sha256", "sha256", "hashes"):
-        val = receipt.get(key)
-        if isinstance(val, dict):
-            hash_maps.append({str(k): str(v) for k, v in val.items() if v is not None})
-
-    for fname in ("video_vectors.npy", "video_rows.jsonl", "query_vectors.npy", "query_rows.jsonl"):
-        stem = fname.replace(".", "_")
-        for candidate_key in (f"{fname}_sha256", f"{stem}_sha256"):
-            if candidate_key in receipt and receipt[candidate_key]:
-                hash_maps.append({fname: str(receipt[candidate_key])})
-
-    for hmap in hash_maps:
-        for rel_name, expected_sha in hmap.items():
-            target = vp_dir / Path(rel_name).name
-            if not target.is_file():
-                target = vp_dir / rel_name
-            if not target.is_file():
-                raise FileNotFoundError(f"VP receipt references missing file: {rel_name}")
-            actual_sha = sha256_file(target)
-            if actual_sha != expected_sha:
-                raise ValueError(
-                    f"VP receipt SHA-256 mismatch for {target.name}: expected {expected_sha}, got {actual_sha}"
-                )
+    """Verify all four shard files against worker or legacy receipt hashes."""
+    for name in SHARD_FILENAMES:
+        entries = []
+        for key in ("files", "artifact_sha256", "sha256", "hashes"):
+            mapping = receipt.get(key)
+            if isinstance(mapping, dict) and name in mapping:
+                value = mapping[name]
+                entries.append(value.get("sha256") if isinstance(value, dict) else value)
+        for key in (f"{name}_sha256", f"{name.replace('.', '_')}_sha256"):
+            if key in receipt:
+                entries.append(receipt[key])
+        if not entries:
+            raise ValueError(f"Missing VP receipt SHA-256 for {name}")
+        actual_sha = sha256_file(vp_dir / name)
+        if any(expected_sha != actual_sha for expected_sha in entries):
+            raise ValueError(f"VP receipt SHA-256 mismatch for {name}: got {actual_sha}")
 
 
 def _load_vp_artifacts(
     vp_dir: Path,
     queries_by_id: dict[str, dict[str, Any]],
+    *,
+    allow_synthetic: bool,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Load and validate VideoPrism vectors/rows/receipt. Returns (bundle, missing_artifact_reason)."""
-    required = ("receipt.json", "video_vectors.npy", "video_rows.jsonl", "query_vectors.npy", "query_rows.jsonl")
+    required = ("receipt.json", *SHARD_FILENAMES)
     if not vp_dir.is_dir():
         return None, "missing_vp_dir"
     missing = [name for name in required if not (vp_dir / name).is_file()]
@@ -105,6 +99,10 @@ def _load_vp_artifacts(
     receipt = json.loads((vp_dir / "receipt.json").read_text(encoding="utf-8"))
     if not isinstance(receipt, dict):
         raise ValueError("VP receipt.json must be a JSON object")
+    if type(receipt.get("dry_run")) is not bool or receipt.get("status") != "SUCCESS":
+        raise ValueError("VP receipt must declare status=SUCCESS and a boolean dry_run")
+    if receipt["dry_run"] and not allow_synthetic:
+        raise ValueError("Synthetic VideoPrism vectors require --allow-synthetic for smoke tests")
     _verify_vp_receipt_hashes(vp_dir, receipt)
 
     video_vecs = np.load(vp_dir / "video_vectors.npy", mmap_mode="r")
@@ -132,21 +130,23 @@ def _load_vp_artifacts(
 
     video_rows = _read_jsonl_unique(vp_dir / "video_rows.jsonl", "video_id", "video_rows.jsonl")
     query_rows = _read_jsonl_unique(vp_dir / "query_rows.jsonl", "query_id", "query_rows.jsonl")
+    if len(video_rows) != len(video_arr) or len(query_rows) != len(query_arr):
+        raise ValueError("VP vector and metadata row counts differ")
 
     video_map: dict[str, np.ndarray] = {}
     for idx, row in enumerate(video_rows):
         row_idx = int(row.get("row_id", idx))
-        if row_idx < 0 or row_idx >= video_arr.shape[0]:
-            raise ValueError(f"VP video row_id {row_idx} out of bounds [0, {video_arr.shape[0]})")
+        if row_idx != idx:
+            raise ValueError(f"VP video row_id {row_idx} must equal its row index {idx}")
         video_map[str(row["video_id"])] = video_arr[row_idx]
 
     query_map: dict[str, np.ndarray] = {}
     for idx, row in enumerate(query_rows):
         qid = str(row["query_id"])
         row_idx = int(row.get("row_id", idx))
-        if row_idx < 0 or row_idx >= query_arr.shape[0]:
-            raise ValueError(f"VP query row_id {row_idx} out of bounds [0, {query_arr.shape[0]})")
-        if qid in queries_by_id and row.get("query_text_sha256") is not None:
+        if row_idx != idx:
+            raise ValueError(f"VP query row_id {row_idx} must equal its row index {idx}")
+        if qid in queries_by_id:
             expected_sha = queries_by_id[qid]["query_text_sha256"]
             if str(row["query_text_sha256"]) != expected_sha:
                 raise ValueError(
@@ -190,6 +190,8 @@ def run_replay(
     k: int = 20,
     alpha: float = 0.0,
     vp_dir: Path | None = None,
+    allow_synthetic: bool = False,
+    vp_coverage_policy: str = "full",
     out_dir: Path = Path("work/experiments/clip_vp_replay"),
 ) -> dict[str, Any]:
     if pool not in ("a5", "clip"):
@@ -200,6 +202,8 @@ def run_replay(
         raise ValueError(f"clip pool requires k >= 2, got {k}")
     if not (0.0 <= float(alpha) <= 1.0):
         raise ValueError(f"alpha must be in [0.0, 1.0], got {alpha}")
+    if vp_coverage_policy not in ("full", "preserve-unscored"):
+        raise ValueError(f"Unknown VP coverage policy: {vp_coverage_policy}")
     alpha = float(alpha)
 
     t0 = time.perf_counter()
@@ -246,10 +250,14 @@ def run_replay(
         if vp_dir is None:
             vp_global_fallback = "missing_vp_dir"
         else:
-            vp_bundle, vp_global_fallback = _load_vp_artifacts(vp_dir, queries_by_id)
+            vp_bundle, vp_global_fallback = _load_vp_artifacts(
+                vp_dir, queries_by_id, allow_synthetic=allow_synthetic
+            )
     elif vp_dir is not None and vp_dir.exists():
         # Even at alpha=0, if vp_dir is explicitly passed and exists, validate its integrity
-        vp_bundle, vp_global_fallback = _load_vp_artifacts(vp_dir, queries_by_id)
+        vp_bundle, vp_global_fallback = _load_vp_artifacts(
+            vp_dir, queries_by_id, allow_synthetic=allow_synthetic
+        )
 
     capture_receipt = (
         json.loads(capture_receipt_path.read_text(encoding="utf-8"))
@@ -260,6 +268,7 @@ def run_replay(
     per_query_records: list[dict[str, Any]] = []
     fallback_count = 0
     vp_coverage_count = 0
+    vp_partial_count = 0
 
     for q in queries:
         qid = str(q["query_id"])
@@ -287,44 +296,36 @@ def run_replay(
         }
 
         fallback_reason: str | None = None
-        vp_coverage_ok = False
-        scores: dict[str, float] = {}
+        ranked_video_ids = list(base_pool)
+        scores = {vid: 1.0 / (60.0 + idx) for idx, vid in enumerate(base_pool, 1)}
+        video_map = vp_bundle["video_map"] if vp_bundle else {}
+        q_vec = vp_bundle["query_map"].get(qid) if vp_bundle else None
+        covered_pool = [vid for vid in base_pool if vid in video_map] if q_vec is not None else []
+        vp_coverage_ok = q_vec is not None and len(covered_pool) == len(base_pool)
+        vp_partial_applied = False
 
-        if alpha == 0.0:
-            ranked_video_ids = list(base_pool)
-            scores = {vid: 1.0 / (60.0 + idx) for idx, vid in enumerate(ranked_video_ids, 1)}
-            if vp_bundle is not None:
-                vp_coverage_ok = (
-                    qid in vp_bundle["query_map"]
-                    and all(vid in vp_bundle["video_map"] for vid in base_pool)
-                )
-        elif vp_global_fallback is not None:
-            ranked_video_ids = list(base_pool)
-            fallback_reason = vp_global_fallback
-            scores = {vid: 1.0 / (60.0 + idx) for idx, vid in enumerate(ranked_video_ids, 1)}
-        else:
-            assert vp_bundle is not None
-            q_vec = vp_bundle["query_map"].get(qid)
-            if q_vec is None:
-                ranked_video_ids = list(base_pool)
+        if alpha > 0.0:
+            if vp_global_fallback:
+                fallback_reason = vp_global_fallback
+            elif q_vec is None:
                 fallback_reason = "missing_vp_query"
-                scores = {vid: 1.0 / (60.0 + idx) for idx, vid in enumerate(ranked_video_ids, 1)}
+            elif vp_coverage_ok:
+                ranked_video_ids, scores = rerank_pool_with_vp(base_pool, q_vec, video_map, alpha)
+            elif vp_coverage_policy == "preserve-unscored" and len(covered_pool) >= 2:
+                covered_ranked, covered_scores = rerank_pool_with_vp(covered_pool, q_vec, video_map, alpha)
+                promoted = iter(covered_ranked)
+                ranked_video_ids = [next(promoted) if vid in video_map else vid for vid in base_pool]
+                scores.update(covered_scores)
+                vp_partial_applied = True
             else:
-                missing_vids = [vid for vid in base_pool if vid not in vp_bundle["video_map"]]
-                if missing_vids:
-                    ranked_video_ids = list(base_pool)
-                    fallback_reason = f"missing_vp_videos:{len(missing_vids)}"
-                    scores = {vid: 1.0 / (60.0 + idx) for idx, vid in enumerate(ranked_video_ids, 1)}
-                else:
-                    ranked_video_ids, scores = rerank_pool_with_vp(
-                        base_pool, q_vec, vp_bundle["video_map"], alpha=alpha
-                    )
-                    vp_coverage_ok = True
+                fallback_reason = f"missing_vp_videos:{len(base_pool) - len(covered_pool)}"
 
         if fallback_reason is not None:
             fallback_count += 1
         if vp_coverage_ok:
             vp_coverage_count += 1
+        if vp_partial_applied:
+            vp_partial_count += 1
 
         record = {
             "query_id": qid,
@@ -340,6 +341,10 @@ def run_replay(
             "scores": {vid: round(scores[vid], 8) for vid in ranked_video_ids},
             "fallback_reason": fallback_reason,
             "vp_coverage_ok": vp_coverage_ok,
+            "vp_partial_applied": vp_partial_applied,
+            "vp_scored_video_count": len(covered_pool),
+            "query_plan_mode": a5_row.get("query_plan_mode"),
+            "query_plan_cache_hit": a5_row.get("query_plan_cache_hit"),
             "anchor_by_video_id": anchor_by_vid,
         }
         if reserve_info is not None:
@@ -368,10 +373,16 @@ def run_replay(
         "query_count": len(per_query_records),
         "fallback_count": fallback_count,
         "vp_coverage_count": vp_coverage_count,
+        "vp_partial_count": vp_partial_count,
+        "vp_coverage_policy": vp_coverage_policy,
         "gallery_sha256": capture_receipt.get("gallery_sha256"),
         "queries_sha256": sha256_file(queries_path),
         "pool_sha256": sha256_file(a5_path if pool == "a5" else clip_path),
         "vp_receipt_sha256": vp_bundle["receipt_sha256"] if vp_bundle else None,
+        "vp_dry_run": vp_bundle["receipt"]["dry_run"] if vp_bundle else None,
+        "query_plan_source": capture_receipt.get("query_plan_source"),
+        "query_plan_cache_sha256": capture_receipt.get("query_plan_cache_sha256"),
+        "query_plan_revision": capture_receipt.get("query_plan_revision"),
         "elapsed_seconds": round(time.perf_counter() - t0, 4),
         "output_sha256": hash_paths([eval_path]),
     }
@@ -387,6 +398,8 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=0.0)
     parser.add_argument("--vp-dir", type=Path, default=None)
+    parser.add_argument("--allow-synthetic", action="store_true", help="Allow dry-run vectors for smoke tests")
+    parser.add_argument("--vp-coverage-policy", choices=("full", "preserve-unscored"), default="full")
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args()
 
@@ -396,6 +409,8 @@ def main() -> None:
         k=args.k,
         alpha=args.alpha,
         vp_dir=args.vp_dir,
+        allow_synthetic=args.allow_synthetic,
+        vp_coverage_policy=args.vp_coverage_policy,
         out_dir=args.out_dir,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))

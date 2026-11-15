@@ -547,6 +547,7 @@ class UnifiedMultimodalSearchPipeline:
         video_keyframes: dict[str, list[dict]] | None = None,
         video_durations: dict[str, float] | None = None,
         video_objects: dict[str, list[dict]] | None = None,
+        query_decomposer: AdaptiveQueryDecomposer | None = None,
     ):
         self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
         self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
@@ -629,7 +630,7 @@ class UnifiedMultimodalSearchPipeline:
         self._clip_branch_index: ClipBranchIndex | None = None
 
         # Phase 7.2 / 7.3 / 7.4 components (fail-safe when local models/artifacts are absent)
-        self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
+        self.query_decomposer = query_decomposer or AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
         self.ltr_blend_weight = float(ltr_blend_weight)
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None

@@ -183,8 +183,8 @@ Lệnh này sẽ mã hóa toàn bộ các đoạn chữ `OCR` và lời thoại 
 
 #### C. Tạo Cache Phân rã Truy vấn bằng Small-LLM (`query_decomposition_cache.jsonl`)
 ```powershell
-# Chế độ nhanh trên CPU (< 1 giây cho toàn bộ 1,060 câu truy vấn bằng RuleBasedQueryParser)
-.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py --split all_1060 --rule-only
+# Tạo cache rules riêng trên CPU
+.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py --split all_1060 --no-enable-llm --cache-path work/experiments/query_rules_cache.jsonl
 
 # Chế độ đầy đủ bằng Qwen2.5-1.5B-Instruct (GGUF hoặc GPU)
 $env:VIDENTRA_LLM_ENABLED="1"
@@ -280,7 +280,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 .\.venv\Scripts\python.exe -B scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --out-dir work/experiments/clip_vp_pools_dev
 .\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool a5 --k 10 --alpha 0 --out-dir work/experiments/clip_vp_k10_baseline
 .\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool clip --k 10 --alpha 0 --out-dir work/experiments/clip_vp_k10_reserve
-.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k10_baseline --challenger work/experiments/clip_vp_k10_reserve --labels work/evaluation-only/clip_vp_dev_labels.jsonl --split-lock work/evaluation-only/clip_vp_split_lock.json --out-dir work/experiments/clip_vp_k10_compare
+.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k10_baseline --challenger work/experiments/clip_vp_k10_reserve --labels work/evaluation-only/clip_vp_dev_full_859_labels.jsonl --split-lock work/evaluation-only/clip_vp_dev_full_859_split_lock.json --out-dir work/experiments/clip_vp_k10_compare
 ```
 
 ---
@@ -308,6 +308,8 @@ for rank, moment in enumerate(response["moments"], start=1):
 | **MSR-VTT** | 100 | **`47.00%`** | **`49.00%`** | `59.00%` | `64.00%` | **`0.5223`** | **`0.5436`** | `79.00%` | `20.00%` |
 
 Khi tìm trên toàn corpus, MSR-VTT đạt **38,57% Hit@1 (312/809)** ở dev đầy đủ và **37,17% (71/191)** ở held-out. Ở held-out, video có nhãn đúng nằm trong hạng 2–5 ở 37 query, hạng 6–10 ở 21 query và ngoài top 10 ở 62 query. [Số liệu theo dataset](benchmark/benchmark_summary.json)
+
+Chạy lại replay trên dev giữ **312/809 Hit@1** với clip reserve. Recall@10 tăng từ **544 lên 555/809** và Recall@20 từ **606 lên 611/809**. Có thể so A5 rules với query plans Qwen đã xác thực qua `--rules-only` và `--query-plan-cache` trên script capture. Với shard VideoPrism chỉ phủ một phần gallery, replay hỗ trợ `--vp-coverage-policy preserve-unscored`. [Kết quả audit và lệnh tái lập](benchmark/msrvtt_clip_qwen_videoprism_audit.md)
 
 ---
 

@@ -1077,6 +1077,39 @@ class AdaptiveQueryDecomposer:
         self._ram_cache: dict[str, ModalityRoutingPlan] = {}
         self._disk_loaded = False
 
+    @classmethod
+    def from_frozen_llm_cache(cls, cache_path: Path, model_revision: str) -> AdaptiveQueryDecomposer:
+        """Replay only validated plans from the pinned model, with rule fallback."""
+        decomposer = cls(
+            llm_backend=LocalSmallLLMBackend(enabled=False, model_revision=model_revision),
+            enable_disk_cache=False,
+        )
+        with cache_path.open(encoding="utf-8") as stream:
+            for line_no, line in enumerate(stream, start=1):
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                data = record["plan"]
+                if data["routing_mode"] != "llm_compact":
+                    continue
+                plan = cls._plan_from_dict(data)
+                parser = plan.query_graph.parser
+                key = decomposer._make_cache_key(plan.original_query)
+                if (
+                    parser.status != "validated"
+                    or parser.model_revision != model_revision
+                    or parser.prompt_version != decomposer.prompt_version
+                    or plan.original_query != plan.query_graph.original_query
+                    or record["key"] != key
+                    or key in decomposer._ram_cache
+                ):
+                    raise ValueError(f"Invalid frozen LLM plan at {cache_path}:{line_no}")
+                validate("query_graph", plan.query_graph.to_dict())
+                decomposer._ram_cache[key] = plan
+        if not decomposer._ram_cache:
+            raise ValueError(f"No validated LLM plans for {model_revision} in {cache_path}")
+        return decomposer
+
     def _make_cache_key(self, query: str) -> str:
         nfc = unicodedata.normalize("NFC", query.strip())
         raw = f"{nfc}|{self.model_revision}|{self.prompt_version}"

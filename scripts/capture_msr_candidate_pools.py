@@ -28,6 +28,7 @@ from videntra.evaluation.provenance import (
     sha256_file,
 )
 from videntra.evaluation.split_lock import freeze_split, qvh_source_id, verify_split_lock
+from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
 from videntra.retrieval.clip_branch import (
     build_clip_branch_index,
     build_clip_reserve_pool,
@@ -319,10 +320,28 @@ def capture_pools(
     allow_insample_eval: bool = False,
     overwrite_eval_artifacts: bool = False,
     branch_top_n: int = 60,
+    rules_only: bool = False,
+    query_plan_cache: Path | None = None,
+    query_plan_revision: str | None = None,
 ) -> dict[str, Any]:
     if max_k < 2:
         raise ValueError(f"max_k must be >= 2, got {max_k}")
+    if (query_plan_cache is None) != (query_plan_revision is None):
+        raise ValueError("--query-plan-cache and --query-plan-revision must be used together")
+    if rules_only and query_plan_cache is not None:
+        raise ValueError("--rules-only and --query-plan-cache are mutually exclusive")
 
+    query_decomposer = None
+    query_plan_source = "pipeline_default"
+    if query_plan_cache is not None and query_plan_revision is not None:
+        query_decomposer = AdaptiveQueryDecomposer.from_frozen_llm_cache(query_plan_cache, query_plan_revision)
+        query_plan_source = "frozen_llm_cache"
+    elif rules_only:
+        query_decomposer = AdaptiveQueryDecomposer(
+            llm_backend=LocalSmallLLMBackend(enabled=False),
+            enable_disk_cache=False,
+        )
+        query_plan_source = "rules_only"
     ltr_info = load_ltr_model_info(ltr_model_path)
     pipeline = UnifiedMultimodalSearchPipeline(
         db_path=db_path,
@@ -337,6 +356,7 @@ def capture_pools(
         enable_vlm_caption_dense=True,
         enable_temporal_rerank=bool(float(temporal_rerank_lambda) > 0.0),
         temporal_rerank_lambda=float(temporal_rerank_lambda),
+        query_decomposer=query_decomposer,
     )
     try:
         indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
@@ -418,6 +438,7 @@ def capture_pools(
             all_cand_moments = diag.get("all_candidate_moments") or []
 
             a5_built = build_a5_pool(ranked_videos, all_cand_moments, max_k=max_k)
+            query_plan = pipeline.last_routing_plan
             branch_ranked = clip_scorer.rank_query(q_text, top_n=max(branch_top_n, max_k + 20))
             branch_ids = [b["video_id"] for b in branch_ranked]
             reserve_max_k = apply_clip_reserve(a5_built["pool_video_ids"], branch_ids, k=max_k)
@@ -437,6 +458,8 @@ def capture_pools(
                 "pool_video_ids": a5_built["pool_video_ids"],
                 "candidates": a5_built["candidates"],
                 "pool_size": a5_built["pool_size"],
+                "query_plan_mode": query_plan.routing_mode if query_plan is not None else None,
+                "query_plan_cache_hit": query_plan.cache_hit if query_plan is not None else None,
             })
             clip_rows.append({
                 "query_id": qid,
@@ -521,6 +544,9 @@ def capture_pools(
             "oof_applied_count": oof_applied,
             "oof_fallback_count": oof_fallback,
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
+            "query_plan_source": query_plan_source,
+            "query_plan_revision": query_plan_revision,
+            "query_plan_cache_sha256": sha256_file(query_plan_cache) if query_plan_cache else None,
             "elapsed_seconds": round(time.perf_counter() - t_start, 2),
             "artifact_sha256": hash_paths([queries_path, a5_path, clip_path]),
             "labels_path": str(labels_path),
@@ -551,6 +577,9 @@ def main() -> None:
     parser.add_argument("--temporal-rerank-lambda", type=float, default=0.0)
     parser.add_argument("--allow-insample-eval", action="store_true")
     parser.add_argument("--overwrite-eval-artifacts", action="store_true")
+    parser.add_argument("--rules-only", action="store_true")
+    parser.add_argument("--query-plan-cache", type=Path)
+    parser.add_argument("--query-plan-revision")
     args = parser.parse_args()
 
     receipt = capture_pools(
@@ -568,6 +597,9 @@ def main() -> None:
         temporal_rerank_lambda=args.temporal_rerank_lambda,
         allow_insample_eval=args.allow_insample_eval,
         overwrite_eval_artifacts=args.overwrite_eval_artifacts,
+        rules_only=args.rules_only,
+        query_plan_cache=args.query_plan_cache,
+        query_plan_revision=args.query_plan_revision,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
 

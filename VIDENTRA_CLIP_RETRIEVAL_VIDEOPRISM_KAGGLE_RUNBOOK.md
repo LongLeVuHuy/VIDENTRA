@@ -2,6 +2,8 @@
 
 Ngày 15/11/2026. Runbook dành cho Antigravity, dựa trên pipeline tại `3a83b4c` và lần kiểm tra `35f7c01`. Mục tiêu là xác định độc lập hai hiệu ứng. Nhánh clip có đưa thêm video đúng vào shortlist hay không. VideoPrism có xếp video đúng lên hạng 1 trên **cùng shortlist** hay không. Các script và cờ đánh dấu **đề xuất** là phần cần triển khai. [Kế hoạch MSR‑VTT trước đó](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md) · [Nhật ký probe](docs/PROGRESS.md)
 
+> Bản audit 15/11/2026 bổ sung kết quả replay đã chạy lại, kiểm tra receipt của worker, rerank khi thiếu vector và đối chứng query plans bằng Qwen2.5-1.5B. [Audit và lệnh tái lập](benchmark/msrvtt_clip_qwen_videoprism_audit.md)
+
 ## 1. Mốc cần tái lập
 
 Lấy run `8c40e943d7104f21badda4a3fd62f623` làm mốc A5. Chỉ số chính là **MSR‑VTT global Video Hit@1** trên gallery 1.324 video, tính một lần cho mỗi query theo nhãn video hiện hành. Dev đầy đủ gồm 809 query MSR‑VTT trong `dev_full_859`. Held-out lịch sử gồm 191 query MSR‑VTT trong `heldout_test_201`. [Benchmark JSON](benchmark/benchmark_summary.json)
@@ -179,7 +181,7 @@ Các lệnh dưới đây minh họa **CLI đề xuất**. Capture dùng cùng l
 Lặp các cặp ở K=10 với output dirs mới để đối chiếu mốc 555/809. Chấm từng cặp theo bảng trên. Ví dụ dưới đây đo tác dụng của VideoPrism trên **cùng pool A5**, sau đó dùng cách gọi tương tự cho `reserve` so với `baseline`, `vp_clip` so với `vp_a5` và `vp_clip` so với `reserve`.
 
 ```powershell
-.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k20_baseline --challenger work/experiments/clip_vp_k20_vp_a5 --labels work/evaluation-only/clip_vp_dev_labels.jsonl --split-lock work/evaluation-only/clip_vp_split_lock.json --out-dir work/experiments/clip_vp_k20_compare_vp
+.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k20_baseline --challenger work/experiments/clip_vp_k20_vp_a5 --labels work/evaluation-only/clip_vp_dev_full_859_labels.jsonl --split-lock work/evaluation-only/clip_vp_dev_full_859_split_lock.json --out-dir work/experiments/clip_vp_k20_compare_vp
 ```
 
 ### Cách kết luận về Hit@1
