@@ -82,6 +82,26 @@ def test_render_ui_html_and_root_endpoint(media_client):
     assert "badge-asr" in html
 
 
+def test_inspector_layout_prevents_video_shrinking_and_has_upgrades(media_client):
+    client, _ = media_client
+    html = client.get("/").text
+
+    # Non-shrinking video container & aspect-ratio preservation
+    assert "flex-shrink: 0" in html
+    assert "aspect-ratio: 16 / 9" in html
+    assert "object-fit: contain" in html
+    assert "inspector-layout" in html
+
+    # Theater mode, clickable timeline bar, and evidence modality tabs
+    assert "theaterToggleBtn" in html
+    assert "toggleTheaterMode" in html
+    assert "timelineTrack" in html
+    assert "timelineMomentWindow" in html
+    assert "seekFromTimeline" in html
+    assert "evidenceFilterTabs" in html
+    assert "setEvidenceFilter" in html
+
+
 def test_media_streaming_content_types_and_headers(media_client):
     client, payloads = media_client
 

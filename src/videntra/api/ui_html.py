@@ -95,12 +95,25 @@ UI_HTML = """<!DOCTYPE html>
 
     /* Modal Inspector */
     .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.88); display: none; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); padding: 16px; }
-    .modal { background: var(--card-bg); width: 100%; max-width: 960px; border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 92vh; }
-    .modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    .modal-body { padding: 18px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
-    .video-container { position: relative; background: #000; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; border: 1px solid var(--border); }
-    video { width: 100%; max-height: 440px; outline: none; }
-    .player-status { position: absolute; top: 10px; right: 10px; background: rgba(2, 6, 23, 0.82); color: #e2e8f0; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); display: none; }
+    .modal { background: var(--card-bg); width: 100%; max-width: min(1320px, 96vw); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; max-height: 94vh; transition: max-width 0.18s ease, height 0.18s ease; }
+    .modal.theater { max-width: 98vw; height: 96vh; max-height: 96vh; }
+    .modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; }
+    .modal-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0; }
+    .inspector-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 18px; align-items: start; }
+    .modal.theater .inspector-layout { grid-template-columns: 1fr; }
+    .inspector-primary { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .inspector-sidebar { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .video-container { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 300px; max-height: 68vh; flex-shrink: 0; background: #000; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); }
+    .modal.theater .video-container { min-height: 380px; max-height: 76vh; }
+    video { width: 100%; height: 100%; max-height: 100%; object-fit: contain; display: block; outline: none; background: #000; }
+    .player-status { position: absolute; top: 10px; right: 10px; background: rgba(2, 6, 23, 0.82); color: #e2e8f0; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); display: none; pointer-events: none; }
+
+    .timeline-bar-wrap { display: flex; flex-direction: column; gap: 6px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; flex-shrink: 0; }
+    .timeline-meta { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--text-muted); font-family: monospace; gap: 8px; flex-wrap: wrap; }
+    .timeline-track { position: relative; height: 10px; background: #1e293b; border-radius: 999px; cursor: pointer; overflow: hidden; border: 1px solid var(--border); }
+    .timeline-moment-window { position: absolute; top: 0; bottom: 0; background: rgba(56, 189, 248, 0.35); border-left: 2px solid var(--primary); border-right: 2px solid var(--primary); pointer-events: none; }
+    .timeline-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: #f8fafc; box-shadow: 0 0 6px rgba(248, 250, 252, 0.8); pointer-events: none; }
 
     .jump-pills { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .jump-pill { padding: 4px 10px; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); font-size: 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
@@ -110,12 +123,23 @@ UI_HTML = """<!DOCTYPE html>
     .inspector-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .kbd { background: var(--bg-elevated); border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; font-size: 11px; font-family: monospace; color: var(--text); }
     .shortcuts-hint { font-size: 12px; color: var(--text-muted); margin-left: auto; }
-    .frame-preview { border-radius: 8px; border: 1px solid var(--border); max-width: 100%; max-height: 240px; object-fit: contain; background: #000; }
+    .inspector-card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 12px; }
+    .inspector-card-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .evidence-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+    .evidence-tab { padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-muted); font-size: 11px; cursor: pointer; }
+    .evidence-tab.active { border-color: var(--primary); color: var(--primary); background: rgba(56, 189, 248, 0.12); }
+    .frame-preview { border-radius: 8px; border: 1px solid var(--border); width: 100%; max-height: 220px; object-fit: contain; background: #000; }
 
     .toast { position: fixed; bottom: 20px; right: 20px; background: #0f172a; color: #f8fafc; border: 1px solid var(--primary); padding: 10px 14px; border-radius: 8px; font-size: 13px; z-index: 200; display: none; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
 
+    @media (max-width: 960px) {
+      .inspector-layout { grid-template-columns: 1fr; }
+    }
     @media (max-width: 720px) {
       body { padding: 14px; }
+      .modal-overlay { padding: 8px; }
+      .modal-body { padding: 12px; }
+      .video-container { min-height: 210px; max-height: 52vh; }
       .shortcuts-hint { margin-left: 0; width: 100%; }
       .frame-verify-row { flex-direction: column; align-items: flex-start !important; }
     }
@@ -204,52 +228,82 @@ UI_HTML = """<!DOCTYPE html>
 
   <!-- Modal Inspector -->
   <div class="modal-overlay" id="modalOverlay" onclick="closeModalOnBg(event)">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalVideoId">
+    <div class="modal" id="inspectorModal" role="dialog" aria-modal="true" aria-labelledby="modalVideoId">
       <div class="modal-header">
         <div>
           <strong id="modalVideoId" style="color:var(--primary); font-family:monospace; font-size:13px;"></strong>
           <div id="modalTiming" style="font-size:12px; color:var(--text-muted); margin-top:2px;"></div>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="closeModal()">Đóng (Esc)</button>
+        <div class="modal-header-actions">
+          <button id="theaterToggleBtn" class="btn btn-secondary btn-sm" onclick="toggleTheaterMode()">Phóng to (F)</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeModal()">Đóng (Esc)</button>
+        </div>
       </div>
       <div class="modal-body">
-        <div class="video-container">
-          <video id="player" controls preload="metadata" playsinline></video>
-          <div id="playerStatus" class="player-status">Đang tải...</div>
-        </div>
+        <div class="inspector-layout">
+          <div class="inspector-primary">
+            <div class="video-container">
+              <video id="player" controls preload="metadata" playsinline></video>
+              <div id="playerStatus" class="player-status">Đang tải...</div>
+            </div>
 
-        <div id="momentJumpPills" class="jump-pills"></div>
+            <div class="timeline-bar-wrap">
+              <div class="timeline-meta">
+                <span id="playerTimeDisplay">00:00.00 / 00:00.00</span>
+                <span id="momentWindowDisplay">Khoảnh khắc: --</span>
+              </div>
+              <div id="timelineTrack" class="timeline-track" title="Nhấn để tua đến vị trí trên timeline" onclick="seekFromTimeline(event)">
+                <div id="timelineMomentWindow" class="timeline-moment-window" style="left:0%; width:0%;"></div>
+                <div id="timelinePlayhead" class="timeline-playhead" style="left:0%;"></div>
+              </div>
+            </div>
 
-        <div class="inspector-controls">
-          <button class="btn btn-sm" onclick="replayMoment()">Replay Moment (<span class="kbd">R</span>)</button>
-          <button class="btn btn-secondary btn-sm" onclick="seekRelative(-5)">−5s (<span class="kbd">←</span>)</button>
-          <button class="btn btn-secondary btn-sm" onclick="seekRelative(5)">+5s (<span class="kbd">→</span>)</button>
-          <label class="control-item" style="font-size:12px; color:var(--text-muted);">Tốc độ:
-            <select id="playbackSpeedSelect" class="select-ctl" style="padding:4px 8px; font-size:12px;" onchange="setPlaybackSpeed(this.value)">
-              <option value="0.75">0.75x</option>
-              <option value="1" selected>1x</option>
-              <option value="1.25">1.25x</option>
-              <option value="1.5">1.5x</option>
-            </select>
-          </label>
-          <button class="btn btn-secondary btn-sm" onclick="stepFrame(-1)">−1 Frame (<span class="kbd">,</span>)</button>
-          <button class="btn btn-secondary btn-sm" onclick="stepFrame(1)">+1 Frame (<span class="kbd">.</span>)</button>
-          <button class="btn btn-secondary btn-sm" onclick="copyInfo()">Copy Video + Frame</button>
-          <span class="shortcuts-hint">
-            <span class="kbd">Space</span> Play/Pause • <span class="kbd">←</span>/<span class="kbd">→</span> ±5s • <span class="kbd">Esc</span> Đóng
-          </span>
-        </div>
+            <div id="momentJumpPills" class="jump-pills"></div>
 
-        <div id="modalEvidenceBox" style="background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12px;">
-          <strong style="color:var(--primary);">Bằng chứng đa phương thức (Evidence Items):</strong>
-          <div id="modalEvidenceList" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;"></div>
-        </div>
+            <div class="inspector-controls">
+              <button class="btn btn-sm" onclick="replayMoment()">Replay Moment (<span class="kbd">R</span>)</button>
+              <button class="btn btn-secondary btn-sm" onclick="seekRelative(-5)">−5s (<span class="kbd">←</span>)</button>
+              <button class="btn btn-secondary btn-sm" onclick="seekRelative(5)">+5s (<span class="kbd">→</span>)</button>
+              <label class="control-item" style="font-size:12px; color:var(--text-muted);">Tốc độ:
+                <select id="playbackSpeedSelect" class="select-ctl" style="padding:4px 8px; font-size:12px;" onchange="setPlaybackSpeed(this.value)">
+                  <option value="0.75">0.75x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                </select>
+              </label>
+              <button class="btn btn-secondary btn-sm" onclick="stepFrame(-1)">−1 Frame (<span class="kbd">,</span>)</button>
+              <button class="btn btn-secondary btn-sm" onclick="stepFrame(1)">+1 Frame (<span class="kbd">.</span>)</button>
+              <button class="btn btn-secondary btn-sm" onclick="copyInfo()">Copy Video + Frame</button>
+              <span class="shortcuts-hint">
+                <span class="kbd">Space</span> Play/Pause • <span class="kbd">←</span>/<span class="kbd">→</span> ±5s • <span class="kbd">F</span> Phóng to • <span class="kbd">Esc</span> Đóng
+              </span>
+            </div>
+          </div>
 
-        <div style="border-top:1px solid var(--border); padding-top:12px;">
-          <h4 style="font-size:13px; color:var(--primary); margin-bottom:8px;">Exact Bit-Level Decoded Frame (Ledger Verification)</h4>
-          <div class="frame-verify-row" style="display:flex; gap:16px; align-items:center;">
-            <img id="exactFrameImg" class="frame-preview" alt="Exact Frame">
-            <div id="frameDetails" style="font-size:12px; color:var(--text-muted); line-height:1.6;"></div>
+          <div class="inspector-sidebar">
+            <div id="modalEvidenceBox" class="inspector-card">
+              <div class="inspector-card-header">
+                <strong style="color:var(--primary);">Bằng chứng đa phương thức (Evidence Items)</strong>
+                <div id="evidenceFilterTabs" class="evidence-tabs">
+                  <button class="evidence-tab active" data-filter="all" onclick="setEvidenceFilter('all')">Tất cả</button>
+                  <button class="evidence-tab" data-filter="visual" onclick="setEvidenceFilter('visual')">Visual</button>
+                  <button class="evidence-tab" data-filter="ocr" onclick="setEvidenceFilter('ocr')">OCR</button>
+                  <button class="evidence-tab" data-filter="asr" onclick="setEvidenceFilter('asr')">ASR</button>
+                </div>
+              </div>
+              <div id="modalEvidenceList" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+            </div>
+
+            <div class="inspector-card">
+              <div class="inspector-card-header">
+                <strong style="color:var(--primary);">Exact Bit-Level Decoded Frame (Ledger Verification)</strong>
+              </div>
+              <div class="frame-verify-row" style="display:flex; flex-direction:column; gap:10px;">
+                <img id="exactFrameImg" class="frame-preview" alt="Exact Frame">
+                <div id="frameDetails" style="font-size:12px; color:var(--text-muted); line-height:1.6;"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -358,6 +412,8 @@ UI_HTML = """<!DOCTYPE html>
         seekRelative(5);
       } else if (e.key === "r" || e.key === "R") {
         replayMoment();
+      } else if (e.key === "f" || e.key === "F") {
+        toggleTheaterMode();
       } else if (e.key === ",") {
         stepFrame(-1);
       } else if (e.key === ".") {
@@ -365,7 +421,73 @@ UI_HTML = """<!DOCTYPE html>
       }
     });
 
-    // Player buffering feedback
+    function formatTimeSec(sec) {
+      if (!Number.isFinite(sec) || sec < 0) return "00:00.00";
+      const mins = Math.floor(sec / 60);
+      const rem = sec - mins * 60;
+      const minStr = String(mins).padStart(2, "0");
+      const secStr = rem.toFixed(2).padStart(5, "0");
+      return `${minStr}:${secStr}`;
+    }
+
+    function updateTimelineUI() {
+      const player = document.getElementById("player");
+      const timeDisplay = document.getElementById("playerTimeDisplay");
+      const momentDisplay = document.getElementById("momentWindowDisplay");
+      const playhead = document.getElementById("timelinePlayhead");
+      const winEl = document.getElementById("timelineMomentWindow");
+
+      const dur = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+      const cur = Number.isFinite(player.currentTime) ? player.currentTime : 0;
+      timeDisplay.textContent = `${formatTimeSec(cur)} / ${formatTimeSec(dur)}`;
+
+      if (dur > 0) {
+        const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
+        playhead.style.left = `${pct}%`;
+      } else {
+        playhead.style.left = "0%";
+      }
+
+      if (activeMoment) {
+        const startSec = Number(activeMoment.moment_start_seconds || 0);
+        const endSec = Number(activeMoment.moment_end_seconds || startSec);
+        momentDisplay.textContent = `Khoảnh khắc: ${startSec.toFixed(2)}s – ${endSec.toFixed(2)}s`;
+        if (dur > 0) {
+          const leftPct = Math.min(100, Math.max(0, (startSec / dur) * 100));
+          const rightPct = Math.min(100, Math.max(leftPct, (endSec / dur) * 100));
+          winEl.style.left = `${leftPct}%`;
+          winEl.style.width = `${Math.max(1.5, rightPct - leftPct)}%`;
+        } else {
+          winEl.style.left = "0%";
+          winEl.style.width = "0%";
+        }
+      } else {
+        momentDisplay.textContent = "Khoảnh khắc: --";
+        winEl.style.left = "0%";
+        winEl.style.width = "0%";
+      }
+    }
+
+    function seekFromTimeline(event) {
+      const player = document.getElementById("player");
+      const track = document.getElementById("timelineTrack");
+      const dur = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0;
+      if (dur <= 0) return;
+      const rect = track.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      seekPlayerSafely(ratio * dur, false);
+    }
+
+    function toggleTheaterMode() {
+      const modal = document.getElementById("inspectorModal");
+      const btn = document.getElementById("theaterToggleBtn");
+      if (!modal || !btn) return;
+      const isTheater = modal.classList.toggle("theater");
+      btn.textContent = isTheater ? "Thu gọn (F)" : "Phóng to (F)";
+    }
+
+    // Player buffering & timeline feedback
     (function setupPlayerEvents() {
       const player = document.getElementById("player");
       const statusEl = document.getElementById("playerStatus");
@@ -378,7 +500,13 @@ UI_HTML = """<!DOCTYPE html>
         statusEl.style.display = "block";
       });
       ["canplay", "seeked", "playing", "pause"].forEach((evt) => {
-        player.addEventListener(evt, () => { statusEl.style.display = "none"; });
+        player.addEventListener(evt, () => {
+          statusEl.style.display = "none";
+          updateTimelineUI();
+        });
+      });
+      ["loadedmetadata", "timeupdate", "durationchange"].forEach((evt) => {
+        player.addEventListener(evt, updateTimelineUI);
       });
       player.addEventListener("error", () => {
         if (player.getAttribute("src")) {
@@ -609,6 +737,53 @@ UI_HTML = """<!DOCTYPE html>
       });
     }
 
+    let activeEvidenceFilter = "all";
+
+    function classifyEvidenceModality(ev) {
+      const k = String(ev.kind || ev.modality || "").toLowerCase();
+      if (k.includes("ocr")) return "ocr";
+      if (k.includes("asr") || k.includes("audio") || k.includes("speech")) return "asr";
+      if (k.includes("visual") || k.includes("frame")) return "visual";
+      return "other";
+    }
+
+    function setEvidenceFilter(filter) {
+      activeEvidenceFilter = filter || "all";
+      document.querySelectorAll("#evidenceFilterTabs .evidence-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-filter") === activeEvidenceFilter);
+      });
+      renderEvidenceList(activeMoment);
+    }
+
+    function renderEvidenceList(item) {
+      const evList = document.getElementById("modalEvidenceList");
+      if (!evList) return;
+      evList.innerHTML = "";
+      const allEv = item && Array.isArray(item.evidence) ? item.evidence : [];
+      const filtered = activeEvidenceFilter === "all"
+        ? allEv
+        : allEv.filter((ev) => classifyEvidenceModality(ev) === activeEvidenceFilter);
+
+      if (filtered.length > 0) {
+        filtered.forEach((ev) => {
+          const chip = document.createElement("span");
+          const hasTs = Number.isFinite(ev.timestamp_us);
+          chip.className = `chip chip-logic ${hasTs ? "chip-btn" : ""}`;
+          const label = ev.evidence_id || (hasTs ? `${(ev.timestamp_us / 1e6).toFixed(2)}s` : "item");
+          chip.textContent = `${ev.kind || "evidence"}: ${label}`;
+          if (hasTs) {
+            chip.title = "Nhấn để nhảy tới thời điểm bằng chứng";
+            chip.onclick = () => seekPlayerSafely(ev.timestamp_us / 1e6, true);
+          }
+          evList.appendChild(chip);
+        });
+      } else if (allEv.length > 0) {
+        evList.innerHTML = "<span style='color:var(--text-muted);'>Không có bằng chứng thuộc kênh đã lọc.</span>";
+      } else {
+        evList.innerHTML = "<span style='color:var(--text-muted);'>Chỉ có bằng chứng khung hình đại diện.</span>";
+      }
+    }
+
     function openInspector(idx) {
       const item = currentResults[idx];
       if (!item) return;
@@ -623,26 +798,7 @@ UI_HTML = """<!DOCTYPE html>
         `Khoảnh khắc: ${startSec.toFixed(2)}s → ${endSec.toFixed(2)}s | Score: ${Number(item.ranking_score || 0).toFixed(4)} | Match: ${item.match_status || "unknown"}`;
 
       renderJumpPills(item);
-
-      // Populate clickable evidence items
-      const evList = document.getElementById("modalEvidenceList");
-      evList.innerHTML = "";
-      if (item.evidence && item.evidence.length > 0) {
-        item.evidence.forEach((ev) => {
-          const chip = document.createElement("span");
-          const hasTs = Number.isFinite(ev.timestamp_us);
-          chip.className = `chip chip-logic ${hasTs ? "chip-btn" : ""}`;
-          const label = ev.evidence_id || (hasTs ? `${(ev.timestamp_us / 1e6).toFixed(2)}s` : "item");
-          chip.textContent = `${ev.kind || "evidence"}: ${label}`;
-          if (hasTs) {
-            chip.title = "Nhấn để nhảy tới thời điểm bằng chứng";
-            chip.onclick = () => seekPlayerSafely(ev.timestamp_us / 1e6, true);
-          }
-          evList.appendChild(chip);
-        });
-      } else {
-        evList.innerHTML = "<span style='color:var(--text-muted);'>Chỉ có bằng chứng khung hình đại diện.</span>";
-      }
+      setEvidenceFilter("all");
 
       const player = document.getElementById("player");
       const speedSel = document.getElementById("playbackSpeedSelect");
@@ -654,6 +810,7 @@ UI_HTML = """<!DOCTYPE html>
         : startSec;
       player.src = `/v1/media/${encodeURIComponent(item.video_id)}`;
       seekPlayerSafely(targetStart, false);
+      updateTimelineUI();
 
       loadExactFrame(item.video_id, currentOrdinal);
       document.getElementById("modalOverlay").style.display = "flex";
@@ -661,6 +818,7 @@ UI_HTML = """<!DOCTYPE html>
 
     function closeModal() {
       inspectorToken += 1;
+      activeMoment = null;
       if (seekAbortController) {
         seekAbortController.abort();
         seekAbortController = null;
@@ -669,6 +827,7 @@ UI_HTML = """<!DOCTYPE html>
       player.pause();
       player.removeAttribute("src");
       player.load();
+      updateTimelineUI();
       document.getElementById("playerStatus").style.display = "none";
       document.getElementById("modalOverlay").style.display = "none";
     }

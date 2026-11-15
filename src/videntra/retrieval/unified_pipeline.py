@@ -59,6 +59,12 @@ from videntra.retrieval.alignment import (
     temporal_sinkhorn_alignment_score,
     viterbi_subevent_localization,
 )
+from videntra.retrieval.clip_branch import (
+    ClipBranchIndex,
+    build_clip_branch_index,
+    build_clip_reserve_pool,
+    score_clip_branch,
+)
 from videntra.evidence.normalize import contains_text_phrase
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.localization.refine import expand_boundary_contrast
@@ -528,6 +534,9 @@ class UnifiedMultimodalSearchPipeline:
         temporal_rerank_window_sec: float = 3.0,
         temporal_rerank_max_frames: int = 5,
         temporal_rerank_tau: float = 12.0,
+        enable_clip_branch: bool = False,
+        clip_reserve_k: int = 10,
+        clip_window_size: int | None = None,
         # Optional pre-injected objects for lightweight testing or server sharing:
         tokenizer: Any | None = None,
         text_model: Any | None = None,
@@ -609,6 +618,15 @@ class UnifiedMultimodalSearchPipeline:
         self.temporal_rerank_window_sec = float(temporal_rerank_window_sec)
         self.temporal_rerank_max_frames = int(temporal_rerank_max_frames)
         self.temporal_rerank_tau = float(temporal_rerank_tau)
+
+        if clip_reserve_k < 2:
+            raise ValueError("clip_reserve_k must be >= 2")
+        if clip_window_size is not None and clip_window_size < 1:
+            raise ValueError("clip_window_size must be >= 1 when provided")
+        self.enable_clip_branch = bool(enable_clip_branch)
+        self.clip_reserve_k = int(clip_reserve_k)
+        self.clip_window_size = int(clip_window_size) if clip_window_size is not None else None
+        self._clip_branch_index: ClipBranchIndex | None = None
 
         # Phase 7.2 / 7.3 / 7.4 components (fail-safe when local models/artifacts are absent)
         self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
@@ -1655,10 +1673,172 @@ class UnifiedMultimodalSearchPipeline:
             logger.warning("Late interaction scoring failed for video %s: %s", vid, exc, exc_info=True)
             return 0.0
 
+    def _ensure_clip_branch_index(self) -> ClipBranchIndex | None:
+        """Lazily build and cache the SigLIP 2 frame+clip index for the active snapshot."""
+        if self.all_embeddings is not None and len(self.all_embeddings) > 0:
+            emb_mat = self.all_embeddings
+        elif (
+            self.augmented_embeddings is not None
+            and len(self.augmented_embeddings) > 0
+            and self.augmented_embeddings.shape[1] >= 768
+        ):
+            emb_mat = self.augmented_embeddings[:, :768]
+        else:
+            return None
+
+        if not (self.video_keyframes or self.video_kf_fids or self.keyframe_map):
+            return None
+
+        if self._clip_branch_index is None or not self._clip_branch_index.matches(emb_mat, self.video_kf_fids):
+            self._clip_branch_index = build_clip_branch_index(
+                emb_mat,
+                video_keyframes=self.video_keyframes,
+                video_kf_fids=self.video_kf_fids,
+                keyframe_map=self.keyframe_map,
+            )
+        return self._clip_branch_index
+
+    def _apply_clip_reserve_stage(
+        self,
+        cand_moments: list[RankedMoment],
+        primary_q_768: np.ndarray | None,
+        filters: dict[str, Any] | None,
+    ) -> tuple[list[RankedMoment], list[str], list[str], dict[str, Any]]:
+        """Capture A5 pool and apply opt-in SigLIP 2 clip reserve pool."""
+        a5_ranked = self._build_ranked_videos(cand_moments, cand_moments, top_k=None)
+        a5_pool_ids = [m.video_id for m in a5_ranked[: self.clip_reserve_k]]
+        clip_idx = self._ensure_clip_branch_index()
+        if clip_idx is None or primary_q_768 is None:
+            return cand_moments, a5_pool_ids, list(a5_pool_ids), {
+                "status": "skipped",
+                "reason": "missing_index_or_query",
+            }
+
+        valid_gallery = [vid for vid in clip_idx.video_ids if self._video_passes_filters(vid, filters)]
+        if not valid_gallery:
+            return cand_moments, a5_pool_ids, list(a5_pool_ids), {
+                "status": "skipped",
+                "reason": "empty_filtered_gallery",
+                "valid_gallery_count": 0,
+            }
+
+        score_res = score_clip_branch(
+            clip_idx,
+            primary_q_768,
+            valid_video_ids=valid_gallery,
+            window_size=self.clip_window_size,
+        )
+        reserve_res = build_clip_reserve_pool(
+            a5_pool=a5_pool_ids,
+            branch_order=score_res.branch_order,
+            k=self.clip_reserve_k,
+            valid_gallery=valid_gallery,
+        )
+        clip_pool_ids = list(reserve_res.clip_pool)
+
+        best_by_vid: dict[str, RankedMoment] = {}
+        for m in cand_moments:
+            prev = best_by_vid.get(m.video_id)
+            if prev is None or float(m.ranking_score) > float(prev.ranking_score):
+                best_by_vid[m.video_id] = m
+
+        protected_scores = [
+            float(best_by_vid[v].ranking_score)
+            for v in reserve_res.protected
+            if v in best_by_vid
+        ]
+        min_protected_score = min(protected_scores) if protected_scores else 1.0
+
+        tail = reserve_res.added_video
+        if tail is not None:
+            if tail not in best_by_vid:
+                rep_t = float(score_res.best_frame_pts.get(tail, 0.0))
+                kf_list = self.video_keyframes.get(tail, [])
+                v_dur = self.video_durations.get(
+                    tail,
+                    (max(float(kf["pts_time"]) for kf in kf_list) + 2.0) if kf_list else 300.0,
+                )
+                best_st = max(0.0, rep_t - 1.5)
+                best_et = min(float(v_dur), rep_t + 1.5)
+                tail_score = round(max(1e-6, min_protected_score - 1e-4), 5)
+                best_by_vid[tail] = RankedMoment(
+                    moment_id=f"{tail}_{round(rep_t, 1)}",
+                    video_id=tail,
+                    moment_start_seconds=best_st,
+                    moment_end_seconds=best_et,
+                    start_original_frame_index=0,
+                    end_original_frame_index=0,
+                    representative_original_frame_index=0,
+                    representative_timestamp_seconds=rep_t,
+                    ranking_score=tail_score,
+                    match_status="clip_branch",
+                )
+            else:
+                existing_tail = best_by_vid[tail]
+                if float(existing_tail.ranking_score) >= min_protected_score and protected_scores:
+                    clamped_sc = round(max(1e-6, min_protected_score - 1e-4), 5)
+                    best_by_vid[tail] = RankedMoment(
+                        moment_id=existing_tail.moment_id,
+                        video_id=existing_tail.video_id,
+                        moment_start_seconds=existing_tail.moment_start_seconds,
+                        moment_end_seconds=existing_tail.moment_end_seconds,
+                        start_original_frame_index=existing_tail.start_original_frame_index,
+                        end_original_frame_index=existing_tail.end_original_frame_index,
+                        representative_original_frame_index=existing_tail.representative_original_frame_index,
+                        representative_timestamp_seconds=existing_tail.representative_timestamp_seconds,
+                        ranking_score=clamped_sc,
+                        match_status=existing_tail.match_status,
+                        evidence_frame_indices=existing_tail.evidence_frame_indices,
+                        unresolved_predicates=existing_tail.unresolved_predicates,
+                        structural_score=existing_tail.structural_score,
+                    )
+
+        pool_set = set(clip_pool_ids)
+        pool_moments = [best_by_vid[v] for v in clip_pool_ids if v in best_by_vid]
+        min_pool_score = min((float(m.ranking_score) for m in pool_moments), default=1.0)
+        other_moments: list[RankedMoment] = []
+        for m in cand_moments:
+            if m.video_id in pool_set:
+                continue
+            if float(m.ranking_score) >= min_pool_score:
+                other_moments.append(RankedMoment(
+                    moment_id=m.moment_id,
+                    video_id=m.video_id,
+                    moment_start_seconds=m.moment_start_seconds,
+                    moment_end_seconds=m.moment_end_seconds,
+                    start_original_frame_index=m.start_original_frame_index,
+                    end_original_frame_index=m.end_original_frame_index,
+                    representative_original_frame_index=m.representative_original_frame_index,
+                    representative_timestamp_seconds=m.representative_timestamp_seconds,
+                    ranking_score=round(max(1e-6, min_pool_score - 1e-4), 5),
+                    match_status=m.match_status,
+                    evidence_frame_indices=m.evidence_frame_indices,
+                    unresolved_predicates=m.unresolved_predicates,
+                    structural_score=m.structural_score,
+                ))
+            else:
+                other_moments.append(m)
+
+        stats = {
+            "status": "applied",
+            "added_video": reserve_res.added_video,
+            "displaced_video": reserve_res.displaced_video,
+            "duplicate_skipped": reserve_res.duplicate_skipped,
+            "branch_rank": reserve_res.branch_rank,
+            "fallback_reason": reserve_res.fallback_reason,
+            "pool_size": reserve_res.pool_size,
+            "requested_k": reserve_res.requested_k,
+            "valid_gallery_count": score_res.valid_gallery_count,
+            "invalid_videos_skipped": len(score_res.invalid_videos_skipped),
+            "window_size": self.clip_window_size,
+        }
+        return pool_moments + other_moments, a5_pool_ids, clip_pool_ids, stats
+
     def _apply_temporal_rerank(
         self,
         cand_moments: list[RankedMoment],
         query_vec_768: np.ndarray | None,
+        top_k_override: int | None = None,
     ) -> tuple[list[RankedMoment], dict[str, Any]]:
         """Apply Section 3.1 NumPy temporal rerank challenger to Top-K base videos."""
         if not cand_moments or query_vec_768 is None:
@@ -1672,7 +1852,8 @@ class UnifiedMultimodalSearchPipeline:
             return cand_moments, {"scored_count": 0, "reason": "missing_embeddings"}
 
         q_vec = np.asarray(query_vec_768, dtype=np.float32).reshape(-1)
-        top_k = min(self.temporal_rerank_top_k, len(cand_moments))
+        effective_k = self.temporal_rerank_top_k if top_k_override is None else int(top_k_override)
+        top_k = min(effective_k, len(cand_moments))
         head_moments = cand_moments[:top_k]
 
         raw_pools: list[tuple[int, float, float, bool, int]] = []
@@ -3220,22 +3401,38 @@ class UnifiedMultimodalSearchPipeline:
 
         cand_moments.sort(key=lambda m: (-float(m.ranking_score), str(m.video_id)))
 
+        clip_branch_stats: dict[str, Any] = {}
+        if self.enable_clip_branch:
+            cand_moments, a5_pool_ids, clip_pool_ids, clip_branch_stats = self._apply_clip_reserve_stage(
+                cand_moments, primary_q_768, filters
+            )
+        else:
+            a5_pool_ids = [
+                m.video_id for m in self._build_ranked_videos(cand_moments, cand_moments, top_k=top_k)
+            ]
+            clip_pool_ids = []
+
         # Section 3.1: NumPy Temporal Rerank Challenger on fixed Top-K base videos
         tr_enabled, _ = self._is_temporal_rerank_enabled(ablation_config)
         temporal_rerank_stats: dict[str, Any] = {}
         temporal_rerank_scored_candidates = 0
         if tr_enabled:
-            reranker_input_ids: list[str] = list(
-                dict.fromkeys(m.video_id for m in cand_moments)
-            )[: self.temporal_rerank_top_k]
+            if self.enable_clip_branch and clip_pool_ids:
+                reranker_input_ids = list(clip_pool_ids)
+                rerank_k_override: int | None = len(clip_pool_ids)
+            else:
+                reranker_input_ids = list(
+                    dict.fromkeys(m.video_id for m in cand_moments)
+                )[: self.temporal_rerank_top_k]
+                rerank_k_override = None
             if float(self.temporal_rerank_lambda) != 0.0 and cand_moments:
                 cand_moments, temporal_rerank_stats = self._apply_temporal_rerank(
-                    cand_moments, primary_q_768
+                    cand_moments, primary_q_768, top_k_override=rerank_k_override
                 )
                 temporal_rerank_scored_candidates = int(temporal_rerank_stats.get("scored_count", 0))
                 cand_moments.sort(key=lambda m: (-float(m.ranking_score), str(m.video_id)))
         else:
-            reranker_input_ids = list(pre_rerank_video_ids)
+            reranker_input_ids = list(clip_pool_ids) if (self.enable_clip_branch and clip_pool_ids) else list(pre_rerank_video_ids)
 
         aggregated_moments = cand_moments[:top_k]
         t_fusion_end = time.perf_counter()
@@ -3439,6 +3636,8 @@ class UnifiedMultimodalSearchPipeline:
             "union_dedup_vids": union_candidate_ids,
             "pre_rerank_video_ids": pre_rerank_video_ids,
             "shortlist_before_rerank_vids": pre_rerank_video_ids,
+            "a5_pool_ids": a5_pool_ids,
+            "clip_pool_ids": clip_pool_ids,
             "reranker_input_ids": reranker_input_ids,
             "ranked_video_ids": ranked_video_ids_default,
             "fused_top10_vids": set(pre_rerank_video_ids[:10]),
@@ -3459,6 +3658,9 @@ class UnifiedMultimodalSearchPipeline:
                 "temporal_rerank_window_sec": self.temporal_rerank_window_sec,
                 "temporal_rerank_max_frames": self.temporal_rerank_max_frames,
                 "temporal_rerank_tau": self.temporal_rerank_tau,
+                "enable_clip_branch": self.enable_clip_branch,
+                "clip_reserve_k": self.clip_reserve_k,
+                "clip_window_size": self.clip_window_size,
             },
             "feature_compute_counts": {
                 "late_interaction_scored_candidates": late_interaction_scored_candidates,
@@ -3466,6 +3668,7 @@ class UnifiedMultimodalSearchPipeline:
                 "vlm_caption_dense_hits": vlm_caption_dense_hits,
                 "temporal_rerank_scored_candidates": temporal_rerank_scored_candidates,
             },
+            "clip_branch_stats": clip_branch_stats,
             "temporal_rerank_stats": temporal_rerank_stats,
             "degraded": self._build_degraded_diagnostics(ablation_config),
         }

@@ -2,7 +2,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-864D%20Subspace%20%2B%20Small--LLM%20%2B%2024D%20Residual%20CrossLTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
-[![Test Suite](https://img.shields.io/badge/Pytest-522%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
+[![Test Suite](https://img.shields.io/badge/Pytest-542%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
 [![Hardware](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20%7C%20CPU--Ready-orange.svg)](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 
 ---
@@ -264,7 +264,7 @@ for rank, moment in enumerate(response["moments"], start=1):
 ### 5.4. Chạy Kiểm thử Tự động (`pytest`) và Chạy Đánh giá Benchmark
 
 ```powershell
-# 1. Chạy toàn bộ 522 bài kiểm thử đơn vị và tích hợp
+# 1. Chạy toàn bộ 542 bài kiểm thử đơn vị và tích hợp
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 
 # 2. Chạy đánh giá nhanh trên tập dev_150
@@ -275,6 +275,12 @@ for rank, moment in enumerate(response["moments"], start=1):
 
 # 4. Chạy tuning/ablation trên tập dev cụ thể với Temporal Rerank Challenger
 .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits dev_150,dev_full_859 --temporal-rerank-mode mean_top2 --temporal-rerank-lambda 0.10
+
+# 5. Replay nhánh SigLIP 2 Clip Reserve & VideoPrism-LvT-B (CPU replay + Kaggle bundle)
+.\.venv\Scripts\python.exe -B scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --out-dir work/experiments/clip_vp_pools_dev
+.\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool a5 --k 10 --alpha 0 --out-dir work/experiments/clip_vp_k10_baseline
+.\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool clip --k 10 --alpha 0 --out-dir work/experiments/clip_vp_k10_reserve
+.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k10_baseline --challenger work/experiments/clip_vp_k10_reserve --labels work/evaluation-only/clip_vp_dev_labels.jsonl --split-lock work/evaluation-only/clip_vp_split_lock.json --out-dir work/experiments/clip_vp_k10_compare
 ```
 
 ---
