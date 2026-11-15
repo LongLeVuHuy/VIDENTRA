@@ -1,5 +1,10 @@
 # Tiến độ triển khai VIDENTRA
 
+## Bàn giao sửa bốn lỗi và đo Qwen extractive-v2 cho Antigravity
+
+- Cập nhật [plan ở thư mục gốc](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md) với ca nghiệm thu cho rules trên CUDA, prompt version qua CLI/cache, hash labels/split lock và kiểm source span. Plan đặt mốc quyết định ở Hit@1 tune K=20 sau khi so A5 rules với Qwen gốc `extractive-v2`. Nếu delta ≤ 0, train LoRA trên Kaggle và chấm lại cùng giao thức.
+- Bổ sung phân công SigLIP2 cho visual, Faster‑Whisper/PhoWhisper cho lời thoại, OCRRouter cho chữ trên màn hình và rules/Qwen cho phân tích query. Plan quy định đo theo cấu hình từng kênh, coverage và latency. Các phép đo và train này thuộc phần bàn giao triển khai.
+
 ## 15/11/2026 — Rà soát độc lập sau commit `4ed61f8`
 
 - Đối chiếu replay ghép cặp đã lưu của 809 query MSR-VTT dev. A5 rules đạt 312/809 Hit@1, Qwen `compact-v1` đạt 252/809, với 16 thắng, 76 thua và −7,42 điểm phần trăm (CI 95% từ −9,64 đến −5,19). Lát cắt 604 query có clause placeholder giảm từ 227 còn 176 hit, 205 query còn lại giảm từ 85 còn 76. Báo cáo đối chứng lưu local tại `work/experiments/msrvtt_stage2_qwen_20261115/compare_R00_Q00_k20/benchmark_report.md`.
