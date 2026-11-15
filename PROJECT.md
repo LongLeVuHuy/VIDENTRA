@@ -64,6 +64,8 @@
 
 [Kế hoạch sửa lỗi và tune MSR‑VTT](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md) mô tả bước hoàn thiện temporal verifier, đo shortlist, kiểm mapping P8‑5 và thử nghiệm nâng độ chính xác sau bản vá Phase 9.
 
+[Runbook truy hồi clip và VideoPrism trên Kaggle](VIDENTRA_CLIP_RETRIEVAL_VIDEOPRISM_KAGGLE_RUNBOOK.md) mô tả kiến trúc nhánh clip, artifact inference và ma trận benchmark đề xuất.
+
 | Cột mốc | Phạm vi chính | Trạng thái |
 | :--- | :--- | :--- |
 | **M0–M2** | Contracts, Registry Isolation, Timeline Ledger, Hybrid Sampling, Visual SigLIP 2 & FAISS | **DONE** |

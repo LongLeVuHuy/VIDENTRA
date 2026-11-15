@@ -1,5 +1,10 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Runbook nhánh clip và VideoPrism‑LvT‑B trên Kaggle
+
+- Thêm [runbook cho Antigravity](../VIDENTRA_CLIP_RETRIEVAL_VIDEOPRISM_KAGGLE_RUNBOOK.md) ở thư mục gốc và dẫn link từ `PROJECT.md`. Runbook có công thức clip reserve, cách freeze A5 pool, manifest Kaggle chỉ chứa thông tin inference, pins/checksum upstream, cell API JAX và quy trình benchmark ghép cặp để tách Recall@K khỏi Hit@1.
+- Kiểm tra các đường dẫn, hợp đồng API VideoPrism tại commit đã pin và số liệu baseline `8c40e943d7104f21badda4a3fd62f623`. `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/evaluation/test_validation_benchmark_synthetic.py tests/evaluation/test_split_lock.py tests/evaluation/test_provenance_leakage.py tests/retrieval/test_unified_pipeline.py` → **36 passed in 31.69s**. Lượt này viết hướng dẫn. Nhánh clip tích hợp, bundle Kaggle và benchmark VideoPrism là các bước triển khai tiếp theo.
+
 ## 15/11/2026 — Đối chiếu temporal rerank và thử nhánh truy hồi clip cho MSR‑VTT
 
 - Đối chiếu theo `query_id` trên 809 câu MSR‑VTT dev giữa baseline `3d963447`, `attention` `5c72af5b` và `mean_top2` `2356dcfd`, cùng `lambda=0.10` cho hai challenger. Baseline 312/809 Hit@1. `attention` có 3 ca cứu và 4 ca rớt, còn 311/809. `mean_top2` có 2 ca cứu và 2 ca rớt, giữ 312/809. Run mặc định `8c40e943d7104f21badda4a3fd62f623` vẫn đạt 312/809 dev và 71/191 held-out. Nhánh spatial patches và caption còn thiếu artifact trong snapshot được chấm.
