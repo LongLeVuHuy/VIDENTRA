@@ -119,8 +119,12 @@ def test_extract_ltr_features_18d_and_derived_fields():
     dict22 = extract_ltr_features_22d(cand, z_stats=z_stats, return_dict=True)
     assert vec22.shape == (22,)
     assert list(dict22.keys()) == list(LTR_FEATURE_NAMES)
-    assert pytest.approx(dict22["vis_lexical_synergy"], abs=1e-5) == (0.40 - 0.16) * 0.012
+    assert pytest.approx(dict22["vis_lexical_synergy"], abs=1e-5) == (0.40 - 0.12) * 0.012
     assert pytest.approx(dict22["subclause_weakest_link"], abs=1e-5) == 0.40
+
+    low_vis_cand = dict(cand, s_vis_blend_max=0.11)
+    low_vis_dict = extract_ltr_features_22d(low_vis_cand, z_stats=z_stats, return_dict=True)
+    assert low_vis_dict["vis_lexical_synergy"] == 0.0
 
     batch = extract_ltr_features_batch([cand, {"s_vis_blend_max": float("nan")}])
     assert batch.shape == (2, 22)

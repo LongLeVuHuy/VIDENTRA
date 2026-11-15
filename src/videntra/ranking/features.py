@@ -207,7 +207,7 @@ def extract_ltr_features_22d(
     if "vis_lexical_synergy" in candidate and candidate["vis_lexical_synergy"] is not None:
         vis_lexical_synergy = _safe_float(candidate["vis_lexical_synergy"])
     else:
-        vis_lexical_synergy = max(0.0, s_vis - 0.16) * lex_rrf_sum
+        vis_lexical_synergy = max(0.0, s_vis - 0.12) * lex_rrf_sum
 
     if "unverified_lexical_hazard" in candidate and candidate["unverified_lexical_hazard"] is not None:
         unverified_lexical_hazard = _safe_float(candidate["unverified_lexical_hazard"])

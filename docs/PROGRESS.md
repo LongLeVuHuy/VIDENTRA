@@ -1,5 +1,27 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Hoàn thiện Hạng mục Còn lại Phase 8 (`vis_lexical_synergy` LTR Retrain, Kaggle `P8-4`/`P8-5` Prep & Full 3-Split Verification)
+
+- **Tinh chỉnh `vis_lexical_synergy` & Huấn luyện lại `Synergistic-CrossLTR` 22d ([features.py](../src/videntra/ranking/features.py), [train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py), [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json)):**
+  - Trên `dev_full_859` (`40,879` rows), `s_vis_blend_max` có median `0.1152` (positive `0.1596`, negative `0.1146`), nên ngưỡng cũ `0.16` khiến `vis_lexical_synergy` gần như luôn bằng `0` (chỉ `0.40%` rows khác 0).
+  - Hạ ngưỡng `vis_lexical_synergy` từ `0.16` xuống **`0.12`** (tỉ lệ khác 0 tăng gần **5x**: từ `164` (`0.40%`) lên `798` (`1.95%`) rows, `std = 8e-5`) và điều chỉnh `--l2-reg` mặc định từ `1500000.0` xuống **`3000.0`** trên `dev_full_859` (không đụng `heldout_test_201`).
+  - **Trọng số mới trong `videntra_ltr_v1.json`:** `window_energy_concentration` tăng từ `0.0` lên **`0.108777`**, `vis_lexical_synergy` tăng từ `0.011279` lên **`0.024485`** (`unverified_lexical_hazard` giữ `0.0` do bị ràng buộc `NEGATIVE_MONOTONIC_FEATURES` chặn đảo dấu).
+  - **5-Fold `GroupKFold` CV (`dev_full_859`):** `Hit@1 = 0.4603` (tăng từ `0.4480`), `MRR = 0.5767` (tăng từ `0.5660`), `nDCG@10 = 0.6236` (tăng từ `0.6139`).
+  - Cập nhật [test_learned_ranker.py](../tests/ranking/test_learned_ranker.py) kiểm tra ngưỡng `0.12` và zero-cutoff tại `s_vis_blend_max = 0.11` (`8 passed in 17.10s`).
+- **Chuẩn bị & Gia cố Pipeline Offline Kaggle GPU cho `P8-4` & `P8-5` ([prewarm_llm_query_cache.py](../scripts/prewarm_llm_query_cache.py), [package_kaggle_inputs.py](../scripts/package_kaggle_inputs.py), [kaggle_multimodal_offline_worker.py](../scripts/kaggle_multimodal_offline_worker.py), [ingest_kaggle_offline_results.py](../scripts/ingest_kaggle_offline_results.py)):**
+  - **`P8-4` (`prewarm_llm_query_cache.py`):** Hỗ trợ `--split {dev_150,dev_full_859,heldout_test_201,all_1060}`, `--export-queries-only` (xuất đủ **1,060** truy vấn sạch GT), lưu/nối cache JSONL atomic (`atomic_write_cache`, `--checkpoint-every`, `--merge-from`/`--merge-only`).
+  - **`P8-5` (`package_kaggle_inputs.py`, `kaggle_multimodal_offline_worker.py`, `ingest_kaggle_offline_results.py`):** Bổ sung `--mode db` (`11,581` DB keyframes kèm `timestamp_ms`, `faiss_id`, `keyframe_id`), sửa lỗi `float32`/`float16` trên CUDA trong `extract_florence2_keyframe_captions`, bổ sung `build_e5_caption_faiss_index` (`faiss_e5_caption_384.bin` + `e5_caption_manifest.json`) & `run_p85_keyframe_backfill` tuần tự xả VRAM chống OOM trên Kaggle T4, cùng `--mode p85` ở bước ingest (tạo `KeyframeCaptions` + `fts_vlm_caption` FTS5 an toàn không ghi đè `metadata.db`).
+  - Bổ sung [test_kaggle_offline_pipeline.py](../tests/indexing/test_kaggle_offline_pipeline.py) (`4 passed`, suite hồi quy 7 file test liên quan `47 passed`, `--help` & `--dry-run` toàn bộ 4 script exit `0`).
+- **Kiểm chứng Toàn diện Cuối cùng (`verifier-final`):**
+  - **Full Pytest Suite:** `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`470 passed, 3 warnings in 127.37s`** (exit code `0`).
+  - **Benchmark End-to-End (`scripts/run_validation_benchmark.py`, exit code `0`, `provenance.json`: `inputs_unchanged=True`, `outputs_verified=True`, `run_id=c115ae3684384ba88ad9a3f42715b2c8`):**
+    - `dev_150` (`150` queries): Global Hit@1 = **`60.00%`**, Hit@5 = **`70.67%`**, Hit@10 = **`74.00%`**, MRR = **`0.6457`**, Video nDCG@10 = **`0.6686`**, Global-then-dataset-filter Hit@1 = **`62.67%`** (MRR `0.6767`), Moment Hit@1 (`tIoU>=0.5`) = **`68.18%`**, Moment nDCG@5 = **`0.5077`**, Pure-ASR FP Top-1 = **`0`**.
+    - `dev_full_859` (`859` queries): Global Hit@1 = **`41.33%`**, Hit@5 = **`62.63%`**, Hit@10 = **`69.03%`**, MRR = **`0.5014`**, Video nDCG@10 = **`0.5468`**, Global-then-dataset-filter Hit@1 = **`44.47%`** (MRR `0.5348`).
+    - `heldout_test_201` (`201` queries): Global Hit@1 = **`38.31%`**, Hit@5 = **`60.20%`**, Hit@10 = **`67.16%`**, MRR = **`0.4736`**, Video nDCG@10 = **`0.5212`**, Global-then-dataset-filter Hit@1 = **`40.80%`** (MRR `0.5049`).
+    - **Non-Neural Latency (CPU):** `dev_150` single-split p50/p95 = **`43.27 ms / 72.05 ms`**; full 3-split Mean/p50/p95 = **`51.67 ms / 44.55 ms / 108.48 ms`**.
+
+---
+
 ## 15/11/2026 — Triển khai Phase 8 (Vá 3 điểm kiểm toán Phần II, `Synergistic-CrossLTR` 22d, `QAC-CSLS`, `NMS-MultiPeak` & `Shot-Snapped Boundary`)
 
 - **Vá 3 điểm kỹ thuật từ [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md):**

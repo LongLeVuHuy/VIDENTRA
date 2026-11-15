@@ -10,6 +10,7 @@ Executes full dataset offline processing on Tesla T4 GPU with bounded memory:
 """
 from __future__ import annotations
 
+import argparse
 from collections import deque
 import gc
 import hashlib
@@ -115,8 +116,9 @@ def frame_time_seconds(frame: Any, stream: Any, origin_pts: int = 0) -> float:
 
 def ensure_output_files_absent(out_dir: Path) -> None:
     names = ("frame_embeddings.npy", "spatial_patches_fp16.npy", "faiss_text_e5_384.bin",
-             "e5_text_manifest.json", "videos.json", "keyframe_manifest.json", "frame_objects.json",
-             "ocr_observations.json", "asr_segments.json", "summary.json")
+             "e5_text_manifest.json", "keyframe_captions.json", "faiss_e5_caption_384.bin",
+             "e5_caption_manifest.json", "videos.json", "keyframe_manifest.json",
+             "frame_objects.json", "ocr_observations.json", "asr_segments.json", "summary.json")
     existing = [name for name in names if (out_dir / name).exists()]
     if existing:
         raise FileExistsError(f"Output artifacts already exist: {existing}")
@@ -318,6 +320,66 @@ def build_e5_text_faiss_index(
     }
 
 
+def build_e5_caption_faiss_index(
+    keyframe_captions: list[dict[str, Any]],
+    out_dir: Path,
+    tokenizer: Any = None,
+    model: Any = None,
+    device: str = "cpu",
+    model_id: str = E5_MODEL_ID,
+    revision: str = E5_REVISION,
+) -> dict[str, Any]:
+    """Build and persist faiss_e5_caption_384.bin + e5_caption_manifest.json for VLM captions."""
+    import faiss
+
+    entries: list[dict[str, Any]] = []
+    texts: list[str] = []
+
+    for cap in keyframe_captions:
+        cap_txt = str(cap.get("caption_text", "")).strip()
+        if not cap_txt:
+            continue
+        entry: dict[str, Any] = {
+            "faiss_id": len(entries),
+            "keyframe_faiss_id": int(cap.get("faiss_id", len(entries))),
+            "video_id": str(cap.get("video_id", "")),
+            "timestamp_ms": int(cap.get("timestamp_ms", 0)),
+            "caption_text": cap_txt,
+        }
+        if cap.get("keyframe_id"):
+            entry["keyframe_id"] = str(cap["keyframe_id"])
+        entries.append(entry)
+        texts.append(cap_txt)
+
+    index = faiss.IndexFlatIP(E5_EMBEDDING_DIM)
+    if texts:
+        if tokenizer is None or model is None:
+            from transformers import AutoModel, AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
+            model = AutoModel.from_pretrained(model_id, revision=revision).to(device)
+            model.eval()
+        vectors = encode_e5_passages(texts, tokenizer=tokenizer, model=model, device=device)
+        if vectors.shape[1] != E5_EMBEDDING_DIM:
+            raise ValueError(f"Expected {E5_EMBEDDING_DIM}d E5 vectors, got {vectors.shape[1]}")
+        index.add(np.ascontiguousarray(vectors, dtype=np.float32))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    faiss_path = out_dir / "faiss_e5_caption_384.bin"
+    manifest_path = out_dir / "e5_caption_manifest.json"
+    faiss.write_index(index, str(faiss_path))
+    manifest_path.write_text(
+        json.dumps(entries, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return {
+        "index_path": str(faiss_path),
+        "manifest_path": str(manifest_path),
+        "num_entries": len(entries),
+        "ntotal": int(index.ntotal),
+    }
+
+
 def extract_florence2_keyframe_captions(
     keyframe_records: list[dict[str, Any]],
     out_dir: Path | None = None,
@@ -367,7 +429,8 @@ def extract_florence2_keyframe_captions(
             if img is None and rec.get("keyframe_path"):
                 img_path = Path(str(rec["keyframe_path"]))
                 if img_path.is_file():
-                    img = Image.open(img_path).convert("RGB")
+                    with Image.open(img_path) as im:
+                        img = im.convert("RGB")
             elif isinstance(img, np.ndarray):
                 img = Image.fromarray(img.astype(np.uint8)).convert("RGB")
 
@@ -380,7 +443,17 @@ def extract_florence2_keyframe_captions(
 
         prompts = [task_prompt] * len(images)
         inputs = processor(text=prompts, images=images, return_tensors="pt")
-        if hasattr(inputs, "to"):
+        model_dtype = getattr(model, "dtype", None)
+        if isinstance(model_dtype, torch.dtype) and isinstance(inputs, dict):
+            inputs = {
+                k: (
+                    v.to(device=device, dtype=model_dtype)
+                    if isinstance(v, torch.Tensor) and v.is_floating_point()
+                    else (v.to(device) if hasattr(v, "to") else v)
+                )
+                for k, v in inputs.items()
+            }
+        elif hasattr(inputs, "to"):
             inputs = inputs.to(device)
         else:
             inputs = {
@@ -398,12 +471,15 @@ def extract_florence2_keyframe_captions(
         decoded = processor.batch_decode(generated_ids, skip_special_tokens=True)
         for (global_idx, rec), raw_cap in zip(valid_recs, decoded):
             cap_text = str(raw_cap).replace(task_prompt, "").strip()
-            captions.append({
+            cap_row: dict[str, Any] = {
                 "faiss_id": int(rec.get("faiss_id", global_idx)),
                 "video_id": str(rec["video_id"]),
                 "timestamp_ms": int(rec["timestamp_ms"]),
                 "caption_text": cap_text,
-            })
+            }
+            if rec.get("keyframe_id"):
+                cap_row["keyframe_id"] = str(rec["keyframe_id"])
+            captions.append(cap_row)
 
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -483,9 +559,232 @@ def phash_dist(h1: int, h2: int) -> int:
     return bin(h1 ^ h2).count("1")
 
 
-def main():
+def _load_florence2_model_and_processor(
+    device: str,
+    model_root: Path | None = None,
+    model_id: str = FLORENCE2_MODEL_ID,
+    revision: str = FLORENCE2_REVISION,
+) -> tuple[Any, Any, str]:
+    """Load Florence-2 processor & model (preferring local model_root/florence2 if present)."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoProcessor
+
+    dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
+    local_dir = (model_root / "florence2") if model_root is not None else None
+    if local_dir is not None and local_dir.is_dir():
+        proc = AutoProcessor.from_pretrained(str(local_dir), local_files_only=True, trust_remote_code=True)
+        mdl = AutoModelForCausalLM.from_pretrained(
+            str(local_dir), local_files_only=True, torch_dtype=dtype, trust_remote_code=True
+        ).to(device)
+        source = str(local_dir)
+    else:
+        proc = AutoProcessor.from_pretrained(model_id, revision=revision, trust_remote_code=True)
+        mdl = AutoModelForCausalLM.from_pretrained(
+            model_id, revision=revision, torch_dtype=dtype, trust_remote_code=True
+        ).to(device)
+        source = f"{model_id}@{revision}"
+    mdl.eval()
+    return proc, mdl, source
+
+
+def run_p85_keyframe_backfill(
+    keyframes_manifest: Path,
+    out_dir: Path,
+    *,
+    images_dir: Path | None = None,
+    siglip_batch_size: int = 64,
+    florence2_batch_size: int = 16,
+    enable_florence2: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """P8-5 Kaggle GPU backfill over packaged keyframes_manifest.jsonl + images/.
+
+    Produces:
+    - spatial_patches_fp16.npy (N, 9, 768) float16
+    - keyframe_captions.json
+    - faiss_e5_caption_384.bin + e5_caption_manifest.json
+    - summary.json
+    """
+    if not keyframes_manifest.is_file():
+        raise FileNotFoundError(f"Keyframes manifest not found: {keyframes_manifest}")
+
+    records: list[dict[str, Any]] = []
+    with keyframes_manifest.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+
+    img_root = images_dir or (keyframes_manifest.parent / "images")
+    if dry_run:
+        return {
+            "mode": "p85_keyframe_backfill",
+            "keyframes_manifest": str(keyframes_manifest),
+            "images_dir": str(img_root),
+            "num_keyframes": len(records),
+            "out_dir": str(out_dir),
+            "enable_florence2": enable_florence2,
+            "dry_run": True,
+        }
+
     start_time = time.time()
-    out_dir = Path("/kaggle/working")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_output_files_absent(out_dir)
+
+    import torch
+    from PIL import Image
+    from huggingface_hub import hf_hub_download
+    from transformers import AutoModel, AutoProcessor
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    log(f"P8-5 Backfill Device: {device} | Keyframes: {len(records)}")
+
+    # Prepare caption/image records
+    kf_inputs: list[dict[str, Any]] = []
+    for idx, rec in enumerate(records):
+        img_file = rec.get("image_file")
+        kf_path = Path(str(rec["keyframe_path"])) if rec.get("keyframe_path") else (img_root / str(img_file))
+        ts_ms = rec.get("timestamp_ms")
+        if ts_ms is None:
+            ts_ms = int(round(float(rec.get("timestamp_seconds", 0.0)) * 1000.0))
+        kf_inputs.append({
+            "faiss_id": int(rec.get("faiss_id", idx)),
+            "keyframe_id": str(rec.get("keyframe_id") or rec.get("sampled_frame_id") or f"kf_{idx:05d}"),
+            "video_id": str(rec["video_id"]),
+            "timestamp_ms": int(ts_ms),
+            "keyframe_path": str(kf_path),
+        })
+
+    # Stage 1: SigLIP 2 3x3 spatial patches (unload before Florence-2 to avoid T4 OOM)
+    weights_path = Path(hf_hub_download(SIGLIP_MODEL_ID, "model.safetensors", revision=SIGLIP_REVISION))
+    weights_hash = verify_weights(weights_path)
+    siglip_proc = AutoProcessor.from_pretrained(SIGLIP_MODEL_ID, revision=SIGLIP_REVISION)
+    siglip_model = AutoModel.from_pretrained(
+        SIGLIP_MODEL_ID,
+        revision=SIGLIP_REVISION,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    ).to(device)
+    siglip_model.eval()
+
+    patch_chunks: list[np.ndarray] = []
+    bs_siglip = max(1, int(siglip_batch_size))
+    for st in range(0, len(kf_inputs), bs_siglip):
+        batch = kf_inputs[st : st + bs_siglip]
+        pil_batch: list[Image.Image] = []
+        for rec in batch:
+            with Image.open(rec["keyframe_path"]) as im:
+                pil_batch.append(im.convert("RGB"))
+        inputs = siglip_proc(images=pil_batch, return_tensors="pt").to(device)
+        if device == "cuda":
+            inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}
+        with torch.no_grad():
+            if hasattr(siglip_model, "vision_model") and "pixel_values" in inputs:
+                raw_out = siglip_model.vision_model(pixel_values=inputs["pixel_values"])
+            else:
+                raw_out = siglip_model(**inputs)
+            if getattr(raw_out, "last_hidden_state", None) is not None:
+                patch_chunks.append(extract_spatial_patches_3x3(raw_out.last_hidden_state))
+
+    final_spatial_patches = (
+        np.vstack(patch_chunks) if patch_chunks else np.empty((0, 9, 768), dtype=np.float16)
+    )
+    np.save(str(out_dir / "spatial_patches_fp16.npy"), final_spatial_patches)
+
+    del siglip_model, siglip_proc
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+    # Stage 2: Florence-2-base captions + Stage 3: E5 caption FAISS index
+    captions: list[dict[str, Any]] = []
+    e5_caption_status: dict[str, Any] = {"available": False, "num_entries": 0}
+    if enable_florence2 and kf_inputs:
+        fl_proc, fl_model, _ = _load_florence2_model_and_processor(device=device)
+        captions = extract_florence2_keyframe_captions(
+            kf_inputs,
+            out_dir=out_dir,
+            processor=fl_proc,
+            model=fl_model,
+            device=device,
+            batch_size=max(1, int(florence2_batch_size)),
+        )
+        del fl_model, fl_proc
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        e5_cap_info = build_e5_caption_faiss_index(
+            captions,
+            out_dir=out_dir,
+            device=device,
+        )
+        e5_caption_status = {"available": True, **e5_cap_info}
+
+    summary = {
+        "status": "success",
+        "mode": "p85_keyframe_backfill",
+        "total_keyframes": len(kf_inputs),
+        "spatial_patches_shape": list(final_spatial_patches.shape),
+        "total_keyframe_captions": len(captions),
+        "e5_caption_index": e5_caption_status,
+        "siglip": {"model_id": SIGLIP_MODEL_ID, "revision": SIGLIP_REVISION, "weights_sha256": weights_hash},
+        "florence2": {"model_id": FLORENCE2_MODEL_ID, "revision": FLORENCE2_REVISION, "enabled": enable_florence2},
+        "e5_text": {"model_id": E5_MODEL_ID, "revision": E5_REVISION, "embedding_dim": E5_EMBEDDING_DIM},
+        "elapsed_seconds": round(time.time() - start_time, 2),
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="VIDENTRA Multi-Modal Offline GPU Worker for Kaggle.")
+    parser.add_argument("--out-dir", type=Path, default=Path("/kaggle/working"))
+    parser.add_argument(
+        "--keyframes-manifest",
+        type=Path,
+        default=None,
+        help="Optional keyframes_manifest.jsonl for P8-5 keyframe backfill mode.",
+    )
+    parser.add_argument("--images-dir", type=Path, default=None, help="Optional images directory for --keyframes-manifest.")
+    parser.add_argument("--enable-florence2", dest="enable_florence2", action="store_true", default=True)
+    parser.add_argument("--no-enable-florence2", dest="enable_florence2", action="store_false")
+    parser.add_argument("--require-florence2", action="store_true", default=False)
+    parser.add_argument("--siglip-batch-size", type=int, default=64)
+    parser.add_argument("--florence2-batch-size", type=int, default=16)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None):
+    args = _build_parser().parse_args([] if argv is None else argv)
+    if args.keyframes_manifest is not None:
+        res = run_p85_keyframe_backfill(
+            keyframes_manifest=args.keyframes_manifest,
+            out_dir=args.out_dir,
+            images_dir=args.images_dir,
+            siglip_batch_size=args.siglip_batch_size,
+            florence2_batch_size=args.florence2_batch_size,
+            enable_florence2=args.enable_florence2,
+            dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            print(json.dumps(res, indent=2))
+        return res
+
+    start_time = time.time()
+    out_dir = args.out_dir
+    if args.dry_run:
+        specified = os.environ.get("VIDENTRA_KAGGLE_BUNDLE")
+        print(json.dumps({
+            "mode": "full_bundle",
+            "out_dir": str(out_dir),
+            "bundle_env": specified,
+            "model_root_env": os.environ.get("VIDENTRA_A5_MODEL_ROOT"),
+            "enable_florence2": args.enable_florence2,
+            "dry_run": True,
+        }, indent=2))
+        return None
     ensure_output_files_absent(out_dir)
     model_root_value = os.environ.get("VIDENTRA_A5_MODEL_ROOT")
     if not model_root_value:
@@ -554,6 +853,22 @@ def main():
     log("Loading YOLOv8 Detector (yolov8n.pt)...")
     yolo = YOLO(str(model_root / "yolo/yolov8n.pt"))
 
+    # 4b. Optional Florence-2-base Captioner (P8-5)
+    fl_processor = None
+    fl_model = None
+    florence2_status: dict[str, Any] = {"available": False, "enabled": args.enable_florence2}
+    if args.enable_florence2:
+        try:
+            fl_processor, fl_model, fl_src = _load_florence2_model_and_processor(
+                device=device, model_root=model_root
+            )
+            florence2_status = {"available": True, "enabled": True, "source": fl_src}
+        except Exception as fl_err:
+            if args.require_florence2:
+                raise
+            log(f"Florence-2 load skipped/failed: {fl_err}")
+            florence2_status = {"available": False, "enabled": True, "error": str(fl_err)}
+
     # 5. The input universe is fixed by the verified bundle, not by mounted files.
     log("\n--- VERIFIED BUNDLE VIDEOS ---")
     total_all_videos = len(video_files)
@@ -566,6 +881,7 @@ def main():
     global_objects: list[dict] = []
     global_ocr_obs: list[dict] = []
     global_asr_segs: list[dict] = []
+    global_keyframe_captions: list[dict] = []
     video_errors: list[dict[str, str]] = []
     asr_error_count = 0
     ocr_error_count = 0
@@ -866,6 +1182,29 @@ def main():
                         ocr_error_count += 1
                         log(f"OCR error on {kf_rec['keyframe_id']}: {ocr_err}")
 
+        # E. Florence-2-base Keyframe Captions (P8-5)
+        if num_chunk_kf > 0 and fl_processor is not None and fl_model is not None:
+            fl_inputs = [
+                {
+                    "faiss_id": kf["global_index"],
+                    "keyframe_id": kf["keyframe_id"],
+                    "video_id": kf["video_id"],
+                    "timestamp_ms": kf["timestamp_ms"],
+                    "image": img,
+                }
+                for kf, img in zip(chunk_keyframes, chunk_images)
+            ]
+            global_keyframe_captions.extend(
+                extract_florence2_keyframe_captions(
+                    fl_inputs,
+                    out_dir=None,
+                    processor=fl_processor,
+                    model=fl_model,
+                    device=device,
+                    batch_size=max(1, int(args.florence2_batch_size)),
+                )
+            )
+
         # Cleanup memory after chunk
         del chunk_images
         del chunk_img_nps
@@ -906,6 +1245,22 @@ def main():
     except Exception as e5_err:
         log(f"E5 text index build skipped/failed: {e5_err}")
         e5_status = {"available": False, "error": str(e5_err), "num_entries": 0}
+
+    e5_caption_status: dict[str, Any] = {"available": False, "num_entries": 0}
+    if global_keyframe_captions:
+        with open(out_dir / "keyframe_captions.json", "w", encoding="utf-8") as f:
+            json.dump(global_keyframe_captions, f, indent=2, ensure_ascii=False)
+        try:
+            e5_cap_info = build_e5_caption_faiss_index(
+                keyframe_captions=global_keyframe_captions,
+                out_dir=out_dir,
+                device=device,
+            )
+            e5_caption_status = {"available": True, **e5_cap_info}
+        except Exception as e5_cap_err:
+            log(f"E5 caption index build skipped/failed: {e5_cap_err}")
+            e5_caption_status = {"available": False, "error": str(e5_cap_err), "num_entries": 0}
+
     with open(out_dir / "videos.json", "w", encoding="utf-8") as f:
         json.dump(global_videos, f, indent=2, ensure_ascii=False)
     with open(out_dir / "keyframe_manifest.json", "w", encoding="utf-8") as f:
@@ -933,9 +1288,12 @@ def main():
                           "license": "AGPL-3.0"},
             "e5_text": {"model_id": E5_MODEL_ID, "revision": E5_REVISION,
                         "embedding_dim": E5_EMBEDDING_DIM, "license": "MIT"},
+            "florence2": {"model_id": FLORENCE2_MODEL_ID, "revision": FLORENCE2_REVISION,
+                          "license": "MIT", **florence2_status},
             "model_files_sha256": model_hashes,
         },
         "e5_text_index": e5_status,
+        "e5_caption_index": e5_caption_status,
         "runtime_versions": runtime_versions,
         "limitations": ["ASR confidence is an uncalibrated average log probability, not a probability.",
                         "Transitive dependencies, GPU drivers and runtime wheel hashes require separate verification.",
@@ -945,6 +1303,7 @@ def main():
         "total_keyframes": len(global_keyframes),
         "embedding_matrix_shape": list(final_embeddings.shape),
         "spatial_patches_shape": list(final_spatial_patches.shape),
+        "total_keyframe_captions": len(global_keyframe_captions),
         "total_objects_detected": len(global_objects),
         "total_ocr_observations": len(global_ocr_obs),
         "total_asr_segments": len(global_asr_segs),
@@ -960,4 +1319,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

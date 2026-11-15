@@ -6,16 +6,25 @@ from datetime import datetime, timezone
 import json
 import math
 from fractions import Fraction
+import os
 from pathlib import Path
+import shutil
+import sqlite3
 import sys
 import time
 import numpy as np
 
 import faiss
 
-from videntra.storage.database import OfflineMetadataStore, current_iso
-from videntra.storage.grouping import OCREvidenceGrouper, ASREvidenceGrouper
-from videntra.storage.integrity import verify_offline_storage_integrity
+# Ensure src/ is importable when invoked as `python scripts/ingest_kaggle_offline_results.py`
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
+
+from videntra.evidence.normalize import fold_diacritics, normalize_text  # noqa: E402
+from videntra.storage.database import OfflineMetadataStore, current_iso  # noqa: E402
+from videntra.storage.grouping import OCREvidenceGrouper, ASREvidenceGrouper  # noqa: E402
+from videntra.storage.integrity import verify_offline_storage_integrity  # noqa: E402
 
 # Force UTF-8 on Windows console
 if hasattr(sys.stdout, "reconfigure"):
@@ -60,6 +69,198 @@ def validate_recorded_pts(outputs_dir: Path) -> None:
             mismatches += 1
     if mismatches or missing:
         raise ValueError(f"PTS/time-base audit failed: {mismatches} mismatches and {missing} missing mappings; verify ledger and explicit origin before ingest")
+
+
+def _atomic_copy_file(src: Path, dst: Path) -> None:
+    """Copy src to dst atomically via temp file + os.replace."""
+    if src.resolve() == dst.resolve():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
+    try:
+        shutil.copy2(src, tmp_path)
+        os.replace(tmp_path, dst)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_caption_schema(conn: sqlite3.Connection) -> None:
+    """Create KeyframeCaptions and fts_vlm_caption tables if not already present."""
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS KeyframeCaptions (
+        caption_id TEXT PRIMARY KEY,
+        keyframe_id TEXT,
+        video_id TEXT NOT NULL,
+        faiss_id INTEGER NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        caption_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        model_id TEXT NOT NULL DEFAULT 'microsoft/Florence-2-base',
+        created_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kf_captions_video ON KeyframeCaptions(video_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kf_captions_faiss ON KeyframeCaptions(faiss_id);")
+    try:
+        conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_vlm_caption USING fts5(
+            normalized_text,
+            unaccented_text,
+            video_id UNINDEXED,
+            keyframe_id UNINDEXED,
+            faiss_id UNINDEXED,
+            timestamp_ms UNINDEXED,
+            tokenize='unicode61'
+        );
+        """)
+    except sqlite3.OperationalError:
+        conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_vlm_caption USING fts5(
+            normalized_text,
+            unaccented_text,
+            video_id UNINDEXED,
+            keyframe_id UNINDEXED,
+            faiss_id UNINDEXED,
+            timestamp_ms UNINDEXED
+        );
+        """)
+
+
+def ingest_p85_artifacts(
+    outputs_dir: Path,
+    db_path: Path,
+    processed_dir: Path | None = None,
+    *,
+    allow_partial_keyframes: bool = False,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    """Ingest P8-5 artifacts (spatial_patches_fp16.npy, keyframe_captions.json, faiss_e5_caption_384.bin).
+
+    Safely updates an existing metadata.db (adding KeyframeCaptions + fts_vlm_caption)
+    and copies spatial_patches_fp16.npy / faiss_e5_caption_384.bin into processed_dir.
+    """
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Metadata DB not found: {db_path}")
+
+    target_dir = processed_dir or db_path.parent
+    result: dict[str, object] = {
+        "outputs_dir": str(outputs_dir),
+        "db_path": str(db_path),
+        "processed_dir": str(target_dir),
+        "spatial_patches_shape": None,
+        "captions_ingested": 0,
+        "e5_caption_vectors": 0,
+        "dry_run": dry_run,
+    }
+
+    with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+        kf_count = int(conn.execute("SELECT COUNT(*) FROM Keyframes").fetchone()[0])
+
+    # 1. Validate & copy spatial_patches_fp16.npy
+    patches_src = outputs_dir / "spatial_patches_fp16.npy"
+    if patches_src.is_file():
+        patches_arr = np.load(str(patches_src), mmap_mode="r")
+        if patches_arr.ndim != 3 or patches_arr.shape[1] != 9:
+            raise ValueError(
+                f"spatial_patches_fp16.npy must have shape (N, 9, D), got {tuple(patches_arr.shape)}"
+            )
+        if patches_arr.dtype != np.float16:
+            raise ValueError(f"spatial_patches_fp16.npy must be float16, got {patches_arr.dtype}")
+        if not allow_partial_keyframes and kf_count > 0 and patches_arr.shape[0] != kf_count:
+            raise ValueError(
+                f"spatial_patches_fp16.npy row count ({patches_arr.shape[0]}) != Keyframes count ({kf_count})"
+            )
+        result["spatial_patches_shape"] = list(patches_arr.shape)
+        del patches_arr
+        if not dry_run:
+            _atomic_copy_file(patches_src, target_dir / "spatial_patches_fp16.npy")
+
+    # 2. Validate & ingest keyframe_captions.json -> KeyframeCaptions + fts_vlm_caption
+    captions_src = outputs_dir / "keyframe_captions.json"
+    if captions_src.is_file():
+        raw_captions = json.loads(captions_src.read_text(encoding="utf-8"))
+        if not isinstance(raw_captions, list):
+            raise ValueError("keyframe_captions.json must be a JSON list")
+
+        for idx, rec in enumerate(raw_captions):
+            if not isinstance(rec, dict) or "video_id" not in rec or "timestamp_ms" not in rec or "caption_text" not in rec:
+                raise ValueError(f"Invalid caption record at index {idx}")
+
+        if not dry_run:
+            now = current_iso()
+            with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+                _ensure_caption_schema(conn)
+                conn.execute("DELETE FROM fts_vlm_caption;")
+                cap_rows = []
+                fts_rows = []
+                for idx, rec in enumerate(raw_captions):
+                    vid = str(rec["video_id"])
+                    fid = int(rec.get("faiss_id", idx))
+                    kf_id = str(rec.get("keyframe_id") or f"{vid}__kf_{fid}")
+                    ts_ms = int(rec["timestamp_ms"])
+                    cap_txt = str(rec["caption_text"]).strip()
+                    norm_txt = normalize_text(cap_txt)
+                    unacc_txt = fold_diacritics(norm_txt)
+                    cap_id = f"{kf_id}__florence2"
+                    cap_rows.append((
+                        cap_id,
+                        kf_id,
+                        vid,
+                        fid,
+                        ts_ms,
+                        cap_txt,
+                        norm_txt,
+                        "microsoft/Florence-2-base",
+                        now,
+                    ))
+                    if norm_txt:
+                        fts_rows.append((norm_txt, unacc_txt, vid, kf_id, str(fid), str(ts_ms)))
+
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO KeyframeCaptions (
+                        caption_id, keyframe_id, video_id, faiss_id, timestamp_ms,
+                        caption_text, normalized_text, model_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    cap_rows,
+                )
+                if fts_rows:
+                    conn.executemany(
+                        """
+                        INSERT INTO fts_vlm_caption (
+                            normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        fts_rows,
+                    )
+                conn.commit()
+        result["captions_ingested"] = len(raw_captions)
+
+    # 3. Validate & copy faiss_e5_caption_384.bin + e5_caption_manifest.json
+    cap_faiss_src = outputs_dir / "faiss_e5_caption_384.bin"
+    cap_manifest_src = outputs_dir / "e5_caption_manifest.json"
+    if cap_faiss_src.is_file():
+        cap_idx = faiss.read_index(str(cap_faiss_src))
+        if int(cap_idx.d) != 384:
+            raise ValueError(f"faiss_e5_caption_384.bin must be 384d, got {cap_idx.d}d")
+        if cap_manifest_src.is_file():
+            cap_manifest = json.loads(cap_manifest_src.read_text(encoding="utf-8"))
+            if not isinstance(cap_manifest, list) or len(cap_manifest) != int(cap_idx.ntotal):
+                raise ValueError(
+                    f"e5_caption_manifest.json length ({len(cap_manifest) if isinstance(cap_manifest, list) else 'invalid'}) != FAISS ntotal ({cap_idx.ntotal})"
+                )
+            if not dry_run:
+                _atomic_copy_file(cap_manifest_src, target_dir / "e5_caption_manifest.json")
+        result["e5_caption_vectors"] = int(cap_idx.ntotal)
+        if not dry_run:
+            _atomic_copy_file(cap_faiss_src, target_dir / "faiss_e5_caption_384.bin")
+
+    return result
 
 
 def validate_worker_outputs(outputs_dir: Path) -> None:
@@ -264,6 +465,21 @@ def ingest_kaggle_offline_outputs(
     })
     print_progress(5, total_steps, "FAISS Index & Sync", 100.0, 90.0)
 
+    # 5b. Copy optional E5 text index and ingest P8-5 artifacts if present
+    for opt_name in ("faiss_text_e5_384.bin", "e5_text_manifest.json"):
+        opt_src = outputs_dir / opt_name
+        if opt_src.is_file():
+            _atomic_copy_file(opt_src, faiss_path.parent / opt_name)
+
+    if any((outputs_dir / n).is_file() for n in ("spatial_patches_fp16.npy", "keyframe_captions.json", "faiss_e5_caption_384.bin")):
+        ingest_p85_artifacts(
+            outputs_dir=outputs_dir,
+            db_path=db_path,
+            processed_dir=faiss_path.parent,
+            allow_partial_keyframes=False,
+            dry_run=False,
+        )
+
     # 6. Integrity Verification (90% -> 100%)
     print("\n--- BƯỚC 6/6: Kiểm tra Tính Toàn vẹn Hệ thống ---")
     report = verify_offline_storage_integrity(db_path, faiss_path)
@@ -288,16 +504,30 @@ def ingest_kaggle_offline_outputs(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Ingest Kaggle offline GPU outputs into local storage.")
+    parser.add_argument("--mode", choices=("full", "p85"), default="full")
     parser.add_argument("--outputs-dir", type=Path, default=Path("work/kaggle/offline_outputs"))
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
     parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
+    parser.add_argument("--processed-dir", type=Path, default=None, help="Target dir for P8-5 artifacts (defaults to db_path.parent).")
+    parser.add_argument("--allow-partial-keyframes", action="store_true", help="Allow spatial_patches row count != Keyframes count in p85 mode.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate P8-5 artifacts without modifying DB or files.")
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()
 
-    ingest_kaggle_offline_outputs(
-        outputs_dir=args.outputs_dir,
-        db_path=args.db_path,
-        faiss_path=args.faiss_path,
-        reset=args.reset,
-    )
+    if args.mode == "p85":
+        res = ingest_p85_artifacts(
+            outputs_dir=args.outputs_dir,
+            db_path=args.db_path,
+            processed_dir=args.processed_dir,
+            allow_partial_keyframes=args.allow_partial_keyframes,
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+    else:
+        ingest_kaggle_offline_outputs(
+            outputs_dir=args.outputs_dir,
+            db_path=args.db_path,
+            faiss_path=args.faiss_path,
+            reset=args.reset,
+        )
