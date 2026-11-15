@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 from videntra.query.rules import COCO_SYNONYM_MAP, decompose_query_clauses, extract_object_requirements
-from videntra.query.llm import AdaptiveQueryDecomposer
+from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
 from videntra.query.schemas import ModalityRoutingPlan
 from videntra.retrieval.visual import (
     RankedMoment,
@@ -550,7 +550,9 @@ class UnifiedMultimodalSearchPipeline:
         query_decomposer: AdaptiveQueryDecomposer | None = None,
         query_plan_cache: Path | str | None = None,
         query_plan_revision: str | None = None,
+        query_plan_prompt_version: str = "compact-v1",
         rules_only: bool = False,
+        llm_enabled: bool | None = None,
     ):
         self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
         self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
@@ -638,13 +640,16 @@ class UnifiedMultimodalSearchPipeline:
         if rules_only and query_plan_cache is not None:
             raise ValueError("rules_only and query_plan_cache are mutually exclusive")
         if query_decomposer is not None and (
-            query_plan_cache is not None or query_plan_revision is not None or rules_only
+            query_plan_cache is not None or query_plan_revision is not None or rules_only or llm_enabled is not None
         ):
             raise ValueError(
-                "Cannot combine explicit query_decomposer with query_plan_cache, query_plan_revision, or rules_only"
+                "Cannot combine explicit query_decomposer with query_plan_cache, query_plan_revision, rules_only, or llm_enabled"
             )
+        if not str(query_plan_prompt_version).strip():
+            raise ValueError("query_plan_prompt_version must be non-empty")
         self.query_plan_cache: Path | None = Path(query_plan_cache) if query_plan_cache is not None else None
         self.query_plan_revision: str | None = query_plan_revision
+        self.query_plan_prompt_version: str = str(query_plan_prompt_version)
         self.rules_only = bool(rules_only)
         if query_decomposer is not None:
             self.query_decomposer = query_decomposer
@@ -652,11 +657,36 @@ class UnifiedMultimodalSearchPipeline:
             self.query_decomposer = AdaptiveQueryDecomposer.from_frozen_llm_cache(
                 self.query_plan_cache,
                 self.query_plan_revision,
+                query_plan_prompt_version=self.query_plan_prompt_version,
             )
         elif self.rules_only:
-            self.query_decomposer = AdaptiveQueryDecomposer(rules_only=True, enable_disk_cache=False)
+            self.query_decomposer = AdaptiveQueryDecomposer(
+                rules_only=True,
+                enable_disk_cache=False,
+                query_plan_prompt_version=self.query_plan_prompt_version,
+            )
         else:
-            self.query_decomposer = AdaptiveQueryDecomposer(enable_disk_cache=use_disk_cache)
+            env_llm = os.environ.get("VIDENTRA_LLM_ENABLED", "").strip().lower()
+            explicit_llm_enabled = (
+                bool(llm_enabled)
+                if llm_enabled is not None
+                else env_llm in ("1", "true", "yes", "on")
+            )
+            if explicit_llm_enabled:
+                self.query_decomposer = AdaptiveQueryDecomposer(
+                    llm_backend=LocalSmallLLMBackend(
+                        enabled=True,
+                        prompt_version=self.query_plan_prompt_version,
+                    ),
+                    enable_disk_cache=use_disk_cache,
+                    query_plan_prompt_version=self.query_plan_prompt_version,
+                )
+            else:
+                self.query_decomposer = AdaptiveQueryDecomposer(
+                    rules_only=True,
+                    enable_disk_cache=False,
+                    query_plan_prompt_version=self.query_plan_prompt_version,
+                )
         self.ltr_blend_weight = float(ltr_blend_weight)
         self.ltr_ranker = LearnedRankerLTR(model_path=ltr_model_path)
         self.spatial_patches: np.ndarray | None = None
@@ -3699,6 +3729,8 @@ class UnifiedMultimodalSearchPipeline:
             "temporal_rerank_stats": temporal_rerank_stats,
             "query_plan_mode": routing_plan.routing_mode if routing_plan is not None else None,
             "query_plan_cache_hit": routing_plan.cache_hit if routing_plan is not None else None,
+            "llm_enabled": bool(getattr(getattr(self.query_decomposer, "llm_backend", None), "enabled", False)),
+            "query_plan_prompt_version": getattr(self.query_decomposer, "prompt_version", None),
             "query_decomposer_stats": (
                 self.query_decomposer.get_stats()
                 if hasattr(self.query_decomposer, "get_stats")

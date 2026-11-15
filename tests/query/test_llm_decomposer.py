@@ -971,3 +971,179 @@ def test_adaptive_decomposer_extractive_v2_falls_back_on_placeholder(tmp_path: P
     assert good_plan.routing_mode == "llm_compact"
     assert good_plan.query_graph.parser.status == "validated"
     assert good_plan.visual_clauses == ("chef slicing onions on a wooden cutting board",)
+
+
+# ---------------------------------------------------------------------------
+# 8. Bug 1, Bug 2, Bug 4 Acceptance Tests
+# ---------------------------------------------------------------------------
+
+
+def test_local_llm_backend_disabled_by_default_even_with_cuda(monkeypatch, tmp_path: Path):
+    models_dir = tmp_path / "models" / "llm"
+    (models_dir / "qwen2.5-1.5b-instruct").mkdir(parents=True)
+    monkeypatch.delenv("VIDENTRA_LLM_ENABLED", raising=False)
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
+    monkeypatch.setattr(LocalSmallLLMBackend, "DEFAULT_MODELS_DIR", models_dir)
+
+    backend_default = LocalSmallLLMBackend()
+    assert backend_default.enabled is False
+
+    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "1")
+    backend_env_on = LocalSmallLLMBackend()
+    assert backend_env_on.enabled is True
+
+    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "0")
+    backend_env_off = LocalSmallLLMBackend()
+    assert backend_env_off.enabled is False
+
+
+@pytest.mark.parametrize("prompt_ver", ["compact-v1", "extractive-v2", "lora-sft-v1"])
+def test_frozen_cache_prompt_version_hit_miss_and_mismatch_rejection(tmp_path: Path, prompt_ver: str):
+    import hashlib
+    import unicodedata
+
+    rev = "rev-test-123"
+    query = "a dog is swimming in a pool in the backyard"
+    wire = {
+        "lang": "en",
+        "events": [{"id": "e1", "vis": "a dog is swimming in a pool", "ocr": [], "asr": [], "objs": [], "pol": "pos"}],
+        "spatial": [],
+        "temporal": [],
+    }
+    _, plan = SemanticDecomposerValidator().validate_and_expand(
+        wire,
+        original_query=query,
+        query_length_tier="medium",
+        routing_mode="llm_compact",
+        model_revision=rev,
+        prompt_version=prompt_ver,
+    )
+    nfc = unicodedata.normalize("NFC", query.strip())
+    key = hashlib.sha256(f"{nfc}|{rev}|{prompt_ver}".encode("utf-8")).hexdigest()
+    cache_file = tmp_path / f"cache_{prompt_ver}.jsonl"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "key": key,
+                "model_revision": rev,
+                "prompt_version": prompt_ver,
+                "query_text_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+                "plan": plan.to_dict(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    decomposer = AdaptiveQueryDecomposer.from_frozen_llm_cache(
+        cache_file,
+        model_revision=rev,
+        query_plan_prompt_version=prompt_ver,
+    )
+    hit_plan = decomposer.decompose(query)
+    assert hit_plan.cache_hit is True
+    assert hit_plan.routing_mode == "llm_compact"
+    assert hit_plan.query_graph.parser.prompt_version == prompt_ver
+
+    miss_plan = decomposer.decompose("a cat is sleeping on a sofa in the room")
+    assert miss_plan.cache_hit is False
+    assert miss_plan.routing_mode == "fallback"
+    assert decomposer.get_stats()["llm_live_calls"] == 0
+
+    wrong_pv = "extractive-v2" if prompt_ver != "extractive-v2" else "compact-v1"
+    with pytest.raises(ValueError, match="prompt_version|Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer.from_frozen_llm_cache(
+            cache_file,
+            model_revision=rev,
+            query_plan_prompt_version=wrong_pv,
+        )
+
+    with pytest.raises(ValueError, match="model_revision|Invalid frozen LLM plan"):
+        AdaptiveQueryDecomposer.from_frozen_llm_cache(
+            cache_file,
+            model_revision="wrong-rev",
+            query_plan_prompt_version=prompt_ver,
+        )
+
+
+@pytest.mark.parametrize("prompt_ver", ["extractive-v2", "lora-sft-v1"])
+def test_validator_extractive_rejects_single_word_overlap_hallucination_and_preserves_meaning(
+    tmp_path: Path, prompt_ver: str
+):
+    validator = SemanticDecomposerValidator()
+
+    def make_wire(vis_list, temporal=None):
+        return {
+            "lang": "en",
+            "events": [
+                {"id": f"e{i}", "vis": v, "ocr": [], "asr": [], "objs": [], "pol": "pos"}
+                for i, v in enumerate(vis_list, start=1)
+            ],
+            "spatial": [],
+            "temporal": temporal or [],
+        }
+
+    # 1. Single-word overlap hallucination: "dog" overlaps, "flies an airplane" is fabricated
+    q1 = "a dog is swimming in a pool"
+    with pytest.raises(ValueError):
+        validator.validate_and_expand(make_wire(["a dog flies an airplane"]), original_query=q1, prompt_version=prompt_ver)
+    _, ok_plan = validator.validate_and_expand(
+        make_wire(["a dog is swimming in a pool"]), original_query=q1, prompt_version=prompt_ver
+    )
+    assert ok_plan.visual_clauses == ("a dog is swimming in a pool",)
+
+    # 2. Vietnamese with diacritics
+    q_vi = "Người phụ nữ mặc áo đỏ đứng bên trái ô tô"
+    _, ok_vi = validator.validate_and_expand(
+        make_wire(["người phụ nữ mặc áo đỏ"]), original_query=q_vi, prompt_version=prompt_ver
+    )
+    assert ok_vi.visual_clauses == ("người phụ nữ mặc áo đỏ",)
+    with pytest.raises(ValueError):
+        validator.validate_and_expand(
+            make_wire(["nguoi phu nu mac ao do"]), original_query=q_vi, prompt_version=prompt_ver
+        )
+
+    # 3. OCR/ASR with quotes
+    q_ocr = 'A man holding a sign that says "OPEN NOW" walks into a store'
+    _, ok_ocr = validator.validate_and_expand(
+        make_wire(['holding a sign that says "OPEN NOW"']), original_query=q_ocr, prompt_version=prompt_ver
+    )
+    assert ok_ocr.visual_clauses == ('holding a sign that says "OPEN NOW"',)
+
+    # 4. Cardinality ("two dogs") + Negation ("not swimming")
+    q_neg = "two dogs are not swimming in a pool"
+    _, ok_neg = validator.validate_and_expand(
+        make_wire(["two dogs are not swimming"]), original_query=q_neg, prompt_version=prompt_ver
+    )
+    assert ok_neg.visual_clauses == ("two dogs are not swimming",)
+    for bad_neg in ("two dogs are swimming", "dogs are not swimming", "swimming in a pool"):
+        with pytest.raises(ValueError):
+            validator.validate_and_expand(make_wire([bad_neg]), original_query=q_neg, prompt_version=prompt_ver)
+
+    # 5. Two ordered actions
+    q_ord = "A man opens the door and then sits on a chair"
+    _, ok_ord = validator.validate_and_expand(
+        make_wire(["a man opens the door", "sits on a chair"], temporal=[{"first": "e1", "op": "before", "second": "e2"}]),
+        original_query=q_ord,
+        prompt_version=prompt_ver,
+    )
+    assert ok_ord.visual_clauses == ("a man opens the door", "sits on a chair")
+    with pytest.raises(ValueError):
+        validator.validate_and_expand(
+            make_wire(["sits on a chair", "a man opens the door"]),
+            original_query=q_ord,
+            prompt_version=prompt_ver,
+        )
+
+    # 6. Decomposer fallback on rejected plan
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(make_wire(["a dog flies an airplane"]))),
+        cache_path=tmp_path / f"fb_{prompt_ver}.jsonl",
+        enable_disk_cache=False,
+        query_plan_prompt_version=prompt_ver,
+    )
+    fb_plan = decomposer.decompose(q1)
+    assert fb_plan.routing_mode == "fallback"
+    assert fb_plan.query_graph.parser.status == "fallback"
+    assert decomposer.get_stats()["fallback_count"] == 1
+

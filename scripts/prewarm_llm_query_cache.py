@@ -13,6 +13,7 @@ Writes/merges the JSONL cache atomically and supports resumable checkpoints.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
+from videntra.evaluation.provenance import sha256_file  # noqa: E402
 from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend  # noqa: E402
 
 DEFAULT_PILOT_FILE = Path(
@@ -226,6 +228,24 @@ def atomic_write_jsonl(target_path: Path, rows: Sequence[dict[str, Any]]) -> int
     return len(rows)
 
 
+def atomic_write_json(target_path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write JSON object via temp file + fsync + os.replace."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f"{target_path.name}.tmp.{os.getpid()}")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, target_path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def atomic_write_cache(cache_path: Path, records_by_key: dict[str, dict[str, Any]]) -> int:
     """Atomically persist deduplicated cache records to cache_path."""
     return atomic_write_jsonl(cache_path, list(records_by_key.values()))
@@ -279,6 +299,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-msrvtt", type=int, default=100, help="Cap MSR-VTT queries for dev_150 split.")
     parser.add_argument("--model-path", type=Path, default=None, help="Local GGUF file or HuggingFace model directory.")
     parser.add_argument("--model-revision", type=str, default=None, help="Model revision tag stored in cache key.")
+    parser.add_argument("--prompt-version", type=str, default="compact-v1", help="Query decomposer prompt version (e.g. compact-v1, extractive-v2).")
+    parser.add_argument("--receipt-path", type=Path, default=None, help="Optional output JSON receipt path.")
     parser.add_argument("--hf-model-id", type=str, default=None, help="Optional HF repo ID (e.g. Qwen/Qwen2.5-1.5B-Instruct) to resolve on Kaggle.")
     parser.add_argument("--hf-revision", type=str, default=None, help="Optional HF revision/commit hash.")
     parser.add_argument("--backend", choices=("auto", "llama_cpp", "transformers"), default="auto")
@@ -337,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     backend = LocalSmallLLMBackend(
         model_path=model_path,
         model_revision=args.model_revision,
+        prompt_version=args.prompt_version,
         backend=args.backend,
         deadline_ms=args.deadline_ms,
         enabled=False if args.dry_run else args.enabled,
@@ -346,17 +369,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         llm_backend=backend,
         cache_path=args.cache_path,
         model_revision=args.model_revision,
+        prompt_version=args.prompt_version,
         enable_disk_cache=not args.dry_run,
     )
     print(
-        f"Backend: model_revision={backend.model_revision}, deadline_ms={backend.deadline_ms}, "
-        f"enabled={backend.enabled}, cache_path={args.cache_path}"
+        f"Backend: model_revision={backend.model_revision}, prompt_version={decomposer.prompt_version}, "
+        f"deadline_ms={backend.deadline_ms}, enabled={backend.enabled}, cache_path={args.cache_path}"
     )
 
     if args.dry_run:
         existing_records = load_cache_records(args.cache_path)
         cached_count = sum(1 for q in queries if decomposer._make_cache_key(q["query_text"]) in existing_records)
         print(f"Dry-run: {cached_count}/{len(queries)} queries already present in {args.cache_path}")
+        if args.receipt_path is not None:
+            atomic_write_json(
+                args.receipt_path,
+                {
+                    "schema_version": "1.0",
+                    "dry_run": True,
+                    "split": args.split,
+                    "model_revision": decomposer.model_revision,
+                    "hf_model_id": args.hf_model_id,
+                    "hf_revision": args.hf_revision,
+                    "prompt_version": decomposer.prompt_version,
+                    "total_queries": len(queries),
+                    "cached_matches": cached_count,
+                    "cache_path": str(args.cache_path),
+                    "cache_records": len(existing_records),
+                    "cache_sha256": sha256_file(args.cache_path) if args.cache_path.is_file() else None,
+                },
+            )
         return 0
 
     # Compact/sanitize any existing cache file before starting resumable loop
@@ -373,7 +415,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     for idx, q in enumerate(queries, start=1):
         plan = decomposer.decompose(q["query_text"])
         key = decomposer._make_cache_key(q["query_text"])
-        records_by_key[key] = {"key": key, "plan": plan.to_dict()}
+        q_sha = hashlib.sha256(plan.original_query.encode("utf-8")).hexdigest()
+        records_by_key[key] = {
+            "key": key,
+            "model_revision": decomposer.model_revision,
+            "prompt_version": decomposer.prompt_version,
+            "query_text_sha256": q_sha,
+            "plan": plan.to_dict(),
+        }
 
         tier_counts[plan.query_length_tier] = tier_counts.get(plan.query_length_tier, 0) + 1
         mode_counts[plan.routing_mode] = mode_counts.get(plan.routing_mode, 0) + 1
@@ -405,6 +454,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"LLM calls (uncached medium+long): {len(llm_latencies_ms)}")
     print(f"LLM latency mean   : {mean_lat:.2f} ms")
     print(f"LLM latency p50    : {p50_lat:.2f} ms")
+    if not queries:
+        atomic_write_cache(args.cache_path, records_by_key)
+
+    cache_sha256 = sha256_file(args.cache_path) if args.cache_path.is_file() else None
+    if args.receipt_path is not None:
+        atomic_write_json(
+            args.receipt_path,
+            {
+                "schema_version": "1.0",
+                "dry_run": False,
+                "split": args.split,
+                "model_revision": decomposer.model_revision,
+                "hf_model_id": args.hf_model_id,
+                "hf_revision": args.hf_revision,
+                "prompt_version": decomposer.prompt_version,
+                "total_queries": len(queries),
+                "tier_counts": tier_counts,
+                "routing_mode_counts": mode_counts,
+                "cache_hits": cache_hits,
+                "llm_calls": len(llm_latencies_ms),
+                "cache_path": str(args.cache_path),
+                "cache_records": len(records_by_key),
+                "cache_sha256": cache_sha256,
+            },
+        )
+
     print(f"Cache file exists  : {args.cache_path.exists()} ({args.cache_path}, {len(records_by_key)} records)")
     return 0
 

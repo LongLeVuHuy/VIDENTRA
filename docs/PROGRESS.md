@@ -1,5 +1,17 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Sửa 4 lỗi Audit & Nghiệm thu Pipeline MSR-VTT (`extractive-v2`, Cache/Receipt, Split Lock, Extractive Validator)
+
+- **Xác nhận & sửa đủ 4 lỗi từ `VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md`** (qua swarm 3 workers + nghiệm thu tự động):
+  1. **Bug 1 (`CUDA tự bật Qwen compact-v1`)**: `LocalSmallLLMBackend.__init__` (`src/videntra/query/llm.py`) mặc định `self.enabled = False` trừ khi bật tường minh (`enabled=True`, `generate_fn`, hoặc `VIDENTRA_LLM_ENABLED` truthy). `UnifiedMultimodalSearchPipeline` (`src/videntra/retrieval/unified_pipeline.py`) thêm `llm_enabled: bool | None = None` (mặc định `rules_only` trên local) và ghi `query_plan_mode`, `llm_enabled`, `query_plan_prompt_version` vào `last_diagnostics`.
+  2. **Bug 2 (`Cache prompt mới bị từ chối bởi capture`)**: `AdaptiveQueryDecomposer.__init__` / `from_frozen_llm_cache` nhận `query_plan_prompt_version`, hash cache key theo `sha256(f"{nfc}|{model_revision}|{prompt_version}")`; `scripts/prewarm_llm_query_cache.py` thêm `--prompt-version`, `--receipt-path`, ghi `cache_sha256`; `scripts/capture_msr_candidate_pools.py` thêm `--query-plan-prompt-version`, `--query-plan-receipt`, `--allow-dry-run-cache`, xác thực `cache_sha256`/`prompt_version`/`model_revision` và chặn `dry_run=true` mặc định.
+  3. **Bug 3 (`Evaluator nhận labels bị sửa và dòng tune thiếu split`)**: `scripts/compare_msr_runs.py` đối chiếu `sha256_file(labels_path)` với `split_lock["metadata"]["labels_sha256"]` trước khi đọc target; `_load_filter_manifest_qids` / `_validate_manifest_records` bắt buộc mỗi dòng manifest có `split in {"tune", "confirm"}`, khớp `split_lock` & `source_group`, và bất biến disjoint `tune`/`confirm`.
+  4. **Bug 4 (`Validator nhận hành động bịa khi trùng một từ`)**: `SemanticDecomposerValidator.validate_extractive_events` + `_match_extractive_span` (áp dụng cho `extractive-*` và `lora-*`) yêu cầu span có thứ tự trong query đã chuẩn hóa NFC/lowercase (giữ nguyên dấu), từ chối hallucination kiểu `"a dog flies an airplane"` cho `"a dog is swimming in a pool"`, từ chối mất phủ định (`_NEGATION_TOKENS`), mất số lượng (`_CARDINALITY_WORDS`/digits), hoặc đảo thứ tự event khi không có `temporal_edges`; lỗi fallback về rules + original query. Đồng thời cập nhật `asr_items` trong `scripts/prepare_qwen_sft_dataset.py` sang span liên tục.
+- **Kiểm thử & Nghiệm thu**:
+  - Targeted acceptance suite (`tests/api/test_unified_parity.py`, `tests/query/test_llm_decomposer.py`, `tests/query/test_qwen_sft_lora.py`, `tests/evaluation/test_clip_vp_replay.py`, `tests/evaluation/test_split_lock.py`): `77 passed, 3 warnings in 25.97s`.
+  - Full pytest suite (`.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider`): `576 passed, 3 warnings in 107.31s`.
+- **Trạng thái Kaggle hiện tại**: `lvhuylong/videntra-msr-videoprism-dev-20261115` đang `KernelWorkerStatus.CANCEL_ACKNOWLEDGED`; `lvhuylong/videntra-msr-qwen15b-dev-20261115` đang `KernelWorkerStatus.COMPLETE`.
+
 ## Bàn giao sửa bốn lỗi và đo Qwen extractive-v2 cho Antigravity
 
 - Cập nhật [plan ở thư mục gốc](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md) với ca nghiệm thu cho rules trên CUDA, prompt version qua CLI/cache, hash labels/split lock và kiểm source span. Plan đặt mốc quyết định ở Hit@1 tune K=20 sau khi so A5 rules với Qwen gốc `extractive-v2`. Nếu delta ≤ 0, train LoRA trên Kaggle và chấm lại cùng giao thức.

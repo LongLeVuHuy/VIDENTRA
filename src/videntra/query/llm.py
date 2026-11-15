@@ -199,7 +199,7 @@ Query: "Người phụ nữ mặc áo đỏ đứng bên trái ô tô"
 
 def get_system_prompt_for_version(prompt_version: str = "compact-v1") -> str:
     """Return the system prompt corresponding to the given prompt_version."""
-    if prompt_version == "extractive-v2":
+    if prompt_version == "extractive-v2" or prompt_version.startswith(("extractive-", "lora-")):
         return EXTRACTIVE_V2_SYSTEM_PROMPT
     return COMPACT_WIRE_SYSTEM_PROMPT
 
@@ -490,8 +490,8 @@ class LocalSmallLLMBackend:
             elif env_enabled in ("0", "false", "no", "off"):
                 self.enabled = False
             else:
-                # Default auto: enable live inference on CUDA; on CPU-only rely on prewarmed cache + <1ms rules
-                self.enabled = self._has_cuda()
+                # Default disabled: never auto-enable live LLM on CUDA without explicit config/env
+                self.enabled = False
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
         self.n_threads = (
@@ -1019,6 +1019,73 @@ def expand_compact_wire_to_query_graph(
     return qg, plan
 
 
+_EXTRACTIVE_AUX_WORDS: frozenset[str] = frozenset(
+    {"a", "an", "the", "is", "are", "was", "were", "be", "being", "been"}
+)
+_EXTRACTIVE_MODAL_BRIDGE_WORDS: frozenset[str] = frozenset(
+    {
+        "say", "says", "said", "saying", "speak", "speaks", "speaking",
+        "read", "reads", "reading", "with", "text", "sign", "caption", "subtitle", "title",
+        "nói", "kể", "hét", "đọc", "chữ", "biển", "tiêu", "đề",
+    }
+)
+_CARDINALITY_WORDS: frozenset[str] = frozenset(
+    {
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "several", "many", "multiple", "couple", "pair", "both",
+        "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười", "nhiều", "vài", "cặp", "đôi",
+    }
+)
+_NEGATION_TOKENS: frozenset[str] = frozenset(
+    {
+        "not", "no", "never", "without", "neither", "nor", "none",
+        "didn't", "doesn't", "don't", "cannot", "can't", "won't", "isn't", "aren't", "wasn't", "weren't",
+        "không", "chưa", "chẳng", "đừng", "chớ",
+    }
+)
+
+
+def _extractive_tokens(text: str) -> list[str]:
+    """Tokenize text after NFC + lowercase normalization while preserving diacritics."""
+    nfc = unicodedata.normalize("NFC", str(text or "")).lower().strip()
+    return re.findall(r"[\w%']+", nfc)
+
+
+def _match_extractive_span(
+    vis_tokens: list[str],
+    query_tokens: list[str],
+    skippable_modal_tokens: set[str] | None = None,
+) -> tuple[int, int] | None:
+    """Match vis_tokens as a contiguous or aux/modal-gapped ordered span in query_tokens."""
+    if not vis_tokens or not query_tokens or len(vis_tokens) > len(query_tokens):
+        return None
+    # 1. Exact contiguous token slice
+    span_len = len(vis_tokens)
+    for start in range(len(query_tokens) - span_len + 1):
+        if query_tokens[start : start + span_len] == vis_tokens:
+            return start, start + span_len - 1
+    # 2. Ordered subsequence allowing only auxiliary/article (and event-extracted modal) gaps
+    allowed_gaps = _EXTRACTIVE_AUX_WORDS | (skippable_modal_tokens or set())
+    for start in range(len(query_tokens)):
+        if query_tokens[start] != vis_tokens[0]:
+            continue
+        q_idx = start
+        v_idx = 0
+        valid = True
+        while v_idx < span_len and q_idx < len(query_tokens):
+            if query_tokens[q_idx] == vis_tokens[v_idx]:
+                v_idx += 1
+                q_idx += 1
+            elif query_tokens[q_idx] in allowed_gaps and query_tokens[q_idx] not in _NEGATION_TOKENS:
+                q_idx += 1
+            else:
+                valid = False
+                break
+        if valid and v_idx == span_len:
+            return start, q_idx - 1
+    return None
+
+
 class SemanticDecomposerValidator:
     """5-step anti-hallucination & guardrail validator (<0.5 ms) for Compact Wire & QueryGraph."""
 
@@ -1113,8 +1180,10 @@ class SemanticDecomposerValidator:
 
     @staticmethod
     def validate_extractive_events(compact: CompactDecomposedQuery, original_query: str) -> None:
-        """Reject generic placeholder or lexically ungrounded visual clauses in extractive mode."""
+        """Reject generic placeholders and ungrounded or meaning-breaking visual clauses in extractive mode."""
         query_tokens = _meaningful_grounding_tokens(original_query)
+        raw_query_tokens = _extractive_tokens(original_query)
+        matched_spans: list[tuple[int, int]] = []
         for idx, ev in enumerate(compact.events, start=1):
             vis = str(ev.get("vis") or "").strip()
             if is_generic_placeholder_clause(vis):
@@ -1126,6 +1195,37 @@ class SemanticDecomposerValidator:
                 raise ValueError(
                     f"Ungrounded visual clause in event {idx} (no lexical overlap with query): {vis!r}"
                 )
+            raw_vis_tokens = _extractive_tokens(vis)
+            modal_tokens: set[str] = set()
+            for modal_field in ("ocr", "asr"):
+                for phrase in ev.get(modal_field) or []:
+                    modal_tokens.update(_extractive_tokens(str(phrase)))
+            if modal_tokens:
+                modal_tokens.update(_EXTRACTIVE_MODAL_BRIDGE_WORDS)
+            span = _match_extractive_span(raw_vis_tokens, raw_query_tokens, skippable_modal_tokens=modal_tokens)
+            if span is None:
+                raise ValueError(
+                    f"Ungrounded visual clause in event {idx} (not an ordered grounded span of query): {vis!r}"
+                )
+            start_idx, _end_idx = span
+            if start_idx > 0:
+                prev_tok = raw_query_tokens[start_idx - 1]
+                if prev_tok in _NEGATION_TOKENS:
+                    raise ValueError(
+                        f"Visual clause in event {idx} drops preceding negation {prev_tok!r}: {vis!r}"
+                    )
+                if prev_tok in _CARDINALITY_WORDS or prev_tok.isdigit():
+                    raise ValueError(
+                        f"Visual clause in event {idx} drops preceding cardinality {prev_tok!r}: {vis!r}"
+                    )
+            matched_spans.append(span)
+
+        if len(matched_spans) >= 2 and not compact.temporal:
+            for prev_span, next_span in zip(matched_spans, matched_spans[1:]):
+                if next_span[0] < prev_span[0]:
+                    raise ValueError(
+                        "Visual clauses in extractive mode are out of temporal order without temporal edges"
+                    )
 
     def validate_and_expand(
         self,
@@ -1143,7 +1243,10 @@ class SemanticDecomposerValidator:
         enforce_extractive = (
             bool(reject_generic_clauses)
             if reject_generic_clauses is not None
-            else (prompt_version == "extractive-v2")
+            else (
+                prompt_version in ("extractive-v2", "lora-sft-v1")
+                or prompt_version.startswith(("extractive-", "lora-"))
+            )
         )
         if enforce_extractive:
             self.validate_extractive_events(wire, original_query)
@@ -1189,6 +1292,7 @@ class AdaptiveQueryDecomposer:
         cache_path: str | Path | None = None,
         model_revision: str | None = None,
         prompt_version: str = "compact-v1",
+        query_plan_prompt_version: str | None = None,
         enable_disk_cache: bool = True,
         query_plan_cache: str | Path | None = None,
         query_plan_revision: str | None = None,
@@ -1199,11 +1303,21 @@ class AdaptiveQueryDecomposer:
             raise ValueError("query_plan_cache and query_plan_revision must be provided together")
         if rules_only and query_plan_cache is not None:
             raise ValueError("rules_only and query_plan_cache are mutually exclusive")
+        if query_plan_prompt_version is not None:
+            if prompt_version != "compact-v1" and prompt_version != query_plan_prompt_version:
+                raise ValueError(
+                    f"prompt_version ({prompt_version!r}) does not match query_plan_prompt_version ({query_plan_prompt_version!r})"
+                )
+            resolved_prompt_version = str(query_plan_prompt_version)
+        else:
+            resolved_prompt_version = str(prompt_version)
+        if not resolved_prompt_version.strip():
+            raise ValueError("query_plan_prompt_version must be non-empty")
 
         self.complexity_gate = complexity_gate or QueryComplexityGate()
         self.validator = validator or SemanticDecomposerValidator()
         self.rule_parser = rule_parser or RuleBasedQueryParser()
-        self.prompt_version = prompt_version
+        self.prompt_version = resolved_prompt_version
         self.rules_only = bool(rules_only)
         self.frozen_cache_path: Path | None = Path(query_plan_cache) if query_plan_cache is not None else None
         self.frozen_cache_revision: str | None = str(query_plan_revision) if query_plan_revision is not None else None
@@ -1233,7 +1347,7 @@ class AdaptiveQueryDecomposer:
         else:
             self.llm_backend = llm_backend or LocalSmallLLMBackend(
                 model_revision=model_revision,
-                prompt_version=prompt_version,
+                prompt_version=self.prompt_version,
             )
             self.model_revision = model_revision if model_revision is not None else self.llm_backend.model_revision
             self.enable_disk_cache = enable_disk_cache
@@ -1328,11 +1442,22 @@ class AdaptiveQueryDecomposer:
         cache_path: Path | str,
         model_revision: str,
         target_datasets: Sequence[str] | set[str] | None = None,
+        query_plan_prompt_version: str | None = None,
+        prompt_version: str = "compact-v1",
     ) -> AdaptiveQueryDecomposer:
-        """Replay only validated plans from the pinned model, with rule fallback."""
+        """Replay only validated plans from the pinned model and prompt_version, with rule fallback."""
+        if query_plan_prompt_version is not None:
+            if prompt_version != "compact-v1" and prompt_version != query_plan_prompt_version:
+                raise ValueError(
+                    f"prompt_version ({prompt_version!r}) does not match query_plan_prompt_version ({query_plan_prompt_version!r})"
+                )
+            resolved_pv = query_plan_prompt_version
+        else:
+            resolved_pv = prompt_version
         return cls(
             query_plan_cache=cache_path,
             query_plan_revision=model_revision,
+            query_plan_prompt_version=resolved_pv,
             enable_disk_cache=False,
             target_datasets=target_datasets,
         )

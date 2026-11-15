@@ -612,3 +612,199 @@ def test_compare_filter_manifest_tune_confirm(tmp_path: Path) -> None:
     )
     assert confirm_summary["overall"]["n_queries"] == 1
     assert confirm_summary["filter_split"] == "confirm"
+
+
+def test_compare_rejects_tampered_labels_sha256(tmp_path: Path) -> None:
+    pools_dir, labels_path, _, _ = _make_synthetic_pools(tmp_path)
+    base_dir = tmp_path / "base"
+    chal_dir = tmp_path / "chal"
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=base_dir)
+    run_replay(pools_dir=pools_dir, pool="clip", k=10, alpha=0.0, out_dir=chal_dir)
+
+    lock_rows = [
+        {
+            "query_id": row["query_id"],
+            "split": row["split"],
+            "source_group": row["source_group"],
+        }
+        for row in (json.loads(l) for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip())
+    ]
+    hashed_lock_path = tmp_path / "eval_only" / "split_lock_with_hash.json"
+    freeze_split(
+        lock_rows,
+        hashed_lock_path,
+        metadata={"split": "dev_full_859", "labels_sha256": sha256_file(labels_path)},
+    )
+
+    ok_summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_dir,
+        labels_path=labels_path,
+        split_lock_path=hashed_lock_path,
+        out_dir=tmp_path / "cmp_ok_hash",
+        n_resamples=200,
+    )
+    assert ok_summary["overall"]["n_queries"] == 4
+
+    # Modify one target_videos entry on a copy of labels while keeping split_lock & query_id unchanged
+    tampered_labels_path = tmp_path / "eval_only" / "labels_tampered.jsonl"
+    label_rows = [json.loads(l) for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    label_rows[0]["target_videos"] = ["video0099"]
+    _write_jsonl(tampered_labels_path, label_rows)
+
+    with pytest.raises(ValueError, match="labels_sha256 mismatch"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=tampered_labels_path,
+            split_lock_path=hashed_lock_path,
+            out_dir=tmp_path / "cmp_tampered_labels",
+            n_resamples=200,
+        )
+
+
+def test_compare_filter_manifest_jsonl_hardening(tmp_path: Path) -> None:
+    pools_dir, labels_path, split_lock_path, _ = _make_synthetic_pools(tmp_path)
+    base_dir = tmp_path / "base"
+    chal_dir = tmp_path / "chal"
+    run_replay(pools_dir=pools_dir, pool="a5", k=10, alpha=0.0, out_dir=base_dir)
+    run_replay(pools_dir=pools_dir, pool="clip", k=10, alpha=0.0, out_dir=chal_dir)
+
+    # Valid JSONL with explicit tune/confirm splits and matching source_group succeeds
+    valid_jsonl = tmp_path / "valid_manifest.jsonl"
+    _write_jsonl(valid_jsonl, [
+        {"query_id": "msr_q1", "split": "tune", "source_group": "video0004"},
+        {"query_id": "msr_q2", "split": "tune", "source_group": "video0001"},
+        {"query_id": "qvh_q3", "split": "confirm", "source_group": "qvh_yt11111"},
+        {"query_id": "avc_q4", "split": "confirm", "source_group": "avc_vid9"},
+    ])
+    summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_valid_jsonl",
+        n_resamples=200,
+        filter_manifest=valid_jsonl,
+        filter_split="tune",
+    )
+    assert summary["overall"]["n_queries"] == 2
+
+    # 1. Missing split
+    missing_split_jsonl = tmp_path / "missing_split.jsonl"
+    _write_jsonl(missing_split_jsonl, [
+        {"query_id": "msr_q1"},
+        {"query_id": "avc_q4", "split": "confirm"},
+    ])
+    with pytest.raises(ValueError, match="missing split"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_missing_split",
+            n_resamples=200,
+            filter_manifest=missing_split_jsonl,
+            filter_split="tune",
+        )
+
+    # 2. Unknown partition
+    unknown_part_jsonl = tmp_path / "unknown_partition.jsonl"
+    _write_jsonl(unknown_part_jsonl, [
+        {"query_id": "msr_q1", "split": "heldout_test"},
+        {"query_id": "avc_q4", "split": "confirm"},
+    ])
+    with pytest.raises(ValueError, match="Unknown partition"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_unknown_part",
+            n_resamples=200,
+            filter_manifest=unknown_part_jsonl,
+            filter_split="tune",
+        )
+
+    # 3. source_group mismatch vs split_lock
+    bad_group_jsonl = tmp_path / "bad_group.jsonl"
+    _write_jsonl(bad_group_jsonl, [
+        {"query_id": "msr_q1", "split": "tune", "source_group": "wrong_group"},
+        {"query_id": "avc_q4", "split": "confirm", "source_group": "avc_vid9"},
+    ])
+    with pytest.raises(ValueError, match="source_group mismatch"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_bad_group",
+            n_resamples=200,
+            filter_manifest=bad_group_jsonl,
+            filter_split="tune",
+        )
+
+    # 4. query_id missing from split_lock
+    missing_lock_jsonl = tmp_path / "missing_lock.jsonl"
+    _write_jsonl(missing_lock_jsonl, [
+        {"query_id": "unknown_q99", "split": "tune"},
+        {"query_id": "avc_q4", "split": "confirm"},
+    ])
+    with pytest.raises(ValueError, match="missing from split_lock"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_missing_lock",
+            n_resamples=200,
+            filter_manifest=missing_lock_jsonl,
+            filter_split="tune",
+        )
+
+    # 5. source_group appearing in both tune and confirm
+    shared_lock_path = tmp_path / "eval_only" / "split_lock_shared_group.json"
+    freeze_split(
+        [
+            {"query_id": "msr_q1", "split": "dev_full_859", "source_group": "shared_grp"},
+            {"query_id": "msr_q2", "split": "dev_full_859", "source_group": "shared_grp"},
+            {"query_id": "qvh_q3", "split": "dev_full_859", "source_group": "qvh_yt11111"},
+            {"query_id": "avc_q4", "split": "dev_full_859", "source_group": "avc_vid9"},
+        ],
+        shared_lock_path,
+        metadata={"split": "dev_full_859"},
+    )
+    overlap_group_jsonl = tmp_path / "overlap_group.jsonl"
+    _write_jsonl(overlap_group_jsonl, [
+        {"query_id": "msr_q1", "split": "tune", "source_group": "shared_grp"},
+        {"query_id": "msr_q2", "split": "confirm", "source_group": "shared_grp"},
+    ])
+    with pytest.raises(ValueError, match="Overlapping source_group"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=shared_lock_path,
+            out_dir=tmp_path / "cmp_overlap_group",
+            n_resamples=200,
+            filter_manifest=overlap_group_jsonl,
+            filter_split="tune",
+        )
+
+    # 6. Overlapping query_id between tune and confirm
+    overlap_qid_jsonl = tmp_path / "overlap_qid.jsonl"
+    _write_jsonl(overlap_qid_jsonl, [
+        {"query_id": "msr_q1", "split": "tune"},
+        {"query_id": "msr_q1", "split": "confirm"},
+    ])
+    with pytest.raises(ValueError, match="Overlapping query_id"):
+        compare_runs(
+            baseline_dir=base_dir,
+            challenger_dir=chal_dir,
+            labels_path=labels_path,
+            split_lock_path=split_lock_path,
+            out_dir=tmp_path / "cmp_overlap_qid",
+            n_resamples=200,
+            filter_manifest=overlap_qid_jsonl,
+            filter_split="tune",
+        )

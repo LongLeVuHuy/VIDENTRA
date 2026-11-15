@@ -356,6 +356,84 @@ def _assert_no_gt_leakage(rows: Sequence[dict[str, Any]], label: str) -> None:
             raise AssertionError(f"Leakage detected in {label}[{idx}]: {sorted(leaked)}")
 
 
+def _verify_query_plan_cache_and_receipt(
+    *,
+    query_plan_cache: Path | None,
+    query_plan_revision: str | None,
+    query_plan_prompt_version: str,
+    query_plan_receipt: Path | None,
+    allow_dry_run_cache: bool,
+) -> dict[str, Any]:
+    """Verify frozen query plan cache SHA-256 and optional receipt before capture."""
+    if query_plan_receipt is not None and query_plan_cache is None:
+        raise ValueError("--query-plan-receipt requires --query-plan-cache")
+    if query_plan_cache is None:
+        return {
+            "cache_sha256": None,
+            "receipt_sha256": None,
+            "dry_run": None,
+            "adapter_revision": None,
+        }
+    if not query_plan_cache.is_file():
+        raise FileNotFoundError(f"Frozen query plan cache not found: {query_plan_cache}")
+    cache_sha256 = sha256_file(query_plan_cache)
+
+    receipt_sha256: str | None = None
+    dry_run_flag: bool | None = None
+    adapter_revision: str | None = None
+    if query_plan_receipt is not None:
+        if not query_plan_receipt.is_file():
+            raise FileNotFoundError(f"Query plan receipt not found: {query_plan_receipt}")
+        receipt_sha256 = sha256_file(query_plan_receipt)
+        receipt_data = json.loads(query_plan_receipt.read_text(encoding="utf-8"))
+        if not isinstance(receipt_data, dict):
+            raise ValueError(f"Invalid query plan receipt JSON object: {query_plan_receipt}")
+
+        dry_run_val = receipt_data.get("dry_run")
+        if dry_run_val is not None:
+            dry_run_flag = bool(dry_run_val)
+            if dry_run_flag and not allow_dry_run_cache:
+                raise ValueError(
+                    "Refusing dry_run=true query plan receipt for benchmark capture "
+                    "(pass --allow-dry-run-cache for smoke-only runs)"
+                )
+
+        rec_pv = receipt_data.get("prompt_version")
+        if rec_pv is not None and str(rec_pv) != str(query_plan_prompt_version):
+            raise ValueError(
+                f"Query plan receipt prompt_version mismatch: expected {query_plan_prompt_version!r}, got {rec_pv!r}"
+            )
+
+        rec_rev = receipt_data.get("model_revision")
+        if rec_rev is not None and str(rec_rev) != str(query_plan_revision):
+            raise ValueError(
+                f"Query plan receipt model_revision mismatch: expected {query_plan_revision!r}, got {rec_rev!r}"
+            )
+
+        cache_export = receipt_data.get("cache_export")
+        expected_cache_sha = receipt_data.get("cache_sha256")
+        if expected_cache_sha is None and isinstance(cache_export, dict):
+            expected_cache_sha = cache_export.get("cache_sha256")
+        if not expected_cache_sha:
+            raise ValueError(f"Query plan receipt {query_plan_receipt} is missing cache_sha256")
+        if str(expected_cache_sha) != str(cache_sha256):
+            raise ValueError(
+                f"Query plan cache SHA-256 mismatch: expected {expected_cache_sha}, got {cache_sha256}"
+            )
+
+        if receipt_data.get("adapter_revision") is not None:
+            adapter_revision = str(receipt_data["adapter_revision"])
+        elif receipt_data.get("lora_config") is not None and rec_rev is not None:
+            adapter_revision = str(rec_rev)
+
+    return {
+        "cache_sha256": cache_sha256,
+        "receipt_sha256": receipt_sha256,
+        "dry_run": dry_run_flag,
+        "adapter_revision": adapter_revision,
+    }
+
+
 def capture_pools(
     *,
     split: str = "dev_full_859",
@@ -377,6 +455,9 @@ def capture_pools(
     rules_only: bool = False,
     query_plan_cache: Path | None = None,
     query_plan_revision: str | None = None,
+    query_plan_prompt_version: str = "compact-v1",
+    query_plan_receipt: Path | None = None,
+    allow_dry_run_cache: bool = False,
 ) -> dict[str, Any]:
     if max_k < 2:
         raise ValueError(f"max_k must be >= 2, got {max_k}")
@@ -385,17 +466,20 @@ def capture_pools(
     if rules_only and query_plan_cache is not None:
         raise ValueError("--rules-only and --query-plan-cache are mutually exclusive")
 
-    query_decomposer = None
-    query_plan_source = "pipeline_default"
+    q_plan_meta = _verify_query_plan_cache_and_receipt(
+        query_plan_cache=query_plan_cache,
+        query_plan_revision=query_plan_revision,
+        query_plan_prompt_version=query_plan_prompt_version,
+        query_plan_receipt=query_plan_receipt,
+        allow_dry_run_cache=allow_dry_run_cache,
+    )
+
     if query_plan_cache is not None and query_plan_revision is not None:
-        query_decomposer = AdaptiveQueryDecomposer.from_frozen_llm_cache(query_plan_cache, query_plan_revision)
         query_plan_source = "frozen_llm_cache"
     elif rules_only:
-        query_decomposer = AdaptiveQueryDecomposer(
-            llm_backend=LocalSmallLLMBackend(enabled=False),
-            enable_disk_cache=False,
-        )
         query_plan_source = "rules_only"
+    else:
+        query_plan_source = "pipeline_default"
     ltr_info = load_ltr_model_info(ltr_model_path)
     pipeline = UnifiedMultimodalSearchPipeline(
         db_path=db_path,
@@ -410,7 +494,10 @@ def capture_pools(
         enable_vlm_caption_dense=True,
         enable_temporal_rerank=bool(float(temporal_rerank_lambda) > 0.0),
         temporal_rerank_lambda=float(temporal_rerank_lambda),
-        query_decomposer=query_decomposer,
+        rules_only=rules_only,
+        query_plan_cache=query_plan_cache,
+        query_plan_revision=query_plan_revision,
+        query_plan_prompt_version=query_plan_prompt_version,
     )
     try:
         indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
@@ -612,7 +699,12 @@ def capture_pools(
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
         }
         git_commit = _get_git_commit()
-        q_plan_cache_sha = sha256_file(query_plan_cache) if query_plan_cache else None
+        q_plan_cache_sha = q_plan_meta["cache_sha256"]
+        effective_prompt_version = (
+            query_plan_prompt_version
+            if query_plan_cache is not None
+            else getattr(getattr(pipeline, "query_decomposer", None), "prompt_version", None)
+        )
         run_fingerprint_payload = {
             "git_commit": git_commit,
             "split": split,
@@ -627,12 +719,14 @@ def capture_pools(
             "device": device,
             "query_plan_mode": query_plan_source,
             "query_plan_revision": query_plan_revision,
+            "query_plan_prompt_version": effective_prompt_version,
             "query_plan_cache_sha256": q_plan_cache_sha,
         }
         run_fingerprint = hashlib.sha256(
             json.dumps(run_fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
+        decomposer_obj = getattr(pipeline, "query_decomposer", None)
         receipt = {
             "schema_version": 1,
             "git_commit": git_commit,
@@ -661,8 +755,14 @@ def capture_pools(
             "query_plan_source": query_plan_source,
             "query_plan_mode": query_plan_source,
             "query_plan_revision": query_plan_revision,
+            "query_plan_model_revision": query_plan_revision,
+            "query_plan_adapter_revision": q_plan_meta["adapter_revision"],
+            "query_plan_prompt_version": effective_prompt_version,
             "query_plan_cache_sha256": q_plan_cache_sha,
-            "query_decomposer_stats": query_decomposer.get_stats() if hasattr(query_decomposer, "get_stats") else None,
+            "query_plan_receipt_path": str(query_plan_receipt) if query_plan_receipt else None,
+            "query_plan_receipt_sha256": q_plan_meta["receipt_sha256"],
+            "query_plan_dry_run": q_plan_meta["dry_run"],
+            "query_decomposer_stats": decomposer_obj.get_stats() if hasattr(decomposer_obj, "get_stats") else None,
             "run_fingerprint": run_fingerprint,
             "elapsed_seconds": round(time.perf_counter() - t_start, 2),
             "artifact_sha256": hash_paths([queries_path, a5_path, clip_path]),
@@ -700,6 +800,9 @@ def main() -> None:
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--query-plan-cache", type=Path)
     parser.add_argument("--query-plan-revision")
+    parser.add_argument("--query-plan-prompt-version", default="compact-v1")
+    parser.add_argument("--query-plan-receipt", type=Path)
+    parser.add_argument("--allow-dry-run-cache", action="store_true")
     args = parser.parse_args()
 
     receipt = capture_pools(
@@ -721,6 +824,9 @@ def main() -> None:
         rules_only=args.rules_only,
         query_plan_cache=args.query_plan_cache,
         query_plan_revision=args.query_plan_revision,
+        query_plan_prompt_version=args.query_plan_prompt_version,
+        query_plan_receipt=args.query_plan_receipt,
+        allow_dry_run_cache=args.allow_dry_run_cache,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
 

@@ -233,57 +233,137 @@ def _verify_replay_output_hash(run_dir: Path, receipt: dict[str, Any], label: st
         )
 
 
-def _load_filter_manifest_qids(manifest_path: Path, filter_split: str | None = None) -> set[str]:
-    """Load allowed query_ids from a tune/confirm filter manifest (JSON, JSONL, or text)."""
+_VALID_FILTER_SPLITS = frozenset({"tune", "confirm"})
+
+
+def _extract_split_query_ids(payload: dict[str, Any], split_name: str) -> list[str] | None:
+    for key in (f"{split_name}_query_ids", split_name, f"{split_name}_ids"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return [str(x).strip() for x in val]
+    return None
+
+
+def _validate_manifest_records(
+    rows: Sequence[tuple[int, Any]],
+    *,
+    manifest_path: Path,
+    lock_by_qid: dict[str, dict[str, Any]],
+) -> dict[str, set[str]]:
+    """Validate manifest rows against split_lock and enforce strict tune/confirm disjointness."""
+    split_qids: dict[str, set[str]] = {"tune": set(), "confirm": set()}
+    split_groups: dict[str, set[str]] = {"tune": set(), "confirm": set()}
+    seen_qids: dict[str, str] = {}
+
+    for row_idx, row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"Filter manifest row {row_idx} in {manifest_path} must be a JSON object")
+
+        raw_split = row.get("split")
+        if raw_split is None:
+            raw_split = row.get("subset")
+        if raw_split is None:
+            raw_split = row.get("partition")
+        row_split = str(raw_split).strip() if raw_split is not None else ""
+        if not row_split:
+            raise ValueError(f"Filter manifest row {row_idx} missing split in {manifest_path}")
+        if row_split not in _VALID_FILTER_SPLITS:
+            raise ValueError(
+                f"Unknown partition '{row_split}' in filter manifest {manifest_path} row {row_idx}; "
+                f"expected one of {sorted(_VALID_FILTER_SPLITS)}"
+            )
+
+        raw_qid = row.get("query_id")
+        if raw_qid is None:
+            raw_qid = row.get("qid")
+        qid = str(raw_qid).strip() if raw_qid is not None else ""
+        if not qid:
+            raise ValueError(f"Filter manifest row {row_idx} missing query_id in {manifest_path}")
+        if qid not in lock_by_qid:
+            raise ValueError(f"Filter manifest query_id '{qid}' missing from split_lock")
+
+        if qid in seen_qids:
+            prev_split = seen_qids[qid]
+            if prev_split != row_split:
+                raise ValueError(f"Overlapping query_id '{qid}' between tune and confirm in {manifest_path}")
+            raise ValueError(f"Duplicate query_id '{qid}' in filter manifest {manifest_path}")
+        seen_qids[qid] = row_split
+
+        locked_group = str(lock_by_qid[qid]["source_group"]).strip()
+        if "source_group" in row:
+            raw_group = row.get("source_group")
+            row_group = str(raw_group).strip() if raw_group is not None else ""
+            if row_group != locked_group:
+                raise ValueError(
+                    f"source_group mismatch for query_id '{qid}' in {manifest_path}: "
+                    f"manifest='{row_group}', split_lock='{locked_group}'"
+                )
+
+        other_split = "confirm" if row_split == "tune" else "tune"
+        if locked_group in split_groups[other_split]:
+            raise ValueError(
+                f"Overlapping source_group '{locked_group}' between tune and confirm in {manifest_path}"
+            )
+
+        split_qids[row_split].add(qid)
+        split_groups[row_split].add(locked_group)
+
+    return split_qids
+
+
+def _load_filter_manifest_qids(
+    manifest_path: Path,
+    filter_split: str | None = None,
+    *,
+    lock_by_qid: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Load and validate allowed query_ids from a tune/confirm filter manifest (JSONL or JSON)."""
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Missing filter manifest: {manifest_path}")
+    if filter_split is not None and filter_split not in _VALID_FILTER_SPLITS:
+        raise ValueError(
+            f"Unknown filter_split '{filter_split}'; expected one of {sorted(_VALID_FILTER_SPLITS)}"
+        )
+
     text = manifest_path.read_text(encoding="utf-8").strip()
     if not text:
         raise ValueError(f"Empty filter manifest: {manifest_path}")
 
-    qids: set[str] = set()
-    if manifest_path.suffix.lower() == ".jsonl":
-        for line in text.splitlines():
+    suffix = manifest_path.suffix.lower()
+    rows: list[tuple[int, Any]] = []
+    if suffix == ".jsonl":
+        for line_no, line in enumerate(text.splitlines(), 1):
             if not line.strip():
                 continue
-            row = json.loads(line)
-            if filter_split is not None:
-                row_split = row.get("split") or row.get("subset") or row.get("partition")
-                if row_split is not None and str(row_split) != filter_split:
-                    continue
-            qid = str(row.get("query_id") or row.get("qid") or "").strip()
-            if qid:
-                qids.add(qid)
-    elif manifest_path.suffix.lower() == ".json":
+            rows.append((line_no, json.loads(line)))
+    elif suffix == ".json":
         payload = json.loads(text)
         if isinstance(payload, list):
-            qids = {str(x).strip() for x in payload if str(x).strip()}
+            rows = [(idx, item) for idx, item in enumerate(payload, 1)]
         elif isinstance(payload, dict):
-            if filter_split is not None:
-                for key in (f"{filter_split}_query_ids", filter_split, f"{filter_split}_ids"):
-                    if isinstance(payload.get(key), list):
-                        qids = {str(x).strip() for x in payload[key] if str(x).strip()}
-                        break
-            if not qids and isinstance(payload.get("query_ids"), list):
-                qids = {str(x).strip() for x in payload["query_ids"] if str(x).strip()}
-            elif not qids and isinstance(payload.get("records"), list):
-                for row in payload["records"]:
-                    if not isinstance(row, dict):
-                        continue
-                    if filter_split is not None:
-                        row_split = row.get("split") or row.get("subset") or row.get("partition")
-                        if row_split is not None and str(row_split) != filter_split:
-                            continue
-                    qid = str(row.get("query_id") or row.get("qid") or "").strip()
-                    if qid:
-                        qids.add(qid)
+            if isinstance(payload.get("records"), list):
+                rows = [(idx, item) for idx, item in enumerate(payload["records"], 1)]
+            else:
+                tune_list = _extract_split_query_ids(payload, "tune")
+                confirm_list = _extract_split_query_ids(payload, "confirm")
+                if tune_list is None and confirm_list is None:
+                    raise ValueError(
+                        f"Filter manifest {manifest_path} must provide 'records' or explicit tune/confirm query_id lists"
+                    )
+                idx = 1
+                for qid in tune_list or []:
+                    rows.append((idx, {"query_id": qid, "split": "tune"}))
+                    idx += 1
+                for qid in confirm_list or []:
+                    rows.append((idx, {"query_id": qid, "split": "confirm"}))
+                    idx += 1
         else:
             raise ValueError(f"Unsupported JSON manifest root in {manifest_path}")
     else:
-        for line in text.splitlines():
-            s = line.strip()
-            if s and not s.startswith("#"):
-                qids.add(s)
+        raise ValueError(f"Unsupported filter manifest format '{suffix}'; expected .jsonl or .json")
+
+    split_qids = _validate_manifest_records(rows, manifest_path=manifest_path, lock_by_qid=lock_by_qid)
+    qids = split_qids[filter_split] if filter_split is not None else (split_qids["tune"] | split_qids["confirm"])
 
     if not qids:
         raise ValueError(f"No query_ids resolved from filter manifest {manifest_path} (split={filter_split})")
@@ -309,6 +389,18 @@ def compare_runs(
     split_lock = json.loads(split_lock_path.read_text(encoding="utf-8"))
     lock_by_qid = {str(r["query_id"]): r for r in split_lock["records"]}
 
+    lock_metadata = split_lock.get("metadata") or {}
+    if "labels_sha256" in lock_metadata:
+        if not labels_path.is_file():
+            raise FileNotFoundError(f"Missing labels.jsonl: {labels_path}")
+        expected_labels_sha = lock_metadata.get("labels_sha256")
+        actual_labels_sha = sha256_file(labels_path)
+        if not expected_labels_sha or actual_labels_sha != str(expected_labels_sha):
+            raise ValueError(
+                f"labels_sha256 mismatch for {labels_path}: "
+                f"expected={expected_labels_sha}, got={actual_labels_sha}"
+            )
+
     base_rows = _read_jsonl_by_id(baseline_dir / "per_query_evaluation.jsonl", "baseline/per_query_evaluation.jsonl")
     chal_rows = _read_jsonl_by_id(challenger_dir / "per_query_evaluation.jsonl", "challenger/per_query_evaluation.jsonl")
     label_rows = _read_jsonl_by_id(labels_path, "labels.jsonl")
@@ -326,7 +418,11 @@ def compare_runs(
         raise ValueError(f"query_ids missing from split_lock: {missing_lock[:5]}")
 
     if filter_manifest is not None:
-        allowed_qids = _load_filter_manifest_qids(filter_manifest, filter_split=filter_split)
+        allowed_qids = _load_filter_manifest_qids(
+            filter_manifest,
+            filter_split=filter_split,
+            lock_by_qid=lock_by_qid,
+        )
         unknown_qids = sorted(allowed_qids - set(base_rows.keys()))
         if unknown_qids:
             raise ValueError(f"filter_manifest contains query_ids absent from runs: {unknown_qids[:5]}")

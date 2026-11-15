@@ -228,10 +228,10 @@ def _build_template_specs() -> list[tuple[str, str, dict[str, Any]]]:
 
     # 3. ASR queries (strictly grounded spoken phrases/topics)
     asr_items = [
-        ("en", 'A speaker on stage saying "welcome to the annual summit" into a microphone', "speaker on stage into a microphone", ["welcome to the annual summit"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
-        ("vi", 'Phóng viên đang nói về "biến đổi khí hậu" trong phòng thu truyền hình', "Phóng viên trong phòng thu truyền hình", ["biến đổi khí hậu"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
-        ("en", 'An instructor explaining "how to calibrate the camera" while pointing at a tripod', "instructor pointing at a tripod", ["how to calibrate the camera"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
-        ("vi", 'Người dẫn chương trình nhắc đến "dự báo thời tiết" trên bản tin tối', "Người dẫn chương trình trên bản tin tối", ["dự báo thời tiết"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
+        ("en", 'A speaker on stage saying "welcome to the annual summit" into a microphone', "speaker on stage", ["welcome to the annual summit"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
+        ("vi", 'Phóng viên đang nói về "biến đổi khí hậu" trong phòng thu truyền hình', "trong phòng thu truyền hình", ["biến đổi khí hậu"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
+        ("en", 'An instructor explaining "how to calibrate the camera" while pointing at a tripod', "pointing at a tripod", ["how to calibrate the camera"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
+        ("vi", 'Người dẫn chương trình nhắc đến "dự báo thời tiết" trên bản tin tối', "Người dẫn chương trình", ["dự báo thời tiết"], [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}]),
     ]
     for lang, q, vis, asr_list, objs in asr_items:
         specs.append(("asr", q, _make_wire(lang, [{"id": "e1", "vis": vis, "ocr": [], "asr": asr_list, "objs": objs, "pol": "pos"}])))
