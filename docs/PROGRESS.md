@@ -1,5 +1,27 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Vá 3 Điểm Kiểm Toán Phần II (`f80740b`), Huấn luyện Phần Dư Trực Tiếp LTR, Nối `P8-5` VLM Captions, `T-SOT` & `Temporal Attention Pooler`
+
+- **Vá 3 điểm kỹ thuật từ [VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md):**
+  1. **Sửa lỗi logic `window_energy_concentration` ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py), [features.py](../src/videntra/ranking/features.py)):** Thay công thức `inside_scores` / `outside_scores` trên `vid_items` (gây thưởng nhầm ~4.4x cho video nhiễu đơn cụm `m_count == 1`) bằng `coherence_ratio = local_vis_coherence / max(s_vis_blend_val, 0.05)` và `win_energy_conc = min(1.5, coherence_ratio * (1.0 + 0.10 * min(adjacent_pairs, 3)))`; sửa fallback trong `features.py` thành `(s_top3 / max(s_vis, 0.05))`.
+  2. **Khắc phục lệch mục tiêu LTR & nâng cấp Base-Anchored Residual Pairwise Logistic Loss ([train_ltr_ranker_cv.py](../scripts/train_ltr_ranker_cv.py), [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py), [videntra_ltr_v1.json](../models/ranking/videntra_ltr_v1.json)):**
+     - Đặt `ltr_blend_weight = 0.015` mặc định trong `UnifiedMultimodalSearchPipeline.__init__` và `--l2-reg = 250000.0`, `--blend-weight = 0.015` trong `train_ltr_ranker_cv.py`.
+     - Thu thập `base_video_score` (điểm Stage 5 trước LTR) và tối ưu trực tiếp margin phần dư `(base_i - base_j) + blend_weight * ((x_i - x_j) @ w)` kèm đánh giá `run_group_kfold_cv` trên `base_video_score + blend_weight * tanh(X @ w)`.
+     - Huấn luyện lại trên `dev_full_859` (`40,834` rows across `859` queries): **5-Fold `GroupKFold` CV** đạt `cv_hit_at_1 = 0.4798` (tăng từ `0.4603`), `cv_mrr = 0.5889` (tăng từ `0.5767`), `cv_ndcg_at_10 = 0.6315` (tăng từ `0.6236`), với `16/22` trọng số khác `0` cân bằng (`vis_lexical_synergy = +0.001065`, `s_vis_ctx_coherence = +0.000665`, `s_vis_blend_max = +0.000558`, `subclause_weakest_link = +0.000537`, `rrf_vis = +0.000384`, `window_energy_concentration = +0.000214`).
+  3. **Nối kênh `P8-5` VLM Captions vào `UnifiedMultimodalSearchPipeline` ([unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):** Tự động phát hiện `fts_vlm_caption` trong `metadata.db` và `faiss_e5_caption_384.bin` + `e5_caption_manifest.json` (an toàn no-op khi chưa có dữ liệu Kaggle); truy vấn Top-30 ở Stage 3 khi sẵn sàng để bổ sung `rrf_vis_caption`.
+- **Triển khai Hướng 3 (`T-SOT`) & Hướng 4 (`Query-Guided Temporal Attention Pooler`) ([alignment.py](../src/videntra/retrieval/alignment.py), [unified_pipeline.py](../src/videntra/retrieval/unified_pipeline.py)):**
+  - `temporal_sinkhorn_alignment_score` (log-domain Sinkhorn-Knopp `n_iters=3`, phạt thứ tự thời gian `eta=0.15`, `epsilon=0.08`) phối hợp cùng `MV-SetSim` (`0.70 * mv_set_sim + 0.30 * t_sot_score`) cho truy vấn đa mệnh đề (`len(sub_clauses) >= 2`).
+  - `query_guided_temporal_attention_score` (`tau=12.0`, weight `+0.025`) trên tối đa `K=5` khung hình liên tiếp cho Top-15 ứng viên cuối ở Stage 5.
+  - Bổ sung [test_tsot_and_attention.py](../tests/retrieval/test_tsot_and_attention.py) (`6 passed`), cập nhật [test_research_upgrades.py](../tests/retrieval/test_research_upgrades.py) (`11 passed`) và [test_learned_ranker.py](../tests/ranking/test_learned_ranker.py) (`9 passed`).
+- **Kiểm chứng Toàn diện Cuối cùng (`verifier-audit`):**
+  - **Full Pytest Suite:** `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` $\to$ **`479 passed, 3 warnings in 71.18s`** (exit code `0`).
+  - **Full 3-Split Benchmark (`scripts/run_validation_benchmark.py`, `provenance.json`: `inputs_unchanged=True`, `outputs_verified=True`, exit code `0`):**
+    - `dev_150` (`150` queries, A5): Video Hit@1 = **`61.33%`** (95% CI `[53.33%, 68.67%]`), Hit@5 = **`70.00%`**, Hit@10 = **`74.00%`**, MRR = **`0.6515`**, nDCG@10 = **`0.6727`**, Moment Hit@1 (`0.5`) = **`72.73%`**, Moment nDCG@5 = **`0.5121`**, Pure-ASR FP Top-1 = **`0`**, Non-Neural Latency p50/p95 = **`35.72 ms / 97.71 ms`**.
+    - `dev_full_859` (`859` queries, A5): Video Hit@1 = **`41.44%`** (tăng từ `41.33%`), Hit@5 = **`62.05%`**, Hit@10 = **`68.80%`**, MRR = **`0.5004`**, nDCG@10 = **`0.5455`**, Pure-ASR FP Top-1 = **`0`**, Non-Neural Latency p50/p95 = **`48.26 ms / 142.15 ms`**.
+    - `heldout_test_201` (`201` queries, A5): Video Hit@1 = **`38.81%`** (tăng từ `38.31%`), Hit@5 = **`58.21%`**, Hit@10 = **`67.66%`**, MRR = **`0.4745`**, nDCG@10 = **`0.5226`**, Pure-ASR FP Top-1 = **`0`**, Non-Neural Latency p50/p95 = **`45.25 ms / 92.26 ms`**.
+
+---
+
 ## 15/11/2026 — Kiểm định sau Phase 8 (`902f465`–`f80740b`), Dọn dẹp file tạm `work/` & Cập nhật `README.md` + `VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md`
 
 - **Kiểm định kỹ thuật sau 3 commits Phase 8 của Hydrogen (`902f465`, `8210881`, `f80740b`) ([VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md](../VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md)):**

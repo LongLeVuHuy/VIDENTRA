@@ -124,7 +124,8 @@ def build_pairwise_differences(
     y: np.ndarray,
     query_ids: Sequence[str],
     max_neg_per_pos: int = 20,
-) -> tuple[np.ndarray, np.ndarray]:
+    base_scores: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Construct balanced pairwise feature differences (x_pos - x_neg) per query."""
     by_query: dict[str, list[int]] = defaultdict(list)
     for idx, qid in enumerate(query_ids):
@@ -132,6 +133,7 @@ def build_pairwise_differences(
 
     diffs: list[np.ndarray] = []
     labels: list[float] = []
+    base_diffs: list[float] = []
 
     for idxs in by_query.values():
         pos_idxs = [i for i in idxs if y[i] > 0]
@@ -147,10 +149,22 @@ def build_pairwise_differences(
                 labels.append(1.0)
                 diffs.append(-delta)
                 labels.append(0.0)
+                if base_scores is not None:
+                    b_delta = float(base_scores[p] - base_scores[n])
+                    base_diffs.append(b_delta)
+                    base_diffs.append(-b_delta)
 
     if not diffs:
-        return np.zeros((0, X.shape[1]), dtype=np.float64), np.zeros(0, dtype=np.float64)
-    return np.vstack(diffs).astype(np.float64), np.asarray(labels, dtype=np.float64)
+        empty_x = np.zeros((0, X.shape[1]), dtype=np.float64)
+        empty_y = np.zeros(0, dtype=np.float64)
+        if base_scores is not None:
+            return empty_x, empty_y, np.zeros(0, dtype=np.float64)
+        return empty_x, empty_y
+    X_pair = np.vstack(diffs).astype(np.float64)
+    y_pair = np.asarray(labels, dtype=np.float64)
+    if base_scores is not None:
+        return X_pair, y_pair, np.asarray(base_diffs, dtype=np.float64)
+    return X_pair, y_pair
 
 
 def _build_monotonic_masks(
@@ -172,14 +186,19 @@ def train_pairwise_logistic_l2(
     X_train: np.ndarray,
     y_train: np.ndarray,
     query_ids_train: Sequence[str],
-    l2_reg: float = 1.0,
+    l2_reg: float = 250000.0,
     learning_rate: float = 0.08,
     max_iter: int = 400,
     monotonic_constraints: bool = True,
     feature_names: Sequence[str] = LTR_FEATURE_NAMES,
+    base_scores_train: np.ndarray | None = None,
+    blend_weight: float = 0.015,
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """Train L2-regularized pairwise logistic regression in pure NumPy.
 
+    When ``base_scores_train`` is provided, optimizes the Base-Anchored Residual
+    Pairwise Logistic Loss with margin
+    ``(base_i - base_j) + blend_weight * ((x_i - x_j) @ w)``.
     Applies Monotonic Sign Projection after each Adam step when
     ``monotonic_constraints=True`` so physical feature signs cannot invert.
 
@@ -194,7 +213,15 @@ def train_pairwise_logistic_l2(
     feat_std = np.where(raw_std > 1e-8, raw_std, 1.0)
     X_norm = (X - feat_mean) / feat_std
 
-    X_pair, y_pair = build_pairwise_differences(X_norm, y, query_ids_train)
+    if base_scores_train is not None:
+        base_arr = np.asarray(base_scores_train, dtype=np.float64)
+        X_pair, y_pair, base_pair = build_pairwise_differences(
+            X_norm, y, query_ids_train, base_scores=base_arr
+        )
+    else:
+        X_pair, y_pair = build_pairwise_differences(X_norm, y, query_ids_train)
+        base_pair = None
+
     n_features = X.shape[1]
     weights = np.zeros(n_features, dtype=np.float64)
     if X_pair.shape[0] == 0:
@@ -202,15 +229,21 @@ def train_pairwise_logistic_l2(
 
     pos_mask, neg_mask = _build_monotonic_masks(n_features, feature_names=feature_names)
     n_pairs = float(X_pair.shape[0])
+    lam = float(blend_weight)
     # Adam optimizer for fast, deterministic convergence without SciPy
     m = np.zeros(n_features, dtype=np.float64)
     v = np.zeros(n_features, dtype=np.float64)
     beta1, beta2, eps = 0.9, 0.999, 1e-8
 
     for step in range(1, max_iter + 1):
-        logits = np.clip(X_pair @ weights, -30.0, 30.0)
-        probs = 1.0 / (1.0 + np.exp(-logits))
-        grad = (X_pair.T @ (probs - y_pair)) / n_pairs + (l2_reg / n_pairs) * weights
+        if base_pair is not None:
+            logits = np.clip(base_pair + lam * (X_pair @ weights), -30.0, 30.0)
+            probs = 1.0 / (1.0 + np.exp(-logits))
+            grad = (lam * (X_pair.T @ (probs - y_pair))) / n_pairs + (l2_reg / n_pairs) * weights
+        else:
+            logits = np.clip(X_pair @ weights, -30.0, 30.0)
+            probs = 1.0 / (1.0 + np.exp(-logits))
+            grad = (X_pair.T @ (probs - y_pair)) / n_pairs + (l2_reg / n_pairs) * weights
 
         m = beta1 * m + (1.0 - beta1) * grad
         v = beta2 * v + (1.0 - beta2) * (grad * grad)
@@ -340,11 +373,14 @@ def run_group_kfold_cv(
     query_ids: Sequence[str],
     source_video_ids: Sequence[str],
     n_splits: int = 5,
-    l2_reg: float = 1.0,
+    l2_reg: float = 250000.0,
     backend: str = "auto",
+    base_scores: np.ndarray | None = None,
+    blend_weight: float = 0.015,
 ) -> dict[str, Any]:
     """Run 5-Fold GroupKFold CV grouped by source_video_id and build final artifact."""
     splits = group_kfold_indices(source_video_ids, n_splits=n_splits)
+    base_arr = np.asarray(base_scores, dtype=np.float64) if base_scores is not None else None
 
     fold_metrics: list[dict[str, float]] = []
     fold_weights: list[np.ndarray] = []
@@ -362,6 +398,7 @@ def run_group_kfold_cv(
         X_val, y_val = X[val_idx], y[val_idx]
         q_tr = [query_ids[i] for i in tr_idx]
         q_val = [query_ids[i] for i in val_idx]
+        base_tr = base_arr[tr_idx] if base_arr is not None else None
 
         # Verify zero video leakage between train and val folds
         tr_vids = {source_video_ids[i] for i in tr_idx}
@@ -369,11 +406,20 @@ def run_group_kfold_cv(
         assert tr_vids.isdisjoint(val_vids), f"GroupKFold video leakage in fold {fold_idx}"
 
         w, bias, f_mean, f_std = train_pairwise_logistic_l2(
-            X_tr, y_tr, q_tr, l2_reg=l2_reg
+            X_tr,
+            y_tr,
+            q_tr,
+            l2_reg=l2_reg,
+            base_scores_train=base_tr,
+            blend_weight=blend_weight,
         )
         fold_weights.append(w)
 
-        val_scores = ((X_val - f_mean) / f_std) @ w + bias
+        ltr_val_scores = ((X_val - f_mean) / f_std) @ w + bias
+        if base_arr is not None:
+            val_scores = base_arr[val_idx] + float(blend_weight) * np.tanh(ltr_val_scores)
+        else:
+            val_scores = ltr_val_scores
         metrics = evaluate_ranking_metrics(val_scores, y_val, q_val)
         metrics["fold"] = fold_idx
         fold_metrics.append(metrics)
@@ -394,7 +440,12 @@ def run_group_kfold_cv(
         }
     else:
         final_w, final_bias, final_mean, final_std = train_pairwise_logistic_l2(
-            X, y, query_ids, l2_reg=l2_reg
+            X,
+            y,
+            query_ids,
+            l2_reg=l2_reg,
+            base_scores_train=base_arr,
+            blend_weight=blend_weight,
         )
         artifact = {
             "model_type": "pairwise_logistic",
@@ -410,6 +461,8 @@ def run_group_kfold_cv(
         "cv_strategy": f"{n_splits}-fold GroupKFold",
         "grouped_by": "source_video_id",
         "l2_reg": float(l2_reg),
+        "blend_weight": float(blend_weight),
+        "residual_training": bool(base_arr is not None),
         "cv_hit_at_1": round(mean_cv_hit1, 4),
         "cv_mrr": round(mean_cv_mrr, 4),
         "cv_ndcg_at_10": round(mean_cv_ndcg10, 4),
@@ -421,7 +474,8 @@ def run_group_kfold_cv(
 
 def load_ltr_jsonl_dataset(
     dataset_path: Path,
-) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+    return_base_scores: bool = False,
+) -> tuple[Any, ...]:
     """Load pre-extracted candidate rows from JSONL (no held-out/test paths)."""
     assert_no_heldout_leakage(dataset_path)
     if not dataset_path.is_file():
@@ -431,6 +485,8 @@ def load_ltr_jsonl_dataset(
     labels: list[float] = []
     query_ids: list[str] = []
     source_video_ids: list[str] = []
+    base_scores: list[float] = []
+    has_all_base = True
 
     with dataset_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -445,24 +501,29 @@ def load_ltr_jsonl_dataset(
             labels.append(float(item.get("label", item.get("is_relevant", 0))))
             query_ids.append(str(item["query_id"]))
             source_video_ids.append(str(item.get("source_video_id", item.get("video_id", ""))))
+            if "base_video_score" in item and item["base_video_score"] is not None:
+                base_scores.append(float(item["base_video_score"]))
+            else:
+                has_all_base = False
 
     if not rows:
         raise ValueError(f"Empty LTR dataset: {dataset_path}")
 
-    return (
-        np.vstack(rows).astype(np.float64),
-        np.asarray(labels, dtype=np.float64),
-        query_ids,
-        source_video_ids,
-    )
+    X_mat = np.vstack(rows).astype(np.float64)
+    y_arr = np.asarray(labels, dtype=np.float64)
+    if return_base_scores:
+        base_arr = np.asarray(base_scores, dtype=np.float64) if has_all_base else None
+        return X_mat, y_arr, query_ids, source_video_ids, base_arr
+    return X_mat, y_arr, query_ids, source_video_ids
 
 
 def extract_dev859_ltr_dataset(
     val_dir: Path = DEFAULT_VAL_DIR,
     save_jsonl_path: Path | None = None,
     max_candidates_per_query: int = 60,
-) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
-    """Extract 18D LTR features from dev_full_859 (validation/ only, never held-out test)."""
+    return_base_scores: bool = False,
+) -> tuple[Any, ...]:
+    """Extract 22D LTR features from dev_full_859 (validation/ only, never held-out test)."""
     assert_no_heldout_leakage(val_dir)
     if save_jsonl_path is not None:
         assert_no_heldout_leakage(save_jsonl_path)
@@ -485,6 +546,7 @@ def extract_dev859_ltr_dataset(
         device=runtime_device,
         use_disk_cache=True,
         memory_cache_size=1024,
+        ltr_blend_weight=0.0,
     )
     try:
         indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
@@ -499,6 +561,7 @@ def extract_dev859_ltr_dataset(
         labels: list[float] = []
         query_ids: list[str] = []
         source_video_ids: list[str] = []
+        base_scores: list[float] = []
         jsonl_records: list[dict[str, Any]] = []
 
         for idx, q in enumerate(queries, start=1):
@@ -598,17 +661,20 @@ def extract_dev859_ltr_dataset(
                     }
                 vec = extract_ltr_features_22d(cand_dict, z_stats=z_stats, return_dict=False)
                 lbl = 1.0 if vid in target_set else 0.0
+                base_sc = float(m.ranking_score)
 
                 rows.append(vec)
                 labels.append(lbl)
                 query_ids.append(qid)
                 source_video_ids.append(src_vid)
+                base_scores.append(base_sc)
                 if save_jsonl_path is not None:
                     jsonl_records.append({
                         "query_id": qid,
                         "source_video_id": src_vid,
                         "video_id": vid,
                         "label": lbl,
+                        "base_video_score": base_sc,
                         "features": [float(v) for v in vec],
                     })
 
@@ -629,9 +695,19 @@ def extract_dev859_ltr_dataset(
             for rec in jsonl_records:
                 f.write(json.dumps(rec) + "\n")
 
+    X_mat = np.vstack(rows).astype(np.float64)
+    y_arr = np.asarray(labels, dtype=np.float64)
+    if return_base_scores:
+        return (
+            X_mat,
+            y_arr,
+            query_ids,
+            source_video_ids,
+            np.asarray(base_scores, dtype=np.float64),
+        )
     return (
-        np.vstack(rows).astype(np.float64),
-        np.asarray(labels, dtype=np.float64),
+        X_mat,
+        y_arr,
         query_ids,
         source_video_ids,
     )
@@ -648,22 +724,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train VIDENTRA LTR ranker with 5-Fold GroupKFold CV")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH, help="Path to dev_full_859 LTR JSONL")
     parser.add_argument("--val-dir", type=Path, default=DEFAULT_VAL_DIR, help="Validation directory for dev_full_859 extraction")
-    parser.add_argument("--extract-from-val", action="store_true", help="Extract 18D features directly from validation/ (dev_full_859)")
+    parser.add_argument("--extract-from-val", action="store_true", help="Extract 22D features directly from validation/ (dev_full_859)")
     parser.add_argument("--save-dataset", action="store_true", help="Persist extracted JSONL to --dataset when extracting from validation/")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output JSON weights path")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
-    parser.add_argument("--l2-reg", type=float, default=3000.0, help="L2 regularization strength")
+    parser.add_argument("--l2-reg", type=float, default=250000.0, help="L2 regularization strength")
+    parser.add_argument("--blend-weight", type=float, default=0.015, help="Residual blend weight matching pipeline inference")
     parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="auto")
     args = parser.parse_args()
 
     if args.extract_from_val or (args.dataset == DEFAULT_DATASET_PATH and not args.dataset.is_file()):
         save_path = args.dataset if args.save_dataset else None
-        X, y, query_ids, source_video_ids = extract_dev859_ltr_dataset(
+        X, y, query_ids, source_video_ids, base_scores = extract_dev859_ltr_dataset(
             val_dir=args.val_dir,
             save_jsonl_path=save_path,
+            return_base_scores=True,
         )
     else:
-        X, y, query_ids, source_video_ids = load_ltr_jsonl_dataset(args.dataset)
+        X, y, query_ids, source_video_ids, base_scores = load_ltr_jsonl_dataset(
+            args.dataset,
+            return_base_scores=True,
+        )
     artifact = run_group_kfold_cv(
         X=X,
         y=y,
@@ -672,6 +753,8 @@ def main() -> None:
         n_splits=args.n_splits,
         l2_reg=args.l2_reg,
         backend=args.backend,
+        base_scores=base_scores,
+        blend_weight=args.blend_weight,
     )
     out = save_ltr_model_json(artifact, args.output)
     meta = artifact["metadata"]

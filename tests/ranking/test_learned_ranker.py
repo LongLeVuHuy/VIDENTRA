@@ -121,10 +121,21 @@ def test_extract_ltr_features_18d_and_derived_fields():
     assert list(dict22.keys()) == list(LTR_FEATURE_NAMES)
     assert pytest.approx(dict22["vis_lexical_synergy"], abs=1e-5) == (0.40 - 0.12) * 0.012
     assert pytest.approx(dict22["subclause_weakest_link"], abs=1e-5) == 0.40
+    assert pytest.approx(dict22["window_energy_concentration"], abs=1e-5) == 0.35 / 0.40
 
     low_vis_cand = dict(cand, s_vis_blend_max=0.11)
     low_vis_dict = extract_ltr_features_22d(low_vis_cand, z_stats=z_stats, return_dict=True)
     assert low_vis_dict["vis_lexical_synergy"] == 0.0
+
+    zero_vis_dict = extract_ltr_features_22d(dict(cand, s_vis_blend_max=0.0), z_stats=z_stats, return_dict=True)
+    assert zero_vis_dict["window_energy_concentration"] == 0.0
+
+    tiny_vis_dict = extract_ltr_features_22d(
+        dict(cand, s_vis_blend_max=0.02, s_vis_top3_mean=0.01),
+        z_stats=z_stats,
+        return_dict=True,
+    )
+    assert pytest.approx(tiny_vis_dict["window_energy_concentration"], abs=1e-5) == 0.01 / 0.05
 
     batch = extract_ltr_features_batch([cand, {"s_vis_blend_max": float("nan")}])
     assert batch.shape == (2, 22)
@@ -281,3 +292,60 @@ def test_ranking_features_standalone_import_no_circular_import():
         check=False,
     )
     assert proc.returncode == 0, f"Standalone import failed: {proc.stderr}"
+
+
+def test_base_anchored_residual_pairwise_training(tmp_path: Path):
+    rng = np.random.default_rng(123)
+    n_queries = 25
+    cands_per_query = 6
+    rows = []
+
+    for q_idx in range(n_queries):
+        qid = f"rq_{q_idx:03d}"
+        pos_vid = f"rvid_{q_idx % 10:02d}"
+        for c_idx in range(cands_per_query):
+            is_pos = 1.0 if c_idx == 0 else 0.0
+            feat = rng.normal(0.0, 0.2, size=len(LTR_FEATURE_NAMES))
+            if is_pos > 0:
+                feat[0] += 2.0  # s_vis_blend_max
+                feat[6] += 1.5  # s_late_interaction
+            # Ambiguous base_video_score: negative slightly ahead of positive until residual fixes it
+            base_score = 0.500 if is_pos > 0 else (0.503 if c_idx == 1 else 0.35)
+            cand_vid = pos_vid if is_pos > 0 else f"rvid_{(q_idx + c_idx + 1) % 10:02d}"
+            rows.append({
+                "query_id": qid,
+                "source_video_id": pos_vid,
+                "video_id": cand_vid,
+                "label": is_pos,
+                "base_video_score": base_score,
+                "features": [float(v) for v in feat],
+            })
+
+    ds_path = tmp_path / "residual_synth.jsonl"
+    ds_path.write_text("\n".join(__import__("json").dumps(r) for r in rows), encoding="utf-8")
+
+    X, y, qids, vids, base_scores = load_ltr_jsonl_dataset(ds_path, return_base_scores=True)
+    assert base_scores is not None
+    assert base_scores.shape == (n_queries * cands_per_query,)
+
+    artifact = run_group_kfold_cv(
+        X=X,
+        y=y,
+        query_ids=qids,
+        source_video_ids=vids,
+        n_splits=5,
+        l2_reg=1.0,
+        backend="pairwise_logistic",
+        base_scores=base_scores,
+        blend_weight=0.015,
+    )
+    assert artifact["metadata"]["residual_training"] is True
+    assert artifact["metadata"]["blend_weight"] == 0.015
+    assert artifact["metadata"]["cv_hit_at_1"] >= 0.85
+
+    # Legacy JSONL without base_video_score falls back cleanly
+    legacy_rows = [{k: v for k, v in r.items() if k != "base_video_score"} for r in rows]
+    legacy_path = tmp_path / "legacy_synth.jsonl"
+    legacy_path.write_text("\n".join(__import__("json").dumps(r) for r in legacy_rows), encoding="utf-8")
+    _, _, _, _, legacy_base = load_ltr_jsonl_dataset(legacy_path, return_base_scores=True)
+    assert legacy_base is None

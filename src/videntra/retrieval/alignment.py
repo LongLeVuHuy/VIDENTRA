@@ -350,3 +350,113 @@ def viterbi_subevent_localization(
         start_sec=ts[path[0]],
         end_sec=ts[path[-1]],
     )
+
+
+def _logsumexp(x: np.ndarray, axis: int) -> np.ndarray:
+    """Numerically stable log-sum-exp along ``axis`` in pure NumPy."""
+    m = np.max(x, axis=axis, keepdims=True)
+    return np.squeeze(m, axis=axis) + np.log(np.sum(np.exp(x - m), axis=axis))
+
+
+def temporal_sinkhorn_alignment_score(
+    clause_frame_sims: np.ndarray,
+    *,
+    eta: float = 0.15,
+    epsilon: float = 0.08,
+    n_iters: int = 3,
+) -> float:
+    """Temporal Sinkhorn Optimal Transport (T-SOT) alignment score.
+
+    Finds a soft transport plan ``P`` of shape ``(M, T)`` between ``M`` query
+    clauses and ``T`` keyframes in a temporal window using stabilized log-domain
+    Sinkhorn-Knopp iterations, penalizing out-of-order clause-to-frame matches:
+        penalty(m, t) = eta * ((m / max(1, M - 1)) - (t / max(1, T - 1))) ** 2
+    Returns ``sum(P * clause_frame_sims)``.
+    """
+    if clause_frame_sims is None:
+        return 0.0
+    sims = np.asarray(clause_frame_sims, dtype=np.float64)
+    if sims.size == 0:
+        return 0.0
+    if sims.ndim == 1:
+        sims = sims.reshape(1, -1)
+    elif sims.ndim != 2:
+        raise ValueError(
+            f"clause_frame_sims must be 1D or 2D, got shape {sims.shape}"
+        )
+
+    m_clauses, t_frames = sims.shape
+    if m_clauses == 1:
+        return float(np.max(sims))
+    if t_frames == 1:
+        return float(np.mean(sims))
+
+    m_pos = np.arange(m_clauses, dtype=np.float64)[:, None] / float(max(1, m_clauses - 1))
+    t_pos = np.arange(t_frames, dtype=np.float64)[None, :] / float(max(1, t_frames - 1))
+    penalty = float(eta) * (m_pos - t_pos) ** 2
+
+    eps = max(1e-6, float(epsilon))
+    log_k = (sims - penalty) / eps
+
+    log_a = -np.log(float(m_clauses))
+    log_b = -np.log(float(t_frames))
+    u = np.zeros(m_clauses, dtype=np.float64)
+    v = np.zeros(t_frames, dtype=np.float64)
+
+    for _ in range(max(1, int(n_iters))):
+        u = log_a - _logsumexp(log_k + v[None, :], axis=1)
+        v = log_b - _logsumexp(log_k + u[:, None], axis=0)
+
+    plan = np.exp(log_k + u[:, None] + v[None, :])
+    return float(np.sum(plan * sims))
+
+
+def query_guided_temporal_attention_score(
+    query_vec: np.ndarray,
+    frame_vecs: np.ndarray,
+    *,
+    tau: float = 12.0,
+) -> float:
+    """Parameter-Free Query-Guided Temporal Attention Pooler.
+
+    Computes attention weights ``alpha_k = softmax(tau * (frame_vecs @ query_vec))``,
+    L2-normalizes ``v_att = sum(alpha_k * frame_vecs)``, and returns
+    ``dot(query_vec, v_att)``. Rewards complementary multi-frame views of the
+    query concept on the unit hypersphere over single-frame coincidences.
+    """
+    if query_vec is None or frame_vecs is None:
+        return 0.0
+
+    q_arr = np.asarray(query_vec, dtype=np.float32).ravel()
+    f_arr = np.asarray(frame_vecs, dtype=np.float32)
+    if q_arr.size == 0 or f_arr.size == 0:
+        return 0.0
+
+    if f_arr.ndim == 1:
+        f_arr = f_arr.reshape(1, -1)
+    elif f_arr.ndim != 2:
+        raise ValueError(f"frame_vecs must be 1D or 2D, got shape {f_arr.shape}")
+
+    if f_arr.shape[1] != q_arr.size:
+        raise ValueError(
+            f"Dimension mismatch: query_vec has {q_arr.size}, "
+            f"frame_vecs has {f_arr.shape[1]}"
+        )
+
+    q_norm = float(np.linalg.norm(q_arr))
+    if q_norm <= 1e-8:
+        return 0.0
+    q_unit = (q_arr / q_norm).astype(np.float64)
+
+    f_unit = _l2_normalize_rows(f_arr).astype(np.float64)
+    logits = float(tau) * (f_unit @ q_unit)
+    logits_shifted = logits - np.max(logits)
+    exp_logits = np.exp(logits_shifted)
+    alpha = exp_logits / np.sum(exp_logits)
+
+    v_att = alpha @ f_unit
+    v_norm = float(np.linalg.norm(v_att))
+    if v_norm <= 1e-8:
+        return 0.0
+    v_att_unit = v_att / v_norm
+    return float(np.dot(q_unit, v_att_unit))

@@ -394,3 +394,129 @@ def test_se_viterbi_llm_compact_no_crash_and_e5_pure_visual_gate():
     _ = pipeline.search('"exact phrase"', top_k=5, ablation_config="A5")
     assert e5_calls == ['"exact phrase"']
 
+
+def test_pipeline_ltr_blend_weight_default_and_vlm_caption_fts_wiring(tmp_path: Path):
+    import faiss
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    # 1. Default ltr_blend_weight is 0.015
+    p_default = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    assert p_default.ltr_blend_weight == pytest.approx(0.015, abs=1e-9)
+
+    # 2. DB without fts_vlm_caption -> has_vlm_caption_fts is False (safe no-op)
+    db_plain = tmp_path / "plain.db"
+    conn = sqlite3.connect(str(db_plain))
+    conn.execute("CREATE TABLE KeyframeMap (faiss_id INTEGER PRIMARY KEY, video_id TEXT, pts_time REAL, source_frame_index INTEGER, keyframe_path TEXT)")
+    conn.execute("CREATE TABLE Videos (video_id TEXT PRIMARY KEY, duration_ms INTEGER)")
+    conn.execute("CREATE VIRTUAL TABLE fts_ocr USING fts5(video_id UNINDEXED, timestamp_ms UNINDEXED, normalized_text)")
+    conn.execute("CREATE VIRTUAL TABLE fts_asr USING fts5(video_id UNINDEXED, start_ms UNINDEXED, end_ms UNINDEXED, normalized_text)")
+    conn.commit()
+    conn.close()
+
+    p_plain = UnifiedMultimodalSearchPipeline(db_path=db_plain, lazy_load=True, use_disk_cache=False)
+    resolved_uri = f"file:{db_plain.resolve().as_posix()}?mode=ro"
+    p_plain.db_conn = sqlite3.connect(resolved_uri, uri=True, check_same_thread=False)
+    cur = p_plain.db_conn.cursor()
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fts_vlm_caption' LIMIT 1;")
+    p_plain.has_vlm_caption_fts = cur.fetchone() is not None
+    assert p_plain.has_vlm_caption_fts is False
+    p_plain.db_conn.close()
+
+    # 3. DB with fts_vlm_caption -> Stage 3 queries fts_vlm_caption and rescues missed visual candidate
+    db_cap = tmp_path / "with_cap.db"
+    conn = sqlite3.connect(str(db_cap))
+    conn.execute("CREATE TABLE KeyframeMap (faiss_id INTEGER PRIMARY KEY, video_id TEXT, pts_time REAL, source_frame_index INTEGER, keyframe_path TEXT)")
+    conn.execute("CREATE TABLE Videos (video_id TEXT PRIMARY KEY, duration_ms INTEGER)")
+    conn.execute("CREATE VIRTUAL TABLE fts_ocr USING fts5(video_id UNINDEXED, timestamp_ms UNINDEXED, normalized_text)")
+    conn.execute("CREATE VIRTUAL TABLE fts_asr USING fts5(video_id UNINDEXED, start_ms UNINDEXED, end_ms UNINDEXED, normalized_text)")
+    conn.execute(
+        "CREATE VIRTUAL TABLE fts_vlm_caption USING fts5("
+        "normalized_text, unaccented_text, video_id UNINDEXED, keyframe_id UNINDEXED, faiss_id UNINDEXED, timestamp_ms UNINDEXED)"
+    )
+    conn.execute("INSERT INTO Videos VALUES ('v_other', 10000), ('v_cap', 10000)")
+    conn.execute("INSERT INTO KeyframeMap VALUES (0, 'v_other', 2.0, 60, 'a.jpg'), (1, 'v_cap', 4.0, 120, 'b.jpg')")
+    conn.execute(
+        "INSERT INTO fts_vlm_caption (normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms) "
+        "VALUES ('golden retriever catching frisbee', 'golden retriever catching frisbee', 'v_cap', 'kf_1', 1, 4000)"
+    )
+    conn.commit()
+    conn.close()
+
+    raw_768 = np.array([[0.50] + [0.0] * 767, [0.49] + [0.0] * 767], dtype=np.float32)
+    aug_864 = np.array([[0.50] + [0.0] * 863, [0.49] + [0.0] * 863], dtype=np.float32)
+    pipeline = UnifiedMultimodalSearchPipeline(
+        db_path=db_cap,
+        lazy_load=True,
+        use_disk_cache=False,
+        search_depth=1,  # Force v_cap (faiss_id=1) to be missed by Stage 2 top-1!
+    )
+    pipeline.db_conn = sqlite3.connect(f"file:{db_cap.resolve().as_posix()}?mode=ro", uri=True, check_same_thread=False)
+    pipeline.has_vlm_caption_fts = True
+    pipeline.all_embeddings = raw_768
+    pipeline.augmented_embeddings = aug_864
+    pipeline.keyframe_map = {
+        0: {"video_id": "v_other", "pts_time": 2.0, "source_frame_index": 60},
+        1: {"video_id": "v_cap", "pts_time": 4.0, "source_frame_index": 120},
+    }
+    pipeline.video_keyframes = {
+        "v_other": [{"faiss_id": 0, "pts_time": 2.0, "source_frame_index": 60}],
+        "v_cap": [{"faiss_id": 1, "pts_time": 4.0, "source_frame_index": 120}],
+    }
+    pipeline.video_durations = {"v_other": 10.0, "v_cap": 10.0}
+    pipeline.aug_index = faiss.IndexFlatIP(864)
+    pipeline.aug_index.add(aug_864)
+    pipeline.index = faiss.IndexFlatIP(768)
+    pipeline.index.add(raw_768)
+    pipeline.encode_texts = lambda texts: np.tile(np.array([[1.0] + [0.0] * 767], dtype=np.float32), (len(texts), 1))  # type: ignore[method-assign]
+
+    res = pipeline.search("golden retriever frisbee", top_k=5, ablation_config="A5")
+    pipeline.db_conn.close()
+    res_vids = [m.video_id for m in res]
+    assert "v_cap" in res_vids
+
+
+def test_window_energy_concentration_local_consensus_bounded():
+    import faiss
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    n = 6
+    raw_768 = np.zeros((n, 768), dtype=np.float32)
+    aug_864 = np.zeros((n, 864), dtype=np.float32)
+    for i in range(n):
+        raw_768[i, 0] = 0.80 if i in (1, 2, 3) else 0.20
+        aug_864[i, 0] = 0.80 if i in (1, 2, 3) else 0.20
+
+    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipeline.all_embeddings = raw_768
+    pipeline.augmented_embeddings = aug_864
+    pipeline.keyframe_map = {
+        i: {"video_id": "v1", "pts_time": float(i * 2.0), "source_frame_index": i * 60}
+        for i in range(n)
+    }
+    pipeline.video_keyframes = {
+        "v1": [{"faiss_id": i, "pts_time": float(i * 2.0), "source_frame_index": i * 60} for i in range(n)]
+    }
+    pipeline.video_durations = {"v1": 12.0}
+    pipeline.aug_index = faiss.IndexFlatIP(864)
+    pipeline.aug_index.add(aug_864)
+    pipeline.index = faiss.IndexFlatIP(768)
+    pipeline.index.add(raw_768)
+    pipeline.encode_texts = lambda texts: np.tile(np.array([[1.0] + [0.0] * 767], dtype=np.float32), (len(texts), 1))  # type: ignore[method-assign]
+
+    captured: list[dict] = []
+    orig_score_matrix = pipeline.ltr_ranker.score_matrix
+
+    def _spy_score_matrix(mat):
+        captured.append({"shape": mat.shape, "win_conc": mat[:, -1].tolist()})
+        return orig_score_matrix(mat)
+
+    if pipeline.ltr_ranker.is_loaded:
+        pipeline.ltr_ranker.score_matrix = _spy_score_matrix  # type: ignore[method-assign]
+
+    res = pipeline.search("a dog running", top_k=3, ablation_config="A5")
+    assert len(res) >= 1
+    if captured:
+        for val in captured[0]["win_conc"]:
+            assert 0.0 <= val <= 1.5
+
+

@@ -52,7 +52,9 @@ from videntra.indexing.augmented_vector import (
 )
 from videntra.retrieval.alignment import (
     align_sequential_keyframe_clauses,
+    query_guided_temporal_attention_score,
     shot_aware_graph_diffusion,
+    temporal_sinkhorn_alignment_score,
     viterbi_subevent_localization,
 )
 from videntra.relations.entities import compute_object_verification_boost
@@ -507,7 +509,7 @@ class UnifiedMultimodalSearchPipeline:
         search_depth: int = 120,
         lazy_load: bool = False,
         ltr_model_path: Path | str | None = DEFAULT_LTR_MODEL_PATH,
-        ltr_blend_weight: float = 0.04,
+        ltr_blend_weight: float = 0.015,
         # Optional pre-injected objects for lightweight testing or server sharing:
         tokenizer: Any | None = None,
         text_model: Any | None = None,
@@ -571,6 +573,9 @@ class UnifiedMultimodalSearchPipeline:
         self.temporal_context_768: np.ndarray | None = None
         self.e5_text_index: faiss.Index | None = None
         self.e5_text_manifest: list[dict[str, Any]] = []
+        self.has_vlm_caption_fts: bool = False
+        self.e5_caption_index: faiss.Index | None = None
+        self.e5_caption_manifest: list[dict[str, Any]] = []
         self.e5_tokenizer: Any | None = None
         self.e5_model: Any | None = None
         self.last_routing_plan: ModalityRoutingPlan | None = None
@@ -586,6 +591,15 @@ class UnifiedMultimodalSearchPipeline:
         if self.db_path.exists():
             resolved_uri = f"file:{self.db_path.resolve().as_posix()}?mode=ro"
             self.db_conn = sqlite3.connect(resolved_uri, uri=True, check_same_thread=False)
+
+            try:
+                cur_fts = self.db_conn.cursor()
+                cur_fts.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fts_vlm_caption' LIMIT 1;"
+                )
+                self.has_vlm_caption_fts = cur_fts.fetchone() is not None
+            except sqlite3.Error:
+                self.has_vlm_caption_fts = False
 
             if not self.keyframe_map:
                 cursor = self.db_conn.cursor()
@@ -1218,7 +1232,7 @@ class UnifiedMultimodalSearchPipeline:
         return evidence
 
     def load_optional_phase74_artifacts(self, base_dir: Path | str = Path("data/processed")) -> dict[str, bool]:
-        """Load optional Phase 7.4 offline artifacts (3x3 spatial patches, E5 text index) if present."""
+        """Load optional Phase 7.4 / P8-5 offline artifacts (spatial patches, E5 text & caption indexes) if present."""
         root = Path(base_dir)
         loaded = {"spatial_patches": False, "e5_text_index": False}
         patches_path = root / "spatial_patches_fp16.npy"
@@ -1229,17 +1243,29 @@ class UnifiedMultimodalSearchPipeline:
             except Exception:
                 self.spatial_patches = None
 
+        import json as _json
+
         e5_idx_path = root / "faiss_text_e5_384.bin"
         e5_manifest_path = root / "e5_text_manifest.json"
         if e5_idx_path.is_file() and e5_manifest_path.is_file():
             try:
-                import json as _json
                 self.e5_text_index = faiss.read_index(str(e5_idx_path))
                 self.e5_text_manifest = _json.loads(e5_manifest_path.read_text(encoding="utf-8"))
                 loaded["e5_text_index"] = True
             except Exception:
                 self.e5_text_index = None
                 self.e5_text_manifest = []
+
+        cap_idx_path = root / "faiss_e5_caption_384.bin"
+        cap_manifest_path = root / "e5_caption_manifest.json"
+        if cap_idx_path.is_file() and cap_manifest_path.is_file():
+            try:
+                self.e5_caption_index = faiss.read_index(str(cap_idx_path))
+                self.e5_caption_manifest = _json.loads(cap_manifest_path.read_text(encoding="utf-8"))
+                loaded["e5_caption_index"] = True
+            except Exception:
+                self.e5_caption_index = None
+                self.e5_caption_manifest = []
         return loaded
 
     def _score_late_interaction_window(
@@ -1347,25 +1373,39 @@ class UnifiedMultimodalSearchPipeline:
         except Exception:
             return None
 
-    def _search_e5_text_index(self, query_vec_384: np.ndarray | None, top_k: int = 20) -> list[dict[str, Any]]:
-        """Optional Phase 7.4 dense E5 speech/OCR search hook (no-op when absent)."""
-        if self.e5_text_index is None or not self.e5_text_manifest or query_vec_384 is None:
+    @staticmethod
+    def _search_e5_faiss_index(
+        index: faiss.Index | None,
+        manifest: list[dict[str, Any]],
+        query_vec_384: np.ndarray | None,
+        top_k: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Shared dense E5 FAISS search helper returning manifest dicts with similarity score."""
+        if index is None or not manifest or query_vec_384 is None:
             return []
         try:
             q = np.asarray(query_vec_384, dtype=np.float32).reshape(1, -1)
-            k = min(int(top_k), int(self.e5_text_index.ntotal))
+            k = min(int(top_k), int(index.ntotal))
             if k <= 0:
                 return []
-            scores, ids = self.e5_text_index.search(q, k)
+            scores, ids = index.search(q, k)
             out: list[dict[str, Any]] = []
             for idx, sc in zip(ids[0].tolist(), scores[0].tolist()):
-                if 0 <= idx < len(self.e5_text_manifest):
-                    item = dict(self.e5_text_manifest[idx])
+                if 0 <= idx < len(manifest):
+                    item = dict(manifest[idx])
                     item["score"] = float(sc)
                     out.append(item)
             return out
         except Exception:
             return []
+
+    def _search_e5_text_index(self, query_vec_384: np.ndarray | None, top_k: int = 20) -> list[dict[str, Any]]:
+        """Optional Phase 7.4 dense E5 speech/OCR search hook (no-op when absent)."""
+        return self._search_e5_faiss_index(self.e5_text_index, self.e5_text_manifest, query_vec_384, top_k=top_k)
+
+    def _search_e5_caption_index(self, query_vec_384: np.ndarray | None, top_k: int = 30) -> list[dict[str, Any]]:
+        """Optional P8-5 dense E5 VLM keyframe caption search hook (no-op when absent)."""
+        return self._search_e5_faiss_index(self.e5_caption_index, self.e5_caption_manifest, query_vec_384, top_k=top_k)
 
     def _verify_relations(self, query: str, moments: list[RankedMoment]) -> list[dict[str, Any]]:
         """Assess shortlist using interval-contained OCR, ASR, and 2D FrameObjects evidence."""
@@ -1723,6 +1763,10 @@ class UnifiedMultimodalSearchPipeline:
                             clause_vectors=sub_q_864,
                             max_transition_sec=35.0,
                         )
+                    if len(sub_clauses) >= 2 and clause_frame_sims.shape[0] >= 2:
+                        t_sot_score = temporal_sinkhorn_alignment_score(clause_frame_sims)
+                        multi_clause_blend = 0.70 * mv_set_sim + 0.30 * t_sot_score
+                        seq_score = (0.80 * seq_score + 0.20 * multi_clause_blend) if seq_score > 0.0 else multi_clause_blend
                     video_seq_scores[cvid] = seq_score
                     if anchor_win is not None:
                         video_anchor_windows[cvid] = anchor_win
@@ -1922,6 +1966,7 @@ class UnifiedMultimodalSearchPipeline:
 
         # Phase 7.4 / 8: Dense E5 Text Index recall only when explicit lexical modality intent exists and FTS5 is sparse
         t_e5_encode_ms = 0.0
+        q_e5_384: np.ndarray | None = None
         sparse_lexical_yield = (len(ocr_candidates) + len(asr_candidates)) < 5
         _q_lower_e5 = f" {query.lower()} "
         _lexical_intent_cues = (
@@ -1994,6 +2039,86 @@ class UnifiedMultimodalSearchPipeline:
                                 "is_dense_e5": True,
                             })
 
+        # P8-5: VLM keyframe caption FTS5 + optional dense E5 caption index recall
+        if ablation_config not in ("A0", "A1", "A2"):
+            vlm_caption_hits: list[dict[str, Any]] = []
+            if self.has_vlm_caption_fts and fts_query and self.db_conn is not None:
+                try:
+                    cursor = self.db_conn.cursor()
+                    cursor.execute(
+                        "SELECT video_id, faiss_id, timestamp_ms, rank, normalized_text "
+                        "FROM fts_vlm_caption WHERE fts_vlm_caption MATCH ? ORDER BY rank LIMIT 30;",
+                        (fts_query,),
+                    )
+                    for rank_idx, (vid, fid, ts_ms, _bm25_rank, norm_text) in enumerate(cursor.fetchall(), 1):
+                        vlm_caption_hits.append({
+                            "video_id": str(vid),
+                            "faiss_id": int(fid) if fid is not None else None,
+                            "timestamp_sec": float(ts_ms) / 1000.0,
+                            "rrf_vis_caption": 1.0 / (60 + rank_idx),
+                            "matched_text": norm_text or "",
+                        })
+                except sqlite3.Error:
+                    pass
+
+            if q_e5_384 is not None and self.e5_caption_index is not None:
+                for rank_idx, hit in enumerate(self._search_e5_caption_index(q_e5_384, top_k=30), 1):
+                    vid = str(hit.get("video_id", ""))
+                    if not vid:
+                        continue
+                    vlm_caption_hits.append({
+                        "video_id": vid,
+                        "faiss_id": int(hit["faiss_id"]) if hit.get("faiss_id") is not None else None,
+                        "timestamp_sec": float(hit.get("timestamp_ms", 0.0)) / 1000.0,
+                        "rrf_vis_caption": 1.0 / (60 + rank_idx),
+                        "matched_text": str(hit.get("caption_text", "")),
+                    })
+
+            if vlm_caption_hits:
+                vis_by_fid: dict[int, dict[str, Any]] = {}
+                vis_by_vid: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                for vc in visual_candidates:
+                    if vc.get("faiss_id") is not None:
+                        vis_by_fid[int(vc["faiss_id"])] = vc
+                    vis_by_vid[vc["video_id"]].append(vc)
+
+                for hit in vlm_caption_hits:
+                    vid = hit["video_id"]
+                    fid = hit["faiss_id"]
+                    ts_sec = float(hit["timestamp_sec"])
+                    rrf_cap = float(hit["rrf_vis_caption"])
+                    matched_vc = vis_by_fid.get(fid) if fid is not None else None
+                    if matched_vc is None:
+                        for vc in vis_by_vid.get(vid, ()):
+                            if abs(float(vc["timestamp_sec"]) - ts_sec) <= 2.0:
+                                matched_vc = vc
+                                break
+                    if matched_vc is not None:
+                        matched_vc["rrf_vis_caption"] = max(
+                            float(matched_vc.get("rrf_vis_caption", 0.0)), rrf_cap
+                        )
+                    else:
+                        v_sim = self.lookup_true_visual_sim(
+                            vid,
+                            ts_sec,
+                            primary_q_864=primary_q_864,
+                            primary_q_768=primary_q_768,
+                            curve_cache=video_curve_cache,
+                        )
+                        new_vc: dict[str, Any] = {
+                            "video_id": vid,
+                            "timestamp_sec": ts_sec,
+                            "score": float(v_sim),
+                            "branch": "visual",
+                            "faiss_id": fid,
+                            "obj_boost": 0.0,
+                            "rrf_vis_caption": rrf_cap,
+                        }
+                        visual_candidates.append(new_vc)
+                        if fid is not None:
+                            vis_by_fid[fid] = new_vc
+                        vis_by_vid[vid].append(new_vc)
+
         t_fts5_end = time.perf_counter()
 
         # =========================================================================
@@ -2028,13 +2153,15 @@ class UnifiedMultimodalSearchPipeline:
         # 4a. Initialize Visual Clusters
         for rank, c in enumerate(visual_candidates, 1):
             rrf_val = 1.0 / (k_rrf + rank)
+            rrf_vis_cap = float(c.get("rrf_vis_caption", 0.0))
             cl_obj = {
                 "video_id": c["video_id"],
                 "rep_timestamp": c["timestamp_sec"],
                 "visual_sim": c["score"],
                 "faiss_id": c.get("faiss_id"),
                 "obj_boost": float(c.get("obj_boost", 0.0)),
-                "rrf_vis": rrf_val,
+                "rrf_vis": rrf_val + 0.5 * rrf_vis_cap,
+                "rrf_vis_caption": rrf_vis_cap,
                 "ocr_rrfs": [],
                 "asr_rrfs": [],
                 "branches": {c.get("branch", "visual")},
@@ -2468,11 +2595,12 @@ class UnifiedMultimodalSearchPipeline:
 
             s_vis_blend_val = float(best_cl.get("visual_sim", 0.0))
             subclause_weak_val = float(video_min_clause_sim.get(vid, s_vis_blend_val))
-            inside_scores = [x[0] for x in vid_items if best_st <= x[3] <= best_et]
-            outside_scores = [x[0] for x in vid_items if not (best_st <= x[3] <= best_et)]
-            mean_in = (sum(inside_scores) / len(inside_scores)) if inside_scores else s_max
-            mean_out = (sum(outside_scores) / len(outside_scores)) if outside_scores else 0.0
-            win_energy_conc = max(0.0, mean_in) / (max(0.0, mean_out) + 0.05)
+            coherence_ratio = (
+                float(local_vis_coherence) / max(s_vis_blend_val, 0.05)
+                if s_vis_blend_val > 0.0
+                else 0.0
+            )
+            win_energy_conc = min(1.5, coherence_ratio * (1.0 + 0.10 * min(adjacent_pairs, 3)))
 
             raw_ltr_cand: dict[str, Any] = {
                 "s_vis_blend_max": s_vis_blend_val,
@@ -2517,6 +2645,51 @@ class UnifiedMultimodalSearchPipeline:
                 ranking_score=video_score,
                 match_status=branch_attribution,
             ))
+
+        # Direction 4: Query-Guided Temporal Attention Pooling on Top-15 Stage 5 candidates (up to K=5 keyframes)
+        if cand_moments and ablation_config not in ("A0", "A1"):
+            cand_moments.sort(key=lambda m: float(m.ranking_score), reverse=True)
+            use_768_att = self.all_embeddings is not None and len(self.all_embeddings) > 0 and primary_q_768 is not None
+            att_q = primary_q_768.reshape(-1) if use_768_att else primary_q_864.reshape(-1)
+            att_emb_mat = self.all_embeddings if use_768_att else self.augmented_embeddings
+            if att_emb_mat is not None and len(att_emb_mat) > 0:
+                for idx_m in range(min(15, len(cand_moments))):
+                    m = cand_moments[idx_m]
+                    kf_list = self.video_keyframes.get(m.video_id, [])
+                    if not kf_list:
+                        continue
+                    win_kfs = [
+                        k for k in kf_list
+                        if (m.moment_start_seconds - 2.0) <= float(k.get("pts_time", 0.0)) <= (m.moment_end_seconds + 2.0)
+                    ]
+                    if not win_kfs:
+                        win_kfs = sorted(
+                            kf_list,
+                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - m.representative_timestamp_seconds),
+                        )[:5]
+                    elif len(win_kfs) > 5:
+                        win_kfs = sorted(
+                            win_kfs,
+                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - m.representative_timestamp_seconds),
+                        )[:5]
+                        win_kfs.sort(key=lambda k: float(k.get("pts_time", 0.0)))
+                    valid_fids = [int(k["faiss_id"]) for k in win_kfs if 0 <= int(k["faiss_id"]) < len(att_emb_mat)]
+                    if not valid_fids:
+                        continue
+                    att_sc = query_guided_temporal_attention_score(att_q, att_emb_mat[valid_fids], tau=12.0)
+                    if att_sc > 0.0:
+                        cand_moments[idx_m] = RankedMoment(
+                            moment_id=m.moment_id,
+                            video_id=m.video_id,
+                            moment_start_seconds=m.moment_start_seconds,
+                            moment_end_seconds=m.moment_end_seconds,
+                            start_original_frame_index=m.start_original_frame_index,
+                            end_original_frame_index=m.end_original_frame_index,
+                            representative_original_frame_index=m.representative_original_frame_index,
+                            representative_timestamp_seconds=m.representative_timestamp_seconds,
+                            ranking_score=float(m.ranking_score) + 0.025 * float(att_sc),
+                            match_status=m.match_status,
+                        )
 
         if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
             ltr_matrix = np.vstack([

@@ -222,7 +222,8 @@ def extract_ltr_features_22d(
     if "window_energy_concentration" in candidate and candidate["window_energy_concentration"] is not None:
         window_energy_concentration = _safe_float(candidate["window_energy_concentration"])
     else:
-        window_energy_concentration = 1.0
+        s_top3 = values["s_vis_top3_mean"]
+        window_energy_concentration = (s_top3 / max(s_vis, 0.05)) if s_vis > 0.0 else 0.0
 
     values["vis_lexical_synergy"] = vis_lexical_synergy
     values["unverified_lexical_hazard"] = unverified_lexical_hazard
