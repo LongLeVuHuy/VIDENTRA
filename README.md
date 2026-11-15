@@ -32,10 +32,11 @@ Hầu hết các hệ thống tìm kiếm video hiện nay (như các hệ thố
 | :--- | :--- |
 | **1. Vector nhúng thị giác thuần túy (`512d`/`768d`) bị mù số lượng & vị trí không gian** | **Không gian Vector Mở rộng Trực giao 864 Chiều (`864d Augmented Subspace`)**: Ghép nối có kiểm soát năng lượng giữa ngữ nghĩa toàn cục `SigLIP2` (`768d`) + biểu đồ 80 lớp đối tượng `YOLOv11n` có trọng số IDF (`80d`) + lưới bố cục không gian $3\times 3$ (`16d`). |
 | **2. Đưa nguyên câu truy vấn dài vào mọi nhánh gây nhiễu (Cross-Modal Pollution)** | **Phân rã & Định tuyến Truy vấn bằng Small-LLM (`Qwen2.5-1.5B-Instruct` GGUF)**: Tự động bóc tách câu truy vấn thành các phần riêng biệt cho `Visual`, `OCR`, `ASR`, `Spatial` và thứ tự thời gian (`before`/`after`/`then`), kèm cơ chế cache JSONL và fallback `< 1ms`. |
-| **3. Tính thời gian theo công thức xấp xỉ `frame_idx / FPS` (sai lệch nặng trên video VFR)** | **Sổ cái Thời gian Giải mã Chính xác (`Presentation-Order PTS Ledger`)**: Mọi khung hình và bằng chứng OCR/ASR đều được neo trực tiếp vào `PTS / time_base` thực tế từ luồng giải mã PyAV, không dùng phép nhân FPS xấp xỉ. |
-| **4. Hợp nhất điểm bằng trọng số cộng tay tĩnh (dễ bị nhiễu lời thoại ASR cướp hạng 1)** | **Bộ Xếp Hạng Học Máy 22 Chiều Có Ràng Buộc Đơn Điệu (`Synergistic-CrossLTR 22d`) + Cổng Chặn Nhiễu**: Học trọng số bằng 5-Fold GroupKFold Cross-Validation kết hợp đặc trưng tương tác nhân tính (`vis_lexical_synergy`) và cổng kiểm chứng hình ảnh, đưa tỷ lệ `Pure-ASR False Positive Top-1 = 0`. |
-| **5. So khớp từng mệnh đề độc lập, bỏ qua thứ tự trước – sau của hành động** | **Đối sánh Tập Mệnh đề `MV-SetSim` & Quy hoạch động `SE-Viterbi`**: Vừa ép ứng viên phải thỏa mãn mệnh đề yếu nhất (`subclause_weakest_link`), vừa căn chỉnh chuỗi sự kiện theo đúng chiều mũi tên thời gian. |
-| **6. Cắt đoạn thời gian theo cửa sổ trượt cố định (Sliding Window cứng nhắc)** | **Mở Rộng Biên Tương Phản Thích Ứng (`Adaptive Boundary Expansion`) & Đa Đỉnh `NMS-MultiPeak`**: Tự động co giãn biên `[start_sec, end_sec]` theo độ dốc tương đồng thực tế của từng video và trích xuất đa khoảnh khắc (`_win1`, `_win2`, `_win3`). |
+| **3. Nhận diện chữ (OCR) & lời thoại (ASR) đơn ngữ thường sai dấu tiếng Việt** | **Định tuyến Chuyên gia Song ngữ Anh – Việt (`PaddleOCR` + `VietOCR` & `Faster-Whisper` + `PhoWhisper-small`)**: Kết hợp `PaddleOCR`/`RapidOCR` với **`VietOCR` (`vgg_transformer`)** qua bộ định tuyến thích ứng `OCRRouter`, và kết hợp `Faster-Whisper` với **`PhoWhisper-small` (`vinai/PhoWhisper-small`)** cho tiếng Việt, kèm chuẩn hóa kép có dấu / không dấu (`fold_diacritics`). |
+| **4. Tính thời gian theo công thức xấp xỉ `frame_idx / FPS` (sai lệch nặng trên video VFR)** | **Sổ cái Thời gian Giải mã Chính xác (`Presentation-Order PTS Ledger`)**: Mọi khung hình và bằng chứng OCR/ASR đều được neo trực tiếp vào `PTS / time_base` thực tế từ luồng giải mã PyAV, không dùng phép nhân FPS xấp xỉ. |
+| **5. Hợp nhất điểm bằng trọng số cộng tay tĩnh (dễ bị nhiễu lời thoại ASR cướp hạng 1)** | **Bộ Xếp Hạng Học Máy 22 Chiều Có Ràng Buộc Đơn Điệu (`Synergistic-CrossLTR 22d`) + Cổng Chặn Nhiễu**: Học trọng số bằng 5-Fold GroupKFold Cross-Validation kết hợp đặc trưng tương tác nhân tính (`vis_lexical_synergy`) và cổng kiểm chứng hình ảnh, đưa tỷ lệ `Pure-ASR False Positive Top-1 = 0`. |
+| **6. So khớp từng mệnh đề độc lập, bỏ qua thứ tự trước – sau của hành động** | **Đối sánh Tập Mệnh đề `MV-SetSim` & Quy hoạch động `SE-Viterbi`**: Vừa ép ứng viên phải thỏa mãn mệnh đề yếu nhất (`subclause_weakest_link`), vừa căn chỉnh chuỗi sự kiện theo đúng chiều mũi tên thời gian. |
+| **7. Cắt đoạn thời gian theo cửa sổ trượt cố định (Sliding Window cứng nhắc)** | **Mở Rộng Biên Tương Phản Thích Ứng (`Adaptive Boundary Expansion`) & Đa Đỉnh `NMS-MultiPeak`**: Tự động co giãn biên `[start_sec, end_sec]` theo độ dốc tương đồng thực tế của từng video và trích xuất đa khoảnh khắc (`_win1`, `_win2`, `_win3`). |
 
 ---
 
@@ -63,8 +64,9 @@ flowchart TD
 2. **Stage 2 — Mã hóa Đa Biểu diễn 864 Chiều & Truy xuất Thị giác (`864d Visual Retrieval & MV-SetSim`)**:
    - Mã hóa truy vấn bằng cơ chế Dual-Prompt Ensemble (`0.75 * raw_query + 0.25 * frame_prompt`) qua `SigLIP2` (`768d`), sau đó ghép nối trực giao với vector đối tượng `COCO-IDF` (`80d`) và vector bố cục lưới $3\times 3$ (`16d`) để tạo thành vector `864d`.
    - Truy vấn chỉ mục `FAISS IndexFlatIP` (`864d`) kết hợp tính điểm bao phủ mệnh đề **`MV-SetSim`** (`subclause_weakest_link`) và căn chỉnh thứ tự sự kiện bằng quy hoạch động **`SE-Viterbi`** (`viterbi_subevent_localization`).
-3. **Stage 3 — Truy xuất Từ vựng & Ngữ nghĩa Dày đặc (`FTS5 BM25` + `Dense E5 Fallback`)**:
-   - Tìm kiếm độc lập trên bảng `ocr_fts` và `asr_fts` trong `SQLite FTS5` với bộ lọc độ đặc hiệu từ khóa (`high_spec_tokens`), gốc từ hình thái học và ghép cặp từ liền kề (`compound_tokens` chống lỗi dính chữ OCR).
+3. **Stage 3 — Truy xuất Từ vựng Song ngữ (`PaddleOCR + VietOCR` / `Faster-Whisper + PhoWhisper`) & Ngữ nghĩa Dày đặc (`Dense E5`)**:
+   - Bằng chứng chữ trên màn hình được trích xuất qua bộ định tuyến `OCRRouter` ([src/videntra/ocr/routing.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/ocr/routing.py)) kết hợp **`PaddleOCR`/`RapidOCR`** với mô hình chuyên gia tiếng Việt **`VietOCR` (`vgg_transformer`)**; bằng chứng lời thoại được nhận dạng qua **`Faster-Whisper`** kết hợp chuyên gia tiếng Việt **`PhoWhisper-small` (`vinai/PhoWhisper-small`)** ([src/videntra/asr/transcription.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/asr/transcription.py)).
+   - Tìm kiếm độc lập trên bảng `ocr_fts` và `asr_fts` trong `SQLite FTS5` (lưu song song cả văn bản nguyên dấu và văn bản gập dấu `fold_diacritics`) với bộ lọc độ đặc hiệu từ khóa (`high_spec_tokens`), gốc từ hình thái học và ghép cặp từ liền kề (`compound_tokens` chống lỗi dính chữ OCR).
    - Nếu truy vấn có ý định tìm chữ/thoại (`has_lexical_modality_intent`) nhưng kết quả FTS5 thưa (`< 5` ứng viên do lỗi chính tả OCR hoặc từ đồng nghĩa), hệ thống tự động kích hoạt nhánh **`Dense E5` (`intfloat/multilingual-e5-small` 384d FAISS)**.
 4. **Stage 4 — Hợp nhất RRF Thích ứng & Gom cụm Thời gian (`Cross-Modal RRF & Temporal Clustering`)**:
    - Hợp nhất các ứng viên từ 3 nhánh (`Visual`, `OCR`, `ASR`) bằng Reciprocal Rank Fusion có cổng kiểm chứng chéo (`True Visual Rescoring` đọc trực tiếp từ mảng memory-mapped trên đĩa để mọi ứng viên OCR/ASR đều được chấm điểm hình ảnh thật).
@@ -126,8 +128,10 @@ pip install -e .
 Hệ thống sử dụng các mô hình cục bộ nằm trong thư mục `models/` (đã được cấu hình tự động):
 - `models/siglip2/`: Trọng số mô hình thị giác – ngôn ngữ `google/siglip2-base-patch16-224` (`768d`).
 - `models/llm/`: Trọng số mô hình phân rã truy vấn `qwen2.5-1.5b-instruct-q4_k_m.gguf` (chạy trên CPU/GPU qua `llama-cpp-python`) hoặc thư mục HuggingFace `qwen2.5-1.5b-instruct/`.
+- `models/ocr/`: Trọng số nhận diện chữ trên màn hình gồm **`VietOCR` (`models/ocr/vietocr/vgg_transformer.pth`)** chuyên biệt cho tiếng Việt có dấu và **`PaddleOCR` (`models/ocr/paddleocr_en/`)** cho phát hiện hộp chữ & nhận diện đa ngôn ngữ (được điều phối tự động qua `OCRRouter`).
+- `models/asr/`: Trọng số nhận diện lời thoại gồm **`PhoWhisper-small` (`models/asr/phowhisper_small/` — `vinai/PhoWhisper-small`)** chuyên biệt cho tiếng Việt (`PhoWhisperTranscriber`) và **`Faster-Whisper` (`models/asr/faster_whisper_small.pointer.json`)** cho tiếng Anh/đa ngôn ngữ.
+- `models/detection/`: Trọng số phát hiện 80 lớp đối tượng COCO `YOLOv11n`.
 - `models/ranking/videntra_ltr_v1.json`: Trọng số bộ xếp hạng học máy 22 chiều (`LearnedRankerLTR`).
-- `models/detection/`, `models/ocr/`, `models/asr/`: Trọng số `YOLOv11n`, `PaddleOCR` và `Faster-Whisper`.
 
 ---
 
