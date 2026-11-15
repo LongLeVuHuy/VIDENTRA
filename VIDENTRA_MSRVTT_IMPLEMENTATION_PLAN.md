@@ -1,8 +1,25 @@
 # Kế hoạch triển khai và đo Hit@1 MSR-VTT cho Antigravity
 
-Cập nhật sau audit commit `a2585ba`. Antigravity sửa và kiểm thử bốn lỗi bên dưới, sau đó đo A5 rules với Qwen2.5‑1.5B gốc dùng `extractive-v2`. Nếu Hit@1 trên tune bằng hoặc thấp hơn A5 rules, chuyển sang train LoRA trên Kaggle trong cùng lượt triển khai. Sau đó đo phân công và hợp nhất các kênh để biết thay đổi nào cải thiện truy hồi.
+Cập nhật sau lần tái kiểm commit `7fba26f`. Antigravity hoàn tất validator giữ phủ định và số lượng, rồi benchmark Qwen2.5‑1.5B gốc với prompt `extractive-v2` trên A5. Nếu Hit@1 MSR‑VTT trên tune K=20 bằng hoặc thấp hơn A5 rules, train LoRA trên Kaggle rồi chấm lại trong cùng lượt triển khai. [Kết quả tái kiểm](docs/PROGRESS.md#tái-kiểm-bốn-bản-sửa-tại-commit-a710e37)
 
-## Bốn lỗi phải sửa và cách nghiệm thu
+## Việc còn lại của validator
+
+Ba bản sửa về mặc định trên CUDA, cache prompt version và kiểm nhãn/split đã qua tái kiểm tra. Validator đã chặn clause bịa hành động, nhưng tại `validate_extractive_events` vẫn chỉ nhìn token ngay trước span khi kiểm phủ định và số lượng. Trạng từ `really` hoặc tính từ `brown` làm hai lỗi dưới đây lọt qua. `visual_clauses` đi vào embedding truy vấn phụ, nên cần kiểm trực tiếp nội dung đã được chấp nhận. [Validator](src/videntra/query/llm.py#L1182) · [Tạo truy vấn phụ](src/videntra/retrieval/unified_pipeline.py#L2292)
+
+1. Mở rộng kiểm tra từ token sát span lên phạm vi của cụm nguồn. Gắn từ phủ định với vị từ mà nó chi phối, kể cả qua trợ động từ hoặc trạng từ. Gắn số lượng với danh ngữ tương ứng, kể cả có tính từ xen giữa. Tái dùng định vị span và các danh sách token hiện có. Tôn trọng ranh giới mệnh đề và nội dung trong dấu trích dẫn để ràng buộc của cụm khác không lan sang clause đang xét.
+2. Khi clause mất một ràng buộc có tác dụng, từ chối plan và cho pipeline quay về rules với query gốc. Prompt nên yêu cầu model trích span rộng hơn để giữ cả ràng buộc. Chỉ nới cách ghép span khi có thể xác minh quan hệ với cụm nguồn. Áp dụng cùng validator cho Qwen gốc, dữ liệu SFT và export cache LoRA. Tạo cache mới từ code đã sửa và ghi commit validator trong receipt.
+3. Kiểm cả đầu ra extractor và đường fallback của pipeline. Với plan bị từ chối, assert diagnostics báo fallback, embedding câu gốc vẫn được tạo và clause mất ràng buộc không được đưa vào danh sách embedding bổ sung. Dùng các test regression hiện có bên dưới rồi chạy full suite.
+
+| Query gốc | Clause cần kiểm | Kỳ vọng |
+| --- | --- | --- |
+| `the dog is not really swimming in the pool` | `swimming in the pool` | Từ chối. Clause đầy đủ giữ `not` phải được nhận. |
+| `two brown dogs are swimming in the pool` | `dogs are swimming in the pool` | Từ chối. Clause đầy đủ giữ `two brown dogs` phải được nhận. Kiểm thêm cách viết `2 brown dogs`. |
+| `hai con chó nâu đang bơi trong hồ` | `chó nâu đang bơi trong hồ` | Từ chối mất `hai`. Clause đầy đủ giữ số và dấu phải được nhận. |
+| `con chó thật ra không hề bơi trong hồ` | `bơi trong hồ` | Từ chối mất `không`. Clause giữ `không hề bơi` phải được nhận. |
+| `a man is not swimming, but a woman is running` | `a woman is running` | Không gán phủ định ở mệnh đề đầu cho mệnh đề sau. Nếu plan biểu diễn cả hai mệnh đề, clause thứ nhất phải giữ phủ định. |
+| `one person points at two brown dogs` | `one person points at two brown dogs` | Nhận và giữ đúng số lượng của từng đối tượng. Thêm ca OCR/ASR có chữ số hoặc phủ định trong dấu trích dẫn để kiểm chúng không bị gán sang mô tả hình ảnh. |
+
+## Bốn lỗi trong audit và bộ kiểm thử hồi quy
 
 | Lỗi đã tái hiện | Sửa ở đâu và sửa thế nào | Kiểm thử bắt buộc |
 | --- | --- | --- |
@@ -19,10 +36,11 @@ Cập nhật sau audit commit `a2585ba`. Antigravity sửa và kiểm thử bố
 ## Đo Qwen gốc và quyết định train LoRA
 
 1. Khóa gallery, danh sách query và nhãn, LTR/OOF, index và cấu hình A5. Dùng cùng K, `alpha=0` và `temporal_rerank_lambda=0`. Giữ clip reserve và VideoPrism tắt cho đối chứng chính. Khóa tune/confirm theo source group trước khi đọc kết quả. Nếu chạy inference trên toàn dev, chấm tune trước và giữ nhãn confirm ở evaluator. MSR‑VTT đầy đủ có 809 query. Chấm thêm toàn dev theo quy trình sau khi đã khóa lựa chọn, cạnh báo cáo confirm.
-2. Dùng checkpoint công khai Qwen2.5‑1.5B‑Instruct đã pin ở mục 2.3. Trên Kaggle GPU, chạy prewarm với cờ mới `--prompt-version extractive-v2`, cùng `--queries-file`, `--enable-llm`, `--backend transformers`, `--hf-model-id`, `--hf-revision`, `--model-revision` và `--cache-path`. Export query text/ID bằng luồng inference hiện có. Lưu cache và receipt riêng, ghi số query đầu vào, plan hợp lệ, tier rules, fallback và lý do. Ràng buộc revision/hash của model, tokenizer, prompt và cache với receipt đã kiểm.
+2. Dùng checkpoint công khai Qwen2.5‑1.5B‑Instruct đã pin ở mục 2.3. Trên Kaggle GPU, chạy prewarm với `--prompt-version extractive-v2`, `--queries-file`, `--enable-llm`, `--backend transformers`, `--hf-model-id`, `--hf-revision`, `--model-revision`, `--cache-path` và `--receipt-path`. Export query text/ID bằng luồng inference hiện có. Lưu cache và receipt riêng, ghi số query đầu vào, plan hợp lệ, tier rules, fallback và lý do. Ràng buộc revision/hash của model, tokenizer, prompt và cache với receipt đã kiểm.
 3. Capture A5 `--rules-only` và A5 đọc frozen cache, truyền `--query-plan-prompt-version extractive-v2` ở challenger. Dùng block A5/Qwen ở mục 3 và chấm cặp tại K=10, K=20. Với phần tune, thêm `--filter-manifest` và `--filter-split tune` vào comparator. Kiểm số cache hit, fallback và `llm_live_calls=0`. Báo Hit@1 dạng số đúng/mẫu số, delta điểm phần trăm, CI 95% theo source group, thắng/thua, Recall@K và MRR@10. Nếu mẫu số hoặc artifact sai, sửa lỗi và chạy lại phép đo.
-4. **Nếu delta Hit@1 trên tune ≤ 0, train LoRA ngay trên Kaggle**. Dùng K=20 làm phép so quyết định và K=10 để kiểm tra thêm. Nếu delta > 0, chốt cấu hình `extractive-v2` và chấm confirm trước khi đề xuất bật. Báo CI để thể hiện độ bất định. Dùng quyết định trên tune để tránh dùng kết quả confirm làm dữ liệu huấn luyện hoặc chọn checkpoint.
-5. Với LoRA, dùng `scripts/prepare_qwen_sft_dataset.py --source-group-manifest` trên manifest text-only có `query_text` và partition `tune` tường minh. Chia SFT train/val theo nguồn hoặc họ template và kiểm trùng query chuẩn hóa. Xác minh hash của tập đã freeze. Chạy `scripts/kaggle_train_qwen_lora.py` bằng `--train-jsonl`, `--val-jsonl`, `--base-revision` đã pin, `--prompt-version extractive-v2`, `--model-revision` riêng cho adapter, `--export-cache-queries` và `--output-dir` mới. Thử một batch với tokenizer thật để kiểm phần JSON/nhãn assistant còn đủ token, rồi train trên GPU. Lưu adapter, cache, receipt, seed, hash và thống kê fallback. Chấm A5 rules, Qwen gốc `extractive-v2` và LoRA cùng giao thức. Chọn checkpoint trên train/val hoặc tune rồi chấm confirm với cấu hình đã khóa.
+4. **Nếu số hit của `extractive-v2` ≤ số hit của A5 rules trên cùng query MSR‑VTT tune ở K=20, train LoRA ngay trên Kaggle rồi chấm lại.** K=10 là phép kiểm tra bổ sung. Nếu số hit tăng, chốt cấu hình `extractive-v2` và chấm confirm. Báo CI để thể hiện độ bất định. Dùng số hit nguyên để quyết định khi tỷ lệ phần trăm đã làm tròn.
+5. Với LoRA, dùng `scripts/prepare_qwen_sft_dataset.py --source-group-manifest` trên manifest text-only có `query_text` và partition `tune` tường minh. Chia SFT train/val theo nguồn hoặc họ template và kiểm trùng query chuẩn hóa. Xác minh hash của tập đã freeze. Chạy `scripts/kaggle_train_qwen_lora.py` bằng `--train-jsonl`, `--val-jsonl`, `--base-revision` đã pin, `--prompt-version extractive-v2`, `--model-revision` riêng cho adapter, `--export-cache-queries` và `--output-dir` mới. Thử một batch với tokenizer thật để kiểm phần JSON/nhãn assistant còn đủ token, rồi train trên GPU. Lưu adapter, cache, receipt, seed, hash và thống kê fallback.
+6. Ngay khi Kaggle xuất kết quả LoRA, capture với `--query-plan-cache`, `--query-plan-receipt`, `--query-plan-prompt-version` và `--query-plan-revision` lấy theo receipt của adapter. Dùng lại các run A5 rules và Qwen gốc cùng snapshot. Replay A5 ở K=10/20 và `alpha=0`. Chấm hai cặp LoRA với rules và LoRA với Qwen gốc trên tune. Chốt checkpoint theo train/val hoặc tune trước khi chấm confirm. Báo Hit@1 theo số đúng/mẫu số, delta, thắng/thua, CI và coverage. Ghi đường dẫn tới receipt, adapter, cache và báo cáo vào plan và `docs/PROGRESS.md`.
 
 ## Tối ưu theo kênh tín hiệu
 
@@ -90,7 +108,7 @@ Trạng thái theo lần audit đã ghi trong `docs/PROGRESS.md`.
 
 Hit@1 của A5 rules và clip reserve ở `alpha=0` là **312/809 (38,57%)**. [Audit đã chạy](benchmark/msrvtt_clip_qwen_videoprism_audit.md) · [Qwen compact-v1 trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [VideoPrism trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
 
-1. **P0, làm ngay.** Sửa bốn lỗi, chạy các ca nghiệm thu, khóa inputs benchmark và chuẩn bị cache `extractive-v2`.
+1. **P0, làm ngay.** Hoàn tất validator, chạy lại bộ hồi quy của bốn lỗi, khóa inputs benchmark và chuẩn bị cache `extractive-v2`.
 2. **P1, làm khi có artifact thật.** Chạy bốn đối chứng clip/VideoPrism và hai đối chứng Qwen. Báo số theo query trước khi tune hoặc đổi công thức.
 3. **P2, làm theo kết quả P1.** Điều chỉnh việc đổi hạng nhất, giữ thông tin query trong phân rã, hoặc tăng coverage của clip. Mỗi thử nghiệm đổi một yếu tố.
 4. **P3, trước khi đề xuất bật mặc định.** Khóa cấu hình, chấm confirm, kiểm tra hồi quy và đo chi phí qua entry point thật.
@@ -137,7 +155,7 @@ Chia dev theo `source_group` và lưu manifest tune/confirm có seed trước kh
 
 Chạy K=10 và K=20, giữ cùng K trong mỗi cặp. Dùng `alpha=0` cho R00, R10, Q00, Q10. Với VP, thử sweep nhỏ `0.25, 0.50, 0.60, 0.75, 1.00` trên phần tune. Dùng cùng `alpha`, coverage policy và shard cho R01/R11. Với RRF toàn pool, ứng viên reserve ở hạng cuối chỉ có khả năng vượt A5 hạng 1 khi `alpha>0.5`. Với rerank coverage một phần, kiểm theo các vị trí có vector và thống kê riêng việc top 1 có thể đổi.
 
-Lệnh mẫu dùng các cờ mới sau khi hoàn thành P0. Gán `VIDENTRA_QWEN_CACHE_PATH` về cache `extractive-v2` đã xác minh và `VIDENTRA_MSRVTT_FILTER_MANIFEST` về manifest tune/confirm đã khóa. Gán `VIDENTRA_VIDEOPRISM_SHARD_DIR` khi shard đã sẵn sàng để chạy thêm R01. Mỗi lần chạy tạo thư mục mới.
+Lệnh mẫu chạy sau khi validator qua kiểm thử. Gán `VIDENTRA_QWEN_CACHE_PATH` và `VIDENTRA_QWEN_RECEIPT_PATH` về cache và receipt `extractive-v2` mới, cùng `VIDENTRA_MSRVTT_FILTER_MANIFEST` về manifest tune/confirm đã khóa. Gán `VIDENTRA_VIDEOPRISM_SHARD_DIR` khi shard đã sẵn sàng để chạy thêm R01. Mỗi lần chạy tạo thư mục mới.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -145,6 +163,7 @@ $py = '.\.venv\Scripts\python.exe'
 $root = 'work/experiments/msrvtt_stage2_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
 $vp = $env:VIDENTRA_VIDEOPRISM_SHARD_DIR
 $qwen = $env:VIDENTRA_QWEN_CACHE_PATH
+$qwenReceipt = $env:VIDENTRA_QWEN_RECEIPT_PATH
 $partitionManifest = $env:VIDENTRA_MSRVTT_FILTER_MANIFEST
 $qwenRev = '989aa7980e4cf806f80c7fef2b1adb7bc71aa306'
 
@@ -162,7 +181,8 @@ Invoke-Bench scripts/compare_msr_runs.py --baseline "$root/R00_k20" --challenger
 
 # Qwen cache đã qua kiểm tra artifact
 if ($qwen -and $partitionManifest) {
-    Invoke-Bench scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --temporal-rerank-lambda 0 --query-plan-cache $qwen --query-plan-revision $qwenRev --query-plan-prompt-version extractive-v2 --out-dir "$root/qwen/pools" --eval-dir "$root/qwen/evaluation"
+    if (-not $qwenReceipt) { throw 'Gán VIDENTRA_QWEN_RECEIPT_PATH trước khi chạy đối chứng Qwen' }
+    Invoke-Bench scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --temporal-rerank-lambda 0 --query-plan-cache $qwen --query-plan-receipt $qwenReceipt --query-plan-revision $qwenRev --query-plan-prompt-version extractive-v2 --out-dir "$root/qwen/pools" --eval-dir "$root/qwen/evaluation"
     foreach ($k in 10, 20) {
         if ($k -eq 10) {
             Invoke-Bench scripts/run_clip_vp_replay.py --pools-dir "$root/rules/pools" --pool a5 --k $k --alpha 0 --out-dir "$root/R00_k$k"

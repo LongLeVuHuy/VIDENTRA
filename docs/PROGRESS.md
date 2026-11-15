@@ -1,5 +1,9 @@
 # Tiến độ triển khai VIDENTRA
 
+## Bàn giao hoàn tất validator và chấm lại Qwen cho Antigravity
+
+- Cập nhật [plan ở thư mục gốc](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md) với cách giữ phủ định và số lượng theo phạm vi cụm nguồn, ca hồi quy tiếng Anh/Việt và kiểm dự phòng về query gốc. Benchmark dùng cache `extractive-v2` mới và receipt. Điều kiện train LoRA là số hit trên MSR‑VTT tune K=20 bằng hoặc thấp hơn A5 rules, sau đó chấm LoRA với cả hai mốc trong cùng lượt triển khai. Đây là bàn giao kế hoạch.
+
 ## Tái kiểm bốn bản sửa tại commit `a710e37`
 
 - Giả lập CUDA xác nhận mặc định tắt LLM và `VIDENTRA_LLM_ENABLED=1` bật được. Tạo cache fixture qua exporter rồi xác nhận hit với cả `extractive-v2` và `lora-sft-v1`. Kiểm receipt từ chối cache bị sửa một byte.
