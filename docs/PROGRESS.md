@@ -1584,3 +1584,8 @@ Theo kế hoạch tại `VIDENTRA_BENCHMARK_REVIEW_AND_NDCG_UPGRADE_PLAN.md` qua
 - Đưa hai notebook riêng tư lên Kaggle. Qwen2.5-1.5B dùng checkpoint công khai đã pin revision/hash, chạy trên Tesla T4 với 809 query MSR-VTT dev và ghi log 129 plan hợp lệ tại mốc 140 query. VideoPrism v1 lỗi import thiếu FAISS. Đã gửi lại v2 với pin `faiss-cpu==1.13.2`, đang xếp hàng ở lần kiểm tra cuối. Chưa có artifact đầy đủ để chấm Hit@1 của hai model. [Notebook Qwen](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [Notebook VideoPrism](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
 - Tests sau thay đổi với `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` đạt **542 passed trong 89,29 giây**, 3 warnings về CPU quantization hiện có. Chưa đo latency trên phần cứng đích.
 
+## 15/11/2026 — Kế hoạch triển khai và đo Hit@1 MSR-VTT cho Antigravity
+
+- Thêm [kế hoạch triển khai ở thư mục gốc](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md) dựa trên audit `56a79c7`. Kế hoạch ghi những việc cần làm ở Kaggle, các kiểm tra phải bổ sung trước khi chấm, ma trận đối chứng clip/VideoPrism/Qwen, lệnh mẫu và điều kiện nghiệm thu.
+- Kiểm tra trạng thái Kaggle lúc 19:41 UTC+7. VideoPrism v2 đang xếp hàng GPU, Qwen đang chạy. Lượt này cập nhật kế hoạch và kiểm tra tài liệu. Số benchmark tham chiếu lấy từ audit trước.
+
