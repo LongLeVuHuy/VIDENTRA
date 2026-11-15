@@ -1,5 +1,16 @@
 # Tiến độ triển khai VIDENTRA
 
+## 15/11/2026 — Sửa Prompt `extractive-v2` & Bộ Script LoRA SFT cho Qwen2.5‑1.5B
+
+- **Tìm & sửa nguyên nhân gốc Qwen `compact-v1` sinh nhãn trừu tượng ([llm.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/query/llm.py), [test_llm_decomposer.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/query/test_llm_decomposer.py)):**
+  - `COMPACT_WIRE_SYSTEM_PROMPT` trước đó dùng `"vis": "visual action clause"` làm placeholder mẫu trong schema, khiến Qwen2.5-1.5B chép nguyên văn vào nhiều query.
+  - Bổ sung `EXTRACTIVE_V2_SYSTEM_PROMPT` (`prompt_version="extractive-v2"`) + `get_system_prompt_for_version` với ví dụ thực tế (không còn placeholder chung chung), `is_generic_placeholder_clause` và `SemanticDecomposerValidator.validate_extractive_events` kiểm tra lexical overlap với `original_query` (vẫn giữ tương thích ngược cho `compact-v1`).
+- **Tạo bộ pipeline LoRA Fine-Tuning trên Kaggle cho `Qwen/Qwen2.5-1.5B-Instruct`:**
+  - [prepare_qwen_sft_dataset.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/prepare_qwen_sft_dataset.py): sinh `sft_train.jsonl`, `sft_val.jsonl`, `sft_manifest.json` chuẩn ChatML từ các mẫu đa mệnh đề/OCR/ASR/temporal/spatial/negation + lọc chặt `--source-group-manifest` chỉ lấy `split == "tune"` (0 rò rỉ `confirm`/`heldout_test_201`/GT video IDs), xác thực 100% qua `SemanticDecomposerValidator`.
+  - [kaggle_train_qwen_lora.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/kaggle_train_qwen_lora.py): script LoRA SFT trên Kaggle T4 GPU (pin revision `989aa7980e4cf806f80c7fef2b1adb7bc71aa306`), hỗ trợ `--export-cache-queries` xuất `query_plan_cache.jsonl` + `qwen_receipt.json` (`lora-sft-v1` / `extractive-v2`), và chế độ `--dry-run` trên CPU.
+  - [test_qwen_sft_lora.py](file:///C:/Users/DELL/Desktop/VIDENTRA/tests/query/test_qwen_sft_lora.py): 6 regression tests mới (`tests/query/` → **48 passed, 3 warnings in 10.01s**).
+- **Full `pytest`:** `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` → **`560 passed, 3 warnings in 85.36s`** (exit code `0`).
+
 ## 15/11/2026 — Kết quả P1 cho Qwen2.5‑1.5B (`Q00`, `Q10`) & Trạng thái Kaggle VideoPrism
 
 - **Tải & xác minh artifact Kaggle Qwen2.5‑1.5B (`lvhuylong/videntra-msr-qwen15b-dev-20261115`, `COMPLETE` lúc 20:34 UTC+7):**

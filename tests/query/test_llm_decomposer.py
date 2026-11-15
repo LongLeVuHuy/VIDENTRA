@@ -9,10 +9,13 @@ from videntra.contracts import validate
 from videntra.query.llm import (
     AdaptiveQueryDecomposer,
     DeadlineStoppingCriteria,
+    EXTRACTIVE_V2_SYSTEM_PROMPT,
     LocalSmallLLMBackend,
     QueryComplexityGate,
     SemanticDecomposerValidator,
     expand_compact_wire_to_query_graph,
+    get_system_prompt_for_version,
+    is_generic_placeholder_clause,
 )
 from videntra.query.schemas import CompactDecomposedQuery, ModalityRoutingPlan
 
@@ -829,3 +832,142 @@ def test_unified_pipeline_query_plan_cache_and_rules_only_wiring(tmp_path: Path)
             query_plan_revision=rev,
             rules_only=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# 6. Extractive-v2 Prompt & Generic Placeholder Guardrail
+# ---------------------------------------------------------------------------
+
+
+def test_extractive_v2_prompt_has_no_generic_placeholders():
+    lowered = EXTRACTIVE_V2_SYSTEM_PROMPT.lower()
+    for bad_placeholder in (
+        "visual action clause",
+        "visual clause",
+        "action clause",
+        "scene description",
+        "event 1",
+    ):
+        assert bad_placeholder not in lowered
+    assert get_system_prompt_for_version("extractive-v2") == EXTRACTIVE_V2_SYSTEM_PROMPT
+    assert get_system_prompt_for_version("compact-v1") != EXTRACTIVE_V2_SYSTEM_PROMPT
+
+
+def test_is_generic_placeholder_clause():
+    assert is_generic_placeholder_clause("visual action clause") is True
+    assert is_generic_placeholder_clause("Visual Clause") is True
+    assert is_generic_placeholder_clause("action clause") is True
+    assert is_generic_placeholder_clause("scene description") is True
+    assert is_generic_placeholder_clause("event 1") is True
+    assert is_generic_placeholder_clause("") is True
+    assert is_generic_placeholder_clause("<exact visual words from query>") is True
+    assert is_generic_placeholder_clause("a chef slicing onions on a wooden cutting board") is False
+    assert is_generic_placeholder_clause("người phụ nữ mặc áo đỏ") is False
+
+
+def test_validator_extractive_v2_rejects_placeholders_and_ungrounded_clauses():
+    validator = SemanticDecomposerValidator()
+    query = "A chef slicing onions on a wooden cutting board in the kitchen"
+
+    for bad_vis in ("visual action clause", "action clause", "scene description", "event 1", "astronaut walking on mars"):
+        bad_wire = {
+            "lang": "en",
+            "events": [
+                {
+                    "id": "e1",
+                    "vis": bad_vis,
+                    "ocr": [],
+                    "asr": [],
+                    "objs": [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}],
+                    "pol": "pos",
+                }
+            ],
+            "spatial": [],
+            "temporal": [],
+        }
+        with pytest.raises(ValueError):
+            validator.validate_and_expand(
+                bad_wire,
+                original_query=query,
+                prompt_version="extractive-v2",
+            )
+
+    good_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "chef slicing onions on a wooden cutting board",
+                "ocr": [],
+                "asr": [],
+                "objs": [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    graph, plan = validator.validate_and_expand(
+        good_wire,
+        original_query=query,
+        prompt_version="extractive-v2",
+    )
+    assert plan.visual_clauses == ("chef slicing onions on a wooden cutting board",)
+    assert graph.parser.prompt_version == "extractive-v2"
+
+
+def test_adaptive_decomposer_extractive_v2_falls_back_on_placeholder(tmp_path: Path):
+    query = "A chef slicing onions on a wooden cutting board in the kitchen"
+    bad_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "visual action clause",
+                "ocr": [],
+                "asr": [],
+                "objs": [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(bad_wire)),
+        cache_path=tmp_path / "cache.jsonl",
+        enable_disk_cache=False,
+        prompt_version="extractive-v2",
+    )
+    plan = decomposer.decompose(query)
+    assert plan.routing_mode == "fallback"
+    assert plan.query_graph.parser.status == "fallback"
+    assert plan.query_graph.parser.prompt_version == "extractive-v2"
+    assert decomposer.get_stats()["fallback_count"] == 1
+    assert "visual action clause" not in plan.visual_clauses
+
+    good_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "chef slicing onions on a wooden cutting board",
+                "ocr": [],
+                "asr": [],
+                "objs": [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    good_decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(good_wire)),
+        cache_path=tmp_path / "cache_good.jsonl",
+        enable_disk_cache=False,
+        prompt_version="extractive-v2",
+    )
+    good_plan = good_decomposer.decompose(query)
+    assert good_plan.routing_mode == "llm_compact"
+    assert good_plan.query_graph.parser.status == "validated"
+    assert good_plan.visual_clauses == ("chef slicing onions on a wooden cutting board",)

@@ -178,6 +178,84 @@ Rules:
 3. Never invent OCR/ASR words not present in the user query.
 4. Output ONLY valid JSON."""
 
+EXTRACTIVE_V2_SYSTEM_PROMPT = """You are VIDENTRA Query Decomposer.
+Extract events from a Vietnamese/English video query into Compact Wire JSON:
+{
+  "lang": "vi|en|mixed",
+  "events": [{"id": "e1", "vis": "<exact visual words from query>", "ocr": [], "asr": [], "objs": [{"id": "p1", "cls": "person", "cnt": 1, "color": ""}], "pol": "pos|neg"}],
+  "spatial": [{"subj": "p1", "op": "left_of|right_of|above|below|inside|near|behind|in_front_of", "obj": "o1", "pol": "pos|neg"}],
+  "temporal": [{"first": "e1", "op": "before", "second": "e2"}]
+}
+Rules:
+1. "vis" MUST contain real descriptive words/phrases copied or closely extracted from the user query (e.g. "woman in red shirt", "người đàn ông mở cửa"). NEVER output generic placeholders or template labels.
+2. Order events chronologically (invert "after"/"sau khi" so first occurs before second).
+3. Put on-screen text in "ocr", spoken words/topics in "asr". Never invent OCR/ASR words not in the query.
+4. Output ONLY valid JSON.
+
+Example:
+Query: "Người phụ nữ mặc áo đỏ đứng bên trái ô tô"
+{"lang":"vi","events":[{"id":"e1","vis":"người phụ nữ mặc áo đỏ đứng bên trái ô tô","ocr":[],"asr":[],"objs":[{"id":"p1","cls":"phụ nữ","cnt":1,"color":"đỏ"},{"id":"o1","cls":"ô tô","cnt":1,"color":""}],"pol":"pos"}],"spatial":[{"subj":"p1","op":"left_of","obj":"o1","pol":"pos"}],"temporal":[]}"""
+
+
+def get_system_prompt_for_version(prompt_version: str = "compact-v1") -> str:
+    """Return the system prompt corresponding to the given prompt_version."""
+    if prompt_version == "extractive-v2":
+        return EXTRACTIVE_V2_SYSTEM_PROMPT
+    return COMPACT_WIRE_SYSTEM_PROMPT
+
+
+_GENERIC_PLACEHOLDER_CLAUSES: frozenset[str] = frozenset(
+    {
+        "visual action clause",
+        "visual clause",
+        "action clause",
+        "scene description",
+        "visual scene",
+        "action description",
+        "scene",
+        "event",
+        "description",
+        "placeholder",
+        "exact visual words from query",
+        "visual words from query",
+    }
+)
+_GENERIC_EVENT_NUM_RE = re.compile(r"^event\s*\d+$")
+_PLACEHOLDER_BRACKET_RE = re.compile(r"^[<\[][^>\]]+[>\]]$")
+_GROUNDING_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "in", "on", "at", "of", "to", "for", "with", "by",
+        "is", "are", "was", "were", "be", "and", "or", "as", "from", "that",
+        "this", "it", "into", "about", "there", "who", "which",
+        "va", "cua", "la", "co", "mot", "nhung", "cac", "dang", "da", "se",
+        "trong", "tren", "duoi", "voi", "cho", "tu", "den", "khi", "roi",
+        "nay", "kia", "do", "nguoi",
+    }
+)
+
+
+def is_generic_placeholder_clause(clause: str) -> bool:
+    """Return True if a visual clause is empty or a generic prompt template placeholder."""
+    raw = unicodedata.normalize("NFC", str(clause or "")).strip()
+    if not raw:
+        return True
+    if _PLACEHOLDER_BRACKET_RE.fullmatch(raw):
+        return True
+    normalized = _normalize_for_grounding(raw)
+    if not normalized:
+        return True
+    if normalized in _GENERIC_PLACEHOLDER_CLAUSES:
+        return True
+    if _GENERIC_EVENT_NUM_RE.fullmatch(normalized):
+        return True
+    return False
+
+
+def _meaningful_grounding_tokens(text: str) -> set[str]:
+    """Extract diacritic-folded non-stopword tokens (>=2 chars) for extractive lexical overlap."""
+    folded = fold_diacritics(_normalize_for_grounding(text))
+    return {tok for tok in folded.split() if len(tok) >= 2 and tok not in _GROUNDING_STOPWORDS}
+
 _VALID_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _QUOTED_RE = re.compile(r'["\']([^"\']+)["\']')
 _NEGATION_RE = re.compile(
@@ -373,11 +451,13 @@ class LocalSmallLLMBackend:
         n_ctx: int = 512,
         n_threads: int | None = None,
         max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        prompt_version: str = "compact-v1",
     ):
         env_path = os.environ.get("VIDENTRA_LLM_MODEL_PATH")
         resolved_path = model_path if model_path is not None else env_path
         self.model_path: Path | None = Path(resolved_path) if resolved_path else None
         self.backend = backend
+        self.prompt_version = prompt_version
         self._model_revision_is_default = model_revision is None
         if model_revision is not None:
             self.model_revision = model_revision
@@ -532,14 +612,25 @@ class LocalSmallLLMBackend:
             pass
         return model
 
-    def _invoke_sync(self, prompt: str, deadline_monotonic: float | None = None) -> str:
+    def _invoke_sync(
+        self,
+        prompt: str,
+        deadline_monotonic: float | None = None,
+        system_prompt: str | None = None,
+    ) -> str:
         if self.generate_fn is not None:
             return self.generate_fn(prompt)
+
+        resolved_system_prompt = (
+            system_prompt
+            if system_prompt is not None
+            else get_system_prompt_for_version(self.prompt_version)
+        )
 
         if self._loaded_backend == "llama_cpp" and self._llama_model is not None:
             res = self._llama_model.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": COMPACT_WIRE_SYSTEM_PROMPT},
+                    {"role": "system", "content": resolved_system_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
@@ -551,7 +642,7 @@ class LocalSmallLLMBackend:
             import torch  # type: ignore
 
             messages = [
-                {"role": "system", "content": COMPACT_WIRE_SYSTEM_PROMPT},
+                {"role": "system", "content": resolved_system_prompt},
                 {"role": "user", "content": prompt},
             ]
             text = self._hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -576,7 +667,12 @@ class LocalSmallLLMBackend:
 
         raise RuntimeError("No LLM backend loaded")
 
-    def generate(self, prompt: str, deadline_ms: int | None = None) -> str | None:
+    def generate(
+        self,
+        prompt: str,
+        deadline_ms: int | None = None,
+        system_prompt: str | None = None,
+    ) -> str | None:
         """Run inference with hard deadline_ms timeout guard. Returns None if disabled/unavailable."""
         if not self.enabled:
             return None
@@ -593,7 +689,11 @@ class LocalSmallLLMBackend:
 
         def _run_guarded() -> str:
             try:
-                return self._invoke_sync(prompt, deadline_monotonic=deadline_monotonic)
+                return self._invoke_sync(
+                    prompt,
+                    deadline_monotonic=deadline_monotonic,
+                    system_prompt=system_prompt,
+                )
             finally:
                 self._infer_lock.release()
 
@@ -1011,6 +1111,22 @@ class SemanticDecomposerValidator:
                         if "blue_or_green" not in graph.ambiguities:
                             graph.ambiguities.append("blue_or_green")
 
+    @staticmethod
+    def validate_extractive_events(compact: CompactDecomposedQuery, original_query: str) -> None:
+        """Reject generic placeholder or lexically ungrounded visual clauses in extractive mode."""
+        query_tokens = _meaningful_grounding_tokens(original_query)
+        for idx, ev in enumerate(compact.events, start=1):
+            vis = str(ev.get("vis") or "").strip()
+            if is_generic_placeholder_clause(vis):
+                raise ValueError(f"Generic placeholder visual clause in event {idx}: {vis!r}")
+            vis_tokens = _meaningful_grounding_tokens(vis)
+            if not vis_tokens:
+                raise ValueError(f"Visual clause in event {idx} has no meaningful tokens: {vis!r}")
+            if query_tokens and not (vis_tokens & query_tokens):
+                raise ValueError(
+                    f"Ungrounded visual clause in event {idx} (no lexical overlap with query): {vis!r}"
+                )
+
     def validate_and_expand(
         self,
         compact: CompactDecomposedQuery | dict[str, Any],
@@ -1019,9 +1135,18 @@ class SemanticDecomposerValidator:
         routing_mode: str = "llm_compact",
         model_revision: str | None = None,
         prompt_version: str = "compact-v1",
+        reject_generic_clauses: bool | None = None,
     ) -> tuple[QueryGraph, ModalityRoutingPlan]:
         """Run all 5 guardrail steps and return validated (QueryGraph, ModalityRoutingPlan)."""
         wire = compact if isinstance(compact, CompactDecomposedQuery) else CompactDecomposedQuery.from_dict(compact)
+
+        enforce_extractive = (
+            bool(reject_generic_clauses)
+            if reject_generic_clauses is not None
+            else (prompt_version == "extractive-v2")
+        )
+        if enforce_extractive:
+            self.validate_extractive_events(wire, original_query)
 
         # Step 3 (pre-expansion): Temporal DAG cycle check
         self.check_temporal_dag(wire)
@@ -1106,7 +1231,10 @@ class AdaptiveQueryDecomposer:
             self.llm_backend = LocalSmallLLMBackend(enabled=False, model_revision=self.model_revision)
             self.enable_disk_cache = False
         else:
-            self.llm_backend = llm_backend or LocalSmallLLMBackend(model_revision=model_revision)
+            self.llm_backend = llm_backend or LocalSmallLLMBackend(
+                model_revision=model_revision,
+                prompt_version=prompt_version,
+            )
             self.model_revision = model_revision if model_revision is not None else self.llm_backend.model_revision
             self.enable_disk_cache = enable_disk_cache
 
@@ -1514,7 +1642,13 @@ class AdaptiveQueryDecomposer:
         # Medium / Long query -> Small-LLM Compact Wire JSON + 5-step Validator
         if self.frozen_cache_path is None:
             try:
-                raw_resp = self.llm_backend.generate(norm_query)
+                if self.prompt_version == "compact-v1":
+                    raw_resp = self.llm_backend.generate(norm_query)
+                else:
+                    raw_resp = self.llm_backend.generate(
+                        norm_query,
+                        system_prompt=get_system_prompt_for_version(self.prompt_version),
+                    )
                 if raw_resp is not None:
                     json_str = _extract_json_block(raw_resp)
                     data = json.loads(json_str)
