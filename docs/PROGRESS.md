@@ -1589,3 +1589,8 @@ Theo kế hoạch tại `VIDENTRA_BENCHMARK_REVIEW_AND_NDCG_UPGRADE_PLAN.md` qua
 - Thêm [kế hoạch triển khai ở thư mục gốc](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md) dựa trên audit `56a79c7`. Kế hoạch ghi những việc cần làm ở Kaggle, các kiểm tra phải bổ sung trước khi chấm, ma trận đối chứng clip/VideoPrism/Qwen, lệnh mẫu và điều kiện nghiệm thu.
 - Kiểm tra trạng thái Kaggle lúc 19:41 UTC+7. VideoPrism v2 đang xếp hàng GPU, Qwen đang chạy. Lượt này cập nhật kế hoạch và kiểm tra tài liệu. Số benchmark tham chiếu lấy từ audit trước.
 
+## 15/11/2026 — Kiểm tra lại artifact VideoPrism và Qwen trên Kaggle
+
+- Lúc 19:47 UTC+7, `kaggle kernels status` báo VideoPrism v2 `QUEUED` và Qwen `RUNNING`. `kaggle kernels files` chưa liệt kê output cho cả hai. Log Qwen ghi mốc 380/809 query đã xử lý, với 343 plan hợp lệ, 17 fallback và 20 query thuộc tier ngắn.
+- Đối chiếu báo cáo replay lưu local và cập nhật [kế hoạch triển khai](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md). Mốc Hit@1 đã xác nhận là 312/809 (38,57%) cho A5 và clip reserve ở `alpha=0`. Các cặp dùng VideoPrism hoặc Qwen chờ artifact đầu vào.
+

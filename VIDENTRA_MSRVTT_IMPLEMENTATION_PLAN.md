@@ -12,7 +12,14 @@ Snapshot audit có 1.324 video trong gallery. `dev_full_859` có 809 query MSR-V
 | Recall@10 | 544/809 | 555/809 | 15 ca được, 4 ca mất |
 | Recall@20 | 606/809 | 611/809 | 9 ca được, 4 ca mất |
 
-Kaggle kiểm tra lúc 19:41 UTC+7 báo Qwen đang chạy và VideoPrism v2 đang xếp hàng GPU. Qwen đã có mốc log 147 plan hợp lệ sau 160 query ở lượt kiểm tra trước. Lượt VideoPrism v1 dừng do thiếu FAISS. V2 đã bổ sung `faiss-cpu==1.13.2` và cần xác nhận bằng log chạy thật. Hai model chưa có số Hit@1 xác minh tại thời điểm viết. [Audit đã chạy](benchmark/msrvtt_clip_qwen_videoprism_audit.md) · [Qwen trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [VideoPrism trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
+Kaggle CLI kiểm tra lúc 19:47 UTC+7 ngày 15/11/2026. Cả hai notebook chưa có tệp output để tải.
+
+| Notebook | Trạng thái | Kết quả có thể xác minh |
+| --- | --- | --- |
+| VideoPrism v2 | `QUEUED` | Đang chờ GPU. Lượt v1 dừng do thiếu FAISS và v2 đã bổ sung `faiss-cpu==1.13.2`. Chờ shard thật để chấm R01 và R11. |
+| Qwen2.5-1.5B | `RUNNING` | Log mốc 380/809 query ghi 343 plan qua validator, 17 fallback và 20 query thuộc tier ngắn. Chờ cache hoàn chỉnh để chấm Q00 và Q10. |
+
+Mốc Hit@1 đã đo vẫn là **312/809 (38,57%)** của A5 và clip reserve với `alpha=0`. Chênh lệch Hit@1 của VideoPrism và Qwen đang chờ artifact. [Audit đã chạy](benchmark/msrvtt_clip_qwen_videoprism_audit.md) · [Qwen trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [VideoPrism trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
 
 1. **P0, làm ngay.** Khóa các inputs benchmark, kiểm tra artifact và bảo đảm evaluator nhận đúng đối chứng. Hoàn tất hai notebook hiện có.
 2. **P1, làm khi có artifact thật.** Chạy bốn đối chứng clip/VideoPrism và hai đối chứng Qwen. Báo số theo query trước khi tune hoặc đổi công thức.
