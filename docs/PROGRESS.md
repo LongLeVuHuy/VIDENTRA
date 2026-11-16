@@ -1,5 +1,12 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 17/11/2026 — Nghiên cứu nâng Video Hit@1 sau Phase 9
+
+- Tạo [kế hoạch nâng Hit@1](../VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md), đối chiếu code `5e1f91b`, paper/model cards và repo upstream. SHA-256 hai file evaluation khớp receipt `41473d90`. Trong 119 lỗi MSR-VTT held-out có 92 video đích vào union và 27 vắng. Top-5 cuối có 108/191 target, trần oracle 56,54% cho rerank chỉ trên pool này.
+- Fixture tái hiện một frame lọt Top-1 sau khi blend 768d/864d dù nằm ngoài union Top-1 từng nhánh. Plan đề xuất exact selection, shortlist theo video, trace Stage 5 và truyền đúng path snapshot staging vào benchmark.
+- Kaggle CLI báo notebook VideoPrism cũ `CANCEL_ACKNOWLEDGED`, không liệt kê file output. Plan ưu tiên smoke VideoPrism, ablation Florence-2/E5/spatial P8-5 và pilot Qwen3-VL-Reranker-2B trên Top-5 cố định. Chưa submit notebook hoặc sinh predictions mới.
+- Kiểm thử `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/retrieval/test_clip_branch.py tests/evaluation/test_clip_vp_replay.py tests/indexing/test_videoprism_kaggle_pipeline.py tests/indexing/test_kaggle_offline_pipeline.py` đạt **34 passed trong 7,08 giây** trên Windows CPU. Lượt này cập nhật tài liệu.
+
 ## 17/11/2026 — Hoàn tất Phase 9 Audit Remediation (`B1–B6`) & Thực nghiệm Bước 0 (`597/597` PASS, Run `41473d90`)
 
 - **Triển khai đầy đủ `B1–B6` theo [`VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md`](file:///C:/Users/DELL/Desktop/VIDENTRA/VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md):**

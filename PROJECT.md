@@ -65,6 +65,8 @@
 
 ## 5. Trạng thái Các Cột mốc (Milestones)
 
+[Kế hoạch nâng Video Hit@1 sau Phase 9](VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md) chỉ rõ vị trí thay đổi dự kiến ở Stage 2, Stage 4–5, scorer trên shortlist và benchmark runner. Các pilot GPU dùng chung candidate capture và evaluator của dự án.
+
 [Kế hoạch sửa lỗi và tune MSR‑VTT](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md) mô tả bước hoàn thiện temporal verifier, đo shortlist, kiểm mapping P8‑5 và thử nghiệm nâng độ chính xác sau bản vá Phase 9.
 
 [Runbook truy hồi clip và VideoPrism trên Kaggle](VIDENTRA_CLIP_RETRIEVAL_VIDEOPRISM_KAGGLE_RUNBOOK.md) mô tả kiến trúc nhánh clip, artifact inference và ma trận benchmark đề xuất.
