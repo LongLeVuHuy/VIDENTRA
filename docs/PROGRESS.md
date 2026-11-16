@@ -1,5 +1,12 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 17/11/2026 — Hậu kiểm độ chính xác sau `ca11164`
+
+- Kiểm SHA-256 hai file evaluation của `0ee1a431` và ghép với `41473d90`. Dev giữ 376/859 và held-out giữ 80/201, đều 0 thắng/0 thua Hit@1; 191 query MSR-VTT held-out giữ nguyên ID Top-1. Union MSR-VTT held-out có 165 target, trong đó 93 query vẫn miss Top-1, 26 query không có target trong union.
+- Fixture replay strict dùng sai cache VLM khi query ID trùng nhưng hash câu đổi, làm đổi Top-1. Cache cũng chấp nhận duplicate pair và dùng dòng cuối. `rrf_vis_caption` có trọng số 0 trong LTR hiện hành và cả 5 fold. Notebook VideoPrism cũ vẫn `CANCEL_ACKNOWLEDGED`, không liệt kê output.
+- Cập nhật [kế hoạch nâng Hit@1, mục 10](../VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md#10-h%E1%BA%ADu-ki%E1%BB%83m-ca11164-v%C3%A0-th%E1%BB%A9-t%E1%BB%B1-th%E1%BB%AD-sau-p0-17112026) với thứ tự sửa cache, dùng VideoPrism trên A5 Top-20 và thử Qwen3-VL trên Top-5 sau khi có cache hợp lệ. Khi có gain từ tín hiệu mới, thử pairwise ranker dùng hard negatives.
+- Chạy `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` đạt **604 passed, 3 warnings trong 73,88 giây** trên Windows CPU. Lượt hậu kiểm cập nhật tài liệu, phân tích dự đoán đã lưu và chạy fixture. Chưa chạy benchmark engine hoặc GPU mới.
+
 ## 17/11/2026 — Hoàn tất Triển khai P0.1–P0.4, Sec 5.5, Chuẩn bị C1/C2/C3 & Thực nghiệm CPU P0 (`604/604` PASS, Run `0ee1a431`)
 
 - **Triển khai đầy đủ các hạng mục local trong [`VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md`](../VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md):**

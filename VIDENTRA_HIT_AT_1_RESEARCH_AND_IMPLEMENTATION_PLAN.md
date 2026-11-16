@@ -192,3 +192,37 @@ Lệnh minh họa một mức alpha. Trước lúc dùng kết quả để chọ
 - **Benchmark tham chiếu mới (`Run ID 0ee1a4317b97474a8dda740f8c7bc5a1`, đồng bộ [`benchmark/`](benchmark/)):** `dev_150` Hit@1 **`62.00%`**, MRR **`0.6571`**, nDCG@10 **`0.6770`**, Moment@0.5 **`72.73%`**, Pure-ASR FP `0/2`; `dev_full_859` **`43.77%`**, MRR **`0.5146`**; `heldout_test_201` **`39.80%`**, MRR **`0.4805`**, `leakage_free=True`, `gate_passed=True`.
 - **Chờ chạy Kaggle GPU:** `C1` (VideoPrism-LvT-B 6v×4q smoke & full shard), `C2` (`P8-5` Florence-2/E5/patches staging), `C3` (`Qwen3-VL-Reranker-2B` Top-5 / VP→VL cascade).
 
+## 10. Hậu kiểm `ca11164` và thứ tự thử sau P0 (17/11/2026)
+
+### Độ chính xác sau bản nâng cấp
+
+Ghép predictions của `41473d90` và `0ee1a431` theo query ID, câu gốc và labels. Hai file dev/held-out của run mới khớp SHA-256 trong local receipt và khớp byte với bản dưới `benchmark/`. Tất cả hash snapshot chung giữa hai receipt đều khớp. Run mới ghi `807839d dirty`, `publish_reference=false`. Giữ kết quả này làm mốc lịch sử và dùng checkout sạch khi chạy phép xác nhận challenger.
+
+| Tập | Hit@1 cũ → mới | Thay đổi ID Top-1 | Thắng/thua Hit@1 |
+| --- | ---: | ---: | ---: |
+| Dev đầy đủ | 376 → 376/859 (43,77%) | 0/859 | 0/0 |
+| Held-out hỗn hợp | 80 → 80/201 (39,80%) | 1/201 | 0/0 |
+| MSR-VTT held-out | 72 → 72/191 (37,70%) | 0/191 | 0/0 |
+
+MSR-VTT held-out hiện có **165/191 target trong union**, tăng một so với run cũ. Trong 119 miss Top-1, **93 đã có target trong union**, 26 vắng. Top-5 cuối có 108 target, Top-10 cuối có 129 target, tương ứng trần oracle **56,54%** và **67,54%** nếu chỉ đổi thứ tự trong các pool đó. Để chạm 50% trên tập lịch sử cần thêm **24 hit ròng**. VLM Top-5 là pilot nhanh. Nên chuẩn bị cả đường đưa ứng viên từ hạng 6–20 lên Top-5 bằng tín hiệu video trước khi dùng VLM.
+
+Giữ `exact + frame_topk + a5_full + rules`. `exact` sửa cách chọn và cải thiện nhẹ Hit@5/MRR trên dev, với Top-1 giữ nguyên. Các thí nghiệm thay toàn bộ visual anchors bằng video-level proposals và tắt lexical bonus cho pure-visual đều gây hồi quy. Ảnh/video scorer hiện vẫn là SigLIP2, còn ablation Consensus × LTR trước đó ghi 0 lần đổi Top-1 do LTR. Pilot tiếp theo nên thêm tín hiệu có dữ liệu riêng thay cho một vòng tune parser hoặc hệ số heuristic nữa. [Benchmark mới](benchmark/benchmark_report.md) · [Ablation CPU](docs/PROGRESS.md)
+
+### Hai điểm cần xử lý trước khi chấm artifact GPU
+
+1. **Replay VLM có thể dùng cache của câu khác.** `run_clip_vp_replay.py` fallback sang `by_qid` khi cache miss trên `query_text_sha256`. Fixture strict dùng cùng `query_id` cho “a dog swims” và “a man plays tennis” đã đổi Top-1 từ `video1` sang `video2` bằng score của câu cũ. Cache key hiện cũng ghi đè khi trùng cặp query hash/video ID, và validator chỉ kiểm có field snapshot/media/recipe. Trong strict replay, join bắt buộc bằng hash câu gốc + candidate key; xác minh snapshot fingerprint, media SHA, frame ordinals/PTS, model/processor, code/prompt và sampling recipe theo manifest inference đã freeze. Từ chối row xung đột, score cũ và cache format sai. Cho query thiếu cặp hợp lệ fallback A5 với reason và report coverage. Thêm regression đổi query text cùng ID, đổi media/snapshot, duplicate pairs và cache đủ field nhưng giá trị sai. C3 hiện có loader/replay, còn cần worker inference thực gọi reranker đã pin và xuất receipt. Lỗi cache chưa tác động run A5 vì run này chưa dùng VLM. [Replay](scripts/run_clip_vp_replay.py#L369) · [Cache loader](src/videntra/ranking/vl_reranker_cache.py#L72)
+2. **Tách rescue của caption khỏi hiệu ứng điểm.** Caption-only seeds đã tách khỏi nhánh visual. Với điểm cuối, `rrf_vis_caption` đi vào feature LTR và có weight **0** trong model fit-all lẫn cả 5 fold hiện hành. Khi P8-5 có dữ liệu, thử caption bổ sung candidate trước. Sau đó mới thử một điểm query–caption riêng trong fusion hoặc train lại ranker với feature mới, trên cùng pool. Chấm rõ candidate rescue, Hit@1 và nguồn caption sai. [Stage 6 features](src/videntra/retrieval/unified_pipeline.py#L4217) · [LTR artifact](models/ranking/videntra_ltr_v1.json)
+
+### Phương pháp nên thử và cách quyết định
+
+| Bước | Thử nghiệm | Đọc kết quả |
+| --- | --- | --- |
+| 1 | **A5 Top-20 → VideoPrism-LvT-B.** Dùng worker hiện có sau smoke GPU. Chạy A5, cosine thuần trên Top-20 và weighted RRF trên cùng pool. Chấm thêm coverage của Top-5 sau rerank. | Cosine thuần cho biết tín hiệu clip độc lập mạnh đến đâu. RRF kiểm khả năng tận dụng cả hai scorer. Nếu VP chỉ cứu nhẹ trong pool nhưng retrieval toàn bank có thêm target ngoài union, giữ VP làm nhánh candidate với quota riêng. |
+| 2 | **A5 → Qwen3-VL-Reranker-2B** trên Top-5 sau khi khóa cache, rồi **VP Top-20 → VLM Top-5** cùng recipe. Thử 4 frame theo PTS trước, đối chứng 8 frame cho query cần phân biệt hành động hoặc thứ tự. | Đo riêng số cứu/mất, hit trong nhóm có đủ scores, và Hit@1 trên toàn bộ split kể cả fallback. So cascade với VP-only để biết chi phí VLM có đem thêm gain. |
+| 3 | **Pairwise hard-negative reranking** nếu tín hiệu VP/VLM có gain nhưng fusion vẫn bỏ lỡ nhiều ca. Train trên hard negatives do A5/VP sinh, tập trung cùng hoạt động nhưng khác đối tượng, số lượng, vai trò hoặc thứ tự. | Human review nhóm mô tả chung để giảm false negatives. So linear pairwise và LightGBM trên cùng pools, group theo nguồn, chọn cấu hình trên tune. Chỉ đưa vào local khi có kết quả xác nhận và đã đo chi phí trên RTX 3060. |
+
+Đây là thay đổi ở **bước xếp hạng cuối**. Dual encoder sinh pool rộng, joint reranker xem câu và frames của từng ứng viên. Thí nghiệm VideoPrism với **toàn clip rồi đến vài cửa sổ PTS cố định** giúp phân biệt lỗi thiếu tín hiệu chuyển động với lỗi pooling mất sự kiện ngắn. Chỉ mở cửa sổ và tăng số lần chấm sau khi đã có baseline toàn clip. Cơ sở cho thiết kế retrieval → matching và mine hard negatives nằm trong các nghiên cứu gốc. [CLIP2TV](https://arxiv.org/abs/2111.05610) · [VideoCLIP](https://aclanthology.org/2021.emnlp-main.544/) · [VideoPrism](https://github.com/google-deepmind/videoprism) · [Qwen3-VL-Reranker-2B](https://huggingface.co/Qwen/Qwen3-VL-Reranker-2B)
+
+Vòng đầu vẫn dùng cổng **≥+3 pp MSR-VTT Hit@1** và paired CI có cận dưới >0 trên tập xác nhận tách nguồn chưa dùng để chọn ngưỡng. Nếu Top-20 có nhiều target nhưng joint reranker vẫn hòa, ưu tiên kiểm chất lượng pair labels và xem lỗi theo evidence trước khi train. Nếu target tiếp tục vắng khỏi pool, ưu tiên VP branch toàn gallery hoặc P8-5 caption rescue. Notebook VideoPrism cũ vẫn `CANCEL_ACKNOWLEDGED`, danh sách output rỗng khi kiểm lại. Chưa thấy artifact inference mới của VP, P8-5 hoặc VLM trong workspace được kiểm.
+
+Kiểm thử lại trên Windows CPU bằng `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider`. **604 passed, 3 warnings về quantization trong 73,88 giây**. Lượt hậu kiểm chạy fixture và đọc các predictions đã lưu. Các GPU pilot và bản sửa cache ở trên là việc triển khai tiếp theo.
