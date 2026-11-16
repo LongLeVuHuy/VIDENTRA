@@ -1,5 +1,12 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 16/11/2026 — Rà soát lại kế hoạch Phase 9 theo code và artifact Antigravity
+
+- Cập nhật [kế hoạch Phase 9](../VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md) với vị trí lỗi, cách sửa, kiểm thử hồi quy, thứ tự nâng cấp và cổng nghiệm thu. Tách Consensus mặc định trong A5 khỏi clip reserve opt-in. Giữ rules cho MSR-VTT theo replay Qwen/LoRA.
+- Đối chiếu provenance run `0e7ec648`: checkout lúc chạy là `02803a2` dirty, 19 paths. Hash của bốn source files được đối chiếu khớp với `4ba4ebc` khi tính cả CRLF của `llm.py`. SHA-256 cache Qwen base và LoRA khớp hai receipt local.
+- Ghép lại predictions đã lưu của `8c40e943` và `0e7ec648`. Held-out lịch sử tăng 78 → 80/201 (2 thắng, 0 thua, +1,00 pp, CI 95% [0,00; 2,56]); riêng MSR-VTT tăng 71 → 72/191 (1 thắng, 0 thua, +0,52 pp, CI [0,00; 1,67]). Bootstrap theo `source_group`, 10.000 lần, seed `20261115`. Cần ablation trên cùng cấu hình để đo đóng góp của Consensus.
+- Probe read-only xác nhận signature clip index bỏ sót thay đổi ở một hàng vector ngoài sample và ở PTS, còn bộ so token-set xem hai câu đảo vai trò là trùng. `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` đạt **588 passed, 3 warnings trong 75,38 giây** trên Windows CPU (PyTorch `2.15.0+cpu`). Lượt này cập nhật tài liệu. Chưa chạy engine benchmark mới, Kaggle GPU hay đo RTX 3060.
+
 ## 16/11/2026 — Audit HEAD `4ba4ebc` ([VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md](../VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md))
 
 - Phát hiện: LTR 24d gần no-op và lỗi thời so với pipeline; Consensus Boost là luật ngưỡng cứng, heldout chỉ +2/201; benchmark ghi từ cây dirty (SHA `02803a2`); kênh P8-5/spatial vẫn thiếu artifact; chữ ký ClipBranchIndex tính lại mỗi query. Pytest exit 0. Không sửa code, không chạy lại benchmark.
