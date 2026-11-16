@@ -1,4 +1,8 @@
-# Tiến độ triển khai VIDENTRA
+﻿# Tiến độ triển khai VIDENTRA
+
+## 16/11/2026 — Audit HEAD `4ba4ebc` ([VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md](../VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md))
+
+- Phát hiện: LTR 24d gần no-op và lỗi thời so với pipeline; Consensus Boost là luật ngưỡng cứng, heldout chỉ +2/201; benchmark ghi từ cây dirty (SHA `02803a2`); kênh P8-5/spatial vẫn thiếu artifact; chữ ký ClipBranchIndex tính lại mỗi query. Pytest exit 0. Không sửa code, không chạy lại benchmark.
 
 ## 16/11/2026 — Sửa Lỗi Pipeline, Nâng Cấp SigLIP2 Dual-Rank Consensus Boost, Nghiệm Thu Qwen `extractive-v2` & LoRA SFT Kaggle (`588/588` PASS)
 
@@ -1718,4 +1722,5 @@ Theo kế hoạch tại `VIDENTRA_BENCHMARK_REVIEW_AND_NDCG_UPGRADE_PLAN.md` qua
 - Lúc 19:47 UTC+7, `kaggle kernels status` báo VideoPrism v2 `QUEUED` và Qwen `RUNNING`. `kaggle kernels files` chưa liệt kê output cho cả hai. Log Qwen ghi mốc 380/809 query đã xử lý, với 343 plan hợp lệ, 17 fallback và 20 query thuộc tier ngắn.
 - Đối chiếu báo cáo replay lưu local và cập nhật [kế hoạch triển khai](../VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md). Mốc Hit@1 đã xác nhận là 312/809 (38,57%) cho A5 và clip reserve ở `alpha=0`. Các cặp dùng VideoPrism hoặc Qwen chờ artifact đầu vào.
 - Lúc 19:50 UTC+7, bổ sung mục bàn giao Antigravity vào đầu plan với lệnh kiểm tra, cách xử lý từng trạng thái, tải artifacts và chấm từng model khi sẵn sàng. VideoPrism v2 vẫn `QUEUED`, Qwen vẫn `RUNNING` và đã ghi log mốc 420/809 query với 380 plan hợp lệ. Cả hai chưa liệt kê output.
+
 
