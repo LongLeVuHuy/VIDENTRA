@@ -23,12 +23,19 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from videntra.evaluation.provenance import (
+    compute_code_sha256,
+    compute_effective_config_sha256,
     evaluate_provenance_gate,
+    get_cpu_thread_settings,
     hash_paths,
     load_ltr_model_info,
+    resolve_a5_preset,
+    resolve_canonical_source_group,
+    resolve_oof_fold_for_query,
+    resolve_query_source_groups,
     sha256_file,
 )
-from videntra.evaluation.split_lock import freeze_split, qvh_source_id, verify_split_lock
+from videntra.evaluation.split_lock import freeze_split, verify_split_lock
 from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
 from videntra.retrieval.clip_branch import (
     build_clip_branch_index,
@@ -120,38 +127,15 @@ def compute_gallery_fingerprint(
     return hashlib.sha256(payload).hexdigest()
 
 
-def resolve_canonical_source_group(video_id: str, dataset: str | None = None) -> tuple[str, str]:
-    """Resolve a clip/video ID to its canonical (source_group, status)."""
-    cid = str(video_id).strip()
-    if not cid:
-        raise ValueError("video_id must be non-empty")
-    avc_match = _AVC_WINDOW_RE.fullmatch(cid)
-    if avc_match:
-        return avc_match.group(1), "avc_window_stripped"
-    try:
-        return qvh_source_id(cid), "qvh_youtube_id"
-    except ValueError:
-        pass
-    if dataset == "msrvtt" or _MSRVTT_ID_RE.fullmatch(cid):
-        return cid, "msrvtt_video_id"
-    return f"unknown:{cid}", "unknown_unverified"
-
-
 def resolve_query_source_group(query: dict[str, Any]) -> tuple[str, str]:
     """Resolve canonical source_group for a query from its target_videos."""
-    targets = [str(v) for v in (query.get("target_videos") or []) if str(v).strip()]
-    if not targets:
-        raise ValueError(f"Query {query.get('query_id')} has no target_videos")
-    ds = query.get("dataset")
-    resolved = [resolve_canonical_source_group(v, dataset=ds) for v in targets]
-    groups = sorted({g for g, _ in resolved})
-    statuses = sorted({s for _, s in resolved})
-    if len(groups) == 1:
-        return groups[0], statuses[0]
-    return "|".join(groups), "+".join(statuses)
+    _groups, group_key, status_key = resolve_query_source_groups(query)
+    return group_key, status_key
 
 
 def _snapshot_ltr_state(ltr_ranker: Any) -> dict[str, Any]:
+    if hasattr(ltr_ranker, "snapshot_state"):
+        return ltr_ranker.snapshot_state()
     return {
         "is_loaded": ltr_ranker.is_loaded,
         "model_type": ltr_ranker.model_type,
@@ -164,6 +148,9 @@ def _snapshot_ltr_state(ltr_ranker: Any) -> dict[str, Any]:
 
 
 def _restore_ltr_state(ltr_ranker: Any, state: dict[str, Any]) -> None:
+    if hasattr(ltr_ranker, "restore_state"):
+        ltr_ranker.restore_state(state)
+        return
     ltr_ranker.is_loaded = state["is_loaded"]
     ltr_ranker.model_type = state["model_type"]
     ltr_ranker.weights = state["weights"].copy()
@@ -174,6 +161,9 @@ def _restore_ltr_state(ltr_ranker: Any, state: dict[str, Any]) -> None:
 
 
 def _apply_ltr_fold_payload(ltr_ranker: Any, fold_payload: dict[str, Any]) -> None:
+    if hasattr(ltr_ranker, "apply_fold_payload"):
+        ltr_ranker.apply_fold_payload(fold_payload)
+        return
     if "model_type" in fold_payload:
         ltr_ranker.model_type = str(fold_payload["model_type"]).lower()
     elif "trees" in fold_payload:
@@ -291,13 +281,23 @@ class SigLIP2ClipBranchScorer:
 
     def __init__(self, pipeline: UnifiedMultimodalSearchPipeline) -> None:
         self.pipeline = pipeline
+        cached_idx = (
+            pipeline._ensure_clip_branch_index()
+            if hasattr(pipeline, "_ensure_clip_branch_index")
+            else None
+        )
+        if cached_idx is not None:
+            self.index = cached_idx
+            self.missing_feature_videos = sorted(cached_idx.invalid_videos.keys())
+            return
+
         emb = getattr(pipeline, "all_embeddings", None)
         vid_fids = getattr(pipeline, "video_kf_fids", None) or {}
         vid_kfs = getattr(pipeline, "video_keyframes", None) or {}
         kf_map = getattr(pipeline, "keyframe_map", None) or {}
         if emb is None or len(emb) == 0 or (not vid_fids and not vid_kfs and not kf_map):
             self.index = None
-            self.missing_feature_videos: list[str] = []
+            self.missing_feature_videos = []
             return
         self.index = build_clip_branch_index(
             emb,
@@ -310,8 +310,14 @@ class SigLIP2ClipBranchScorer:
     def rank_query(self, query_text: str, top_n: int = 60) -> list[dict[str, Any]]:
         if self.index is None or not self.index.video_ids:
             return []
-        q_vec = np.asarray(self.pipeline.encode_augmented_query(query_text)[0], dtype=np.float32)
-        res = score_clip_branch(self.index, q_vec)
+        res = getattr(self.pipeline, "_last_clip_score_res", None)
+        if res is None or not getattr(res, "branch_scores", None):
+            cached_q = getattr(self.pipeline, "_last_primary_q_768", None)
+            if cached_q is not None:
+                q_vec = np.asarray(cached_q, dtype=np.float32).reshape(-1)
+            else:
+                q_vec = np.asarray(self.pipeline.encode_augmented_query(query_text)[0], dtype=np.float32)
+            res = score_clip_branch(self.index, q_vec)
         return [
             {
                 "video_id": vid,
@@ -464,6 +470,9 @@ def capture_pools(
     query_plan_prompt_version: str = "compact-v1",
     query_plan_receipt: Path | None = None,
     allow_dry_run_cache: bool = False,
+    enable_clip_consensus_boost: bool | None = None,
+    ltr_blend_weight: float | None = None,
+    a5_preset: str | None = None,
 ) -> dict[str, Any]:
     if max_k < 2:
         raise ValueError(f"max_k must be >= 2, got {max_k}")
@@ -471,6 +480,12 @@ def capture_pools(
         raise ValueError("--query-plan-cache and --query-plan-revision must be used together")
     if rules_only and query_plan_cache is not None:
         raise ValueError("--rules-only and --query-plan-cache are mutually exclusive")
+
+    resolved_consensus_boost, resolved_ltr_weight = resolve_a5_preset(
+        a5_preset,
+        enable_clip_consensus_boost=enable_clip_consensus_boost,
+        ltr_blend_weight=ltr_blend_weight,
+    )
 
     q_plan_meta = _verify_query_plan_cache_and_receipt(
         query_plan_cache=query_plan_cache,
@@ -495,11 +510,13 @@ def capture_pools(
         use_disk_cache=False,
         memory_cache_size=0,
         ltr_model_path=ltr_model_path,
+        ltr_blend_weight=resolved_ltr_weight,
         enable_spatial_patches=True,
         enable_vlm_caption_lexical=True,
         enable_vlm_caption_dense=True,
         enable_temporal_rerank=bool(float(temporal_rerank_lambda) > 0.0),
         temporal_rerank_lambda=float(temporal_rerank_lambda),
+        enable_clip_consensus_boost=resolved_consensus_boost,
         rules_only=rules_only,
         query_plan_cache=query_plan_cache,
         query_plan_revision=query_plan_revision,
@@ -515,20 +532,38 @@ def capture_pools(
         if not queries:
             raise ValueError(f"No queries loaded for split={split}")
 
-        # Verify provenance gate (OOF LTR for dev splits, zero overlap for heldout)
+        q_groups_map: dict[str, list[str]] = {}
+        q_group_meta: dict[str, tuple[str, str]] = {}
+        for q in queries:
+            qid_str = str(q["query_id"])
+            groups_list, group_key, status_key = resolve_query_source_groups(q)
+            q_groups_map[qid_str] = groups_list
+            q_group_meta[qid_str] = (group_key, status_key)
+
+        # Verify provenance gate (OOF LTR by query_id/source_group for dev splits, zero leakage for heldout)
         split_query_ids = {split: [str(q["query_id"]) for q in queries]}
         used_oof = set()
-        fold_map = ltr_info.get("fold_query_map") or {}
+        trained_set = {str(q) for q in ltr_info.get("trained_query_ids", [])}
+        trained_groups = {str(g) for g in ltr_info.get("trained_group_ids", [])}
         if ltr_info.get("has_fold_weights"):
-            trained_set = {str(q) for q in ltr_info.get("trained_query_ids", [])}
-            overlapping = [str(q["query_id"]) for q in queries if not trained_set or str(q["query_id"]) in trained_set]
-            if overlapping and all(qid in fold_map for qid in overlapping):
+            relevant_qids = [
+                str(q["query_id"])
+                for q in queries
+                if (not trained_set and not trained_groups)
+                or str(q["query_id"]) in trained_set
+                or bool(set(q_groups_map[str(q["query_id"])]) & trained_groups)
+            ]
+            if relevant_qids and all(
+                resolve_oof_fold_for_query(qid_item, q_groups_map[qid_item], ltr_info)[0] is not None
+                for qid_item in relevant_qids
+            ):
                 used_oof.add(split)
         gate = evaluate_provenance_gate(
             ltr_info,
             split_query_ids,
             used_oof_splits=used_oof,
             allow_insample_eval=allow_insample_eval,
+            split_queries={split: queries},
         )
         if not gate["gate_passed"]:
             raise RuntimeError(f"Provenance leakage gate failed: {gate}")
@@ -547,6 +582,10 @@ def capture_pools(
         seen_qids: set[str] = set()
         oof_applied = 0
         oof_fallback = 0
+        consensus_applied_count = 0
+        consensus_top1_changed_count = 0
+        ltr_applied_count = 0
+        ltr_top1_flipped_count = 0
         t_start = time.perf_counter()
 
         for q in queries:
@@ -559,8 +598,11 @@ def capture_pools(
             ds = str(q["dataset"])
 
             if ltr_ranker is not None and split in used_oof:
-                if qid in fold_map:
-                    _apply_ltr_fold_payload(ltr_ranker, fold_map[qid])
+                fold_payload, _oof_status = resolve_oof_fold_for_query(
+                    qid, q_groups_map.get(qid, ()), ltr_info
+                )
+                if fold_payload is not None:
+                    _apply_ltr_fold_payload(ltr_ranker, fold_payload)
                     oof_applied += 1
                 else:
                     oof_fallback += 1
@@ -581,6 +623,17 @@ def capture_pools(
                     _restore_ltr_state(ltr_ranker, orig_ltr_state)
 
             diag = response.get("diagnostics") or {}
+            cons_st = diag.get("clip_consensus_stats") or {}
+            ltr_st = diag.get("ltr_stats") or {}
+            if cons_st.get("applied"):
+                consensus_applied_count += 1
+            if cons_st.get("top1_changed"):
+                consensus_top1_changed_count += 1
+            if ltr_st.get("applied"):
+                ltr_applied_count += 1
+            if ltr_st.get("top1_flipped"):
+                ltr_top1_flipped_count += 1
+
             ranked_videos = response.get("ranked_videos") or []
             all_cand_moments = diag.get("all_candidate_moments") or []
 
@@ -627,7 +680,7 @@ def capture_pools(
                 "pool_size": len(reserve_max_k["pool_video_ids"]),
             })
 
-            source_group, source_status = resolve_query_source_group(q)
+            source_group, source_status = q_group_meta[qid]
             label_rows.append({
                 "query_id": qid,
                 "query_text_sha256": q_sha,
@@ -698,12 +751,22 @@ def capture_pools(
             "top_k": 10,
             "max_k": max_k,
             "branch_top_n": branch_top_n,
+            "a5_preset": a5_preset,
             "enable_spatial_patches": True,
             "enable_vlm_caption_lexical": True,
             "enable_vlm_caption_dense": True,
             "enable_temporal_rerank": bool(float(temporal_rerank_lambda) > 0.0),
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
+            "enable_clip_consensus_boost": resolved_consensus_boost,
+            "ltr_enabled": bool(ltr_model_path is not None and resolved_ltr_weight > 0.0),
+            "ltr_blend_weight": float(resolved_ltr_weight),
         }
+        effective_config_sha256 = compute_effective_config_sha256(retrieval_config)
+        code_sha256 = compute_code_sha256([Path(__file__)])
+        cpu_thread_settings = get_cpu_thread_settings()
+        valid_branch_vids = len(clip_scorer.index.video_ids) if clip_scorer.index is not None else 0
+        gallery_coverage_rate = round(valid_branch_vids / max(1, len(indexed_videos)), 6)
+
         git_commit = _get_git_commit()
         q_plan_cache_sha = q_plan_meta["cache_sha256"]
         effective_prompt_version = (
@@ -713,6 +776,7 @@ def capture_pools(
         )
         run_fingerprint_payload = {
             "git_commit": git_commit,
+            "code_sha256": code_sha256,
             "split": split,
             "db_sha256": db_sha256,
             "faiss_sha256": faiss_sha256,
@@ -721,6 +785,7 @@ def capture_pools(
             "gallery_fingerprint": gallery_fingerprint,
             "split_lock_sha256": split_lock_sha256,
             "retrieval_config": retrieval_config,
+            "effective_config_sha256": effective_config_sha256,
             "seed": int(seed),
             "device": device,
             "query_plan_mode": query_plan_source,
@@ -734,12 +799,14 @@ def capture_pools(
 
         decomposer_obj = getattr(pipeline, "query_decomposer", None)
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "git_commit": git_commit,
+            "code_sha256": code_sha256,
             "split": split,
             "max_k": max_k,
             "query_count": len(query_rows),
             "indexed_video_count": len(indexed_videos),
+            "gallery_coverage_rate": gallery_coverage_rate,
             "gallery_sha256": gallery_sha256,
             "gallery_fingerprint": gallery_fingerprint,
             "db_path": str(db_path),
@@ -754,8 +821,21 @@ def capture_pools(
             "eval_mode": gate.get("eval_mode"),
             "oof_applied_count": oof_applied,
             "oof_fallback_count": oof_fallback,
+            "a5_preset": a5_preset,
+            "enable_clip_consensus_boost": resolved_consensus_boost,
+            "ltr_blend_weight": float(resolved_ltr_weight),
+            "consensus_stats": {
+                "applied_count": consensus_applied_count,
+                "top1_changed_count": consensus_top1_changed_count,
+            },
+            "ltr_stats": {
+                "applied_count": ltr_applied_count,
+                "top1_flipped_count": ltr_top1_flipped_count,
+            },
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
             "retrieval_config": retrieval_config,
+            "effective_config_sha256": effective_config_sha256,
+            "cpu_thread_settings": cpu_thread_settings,
             "seed": int(seed),
             "device": device,
             "query_plan_source": query_plan_source,
@@ -800,6 +880,11 @@ def main() -> None:
     parser.add_argument("--model-dir", type=Path, default=Path("models/siglip2"))
     parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
     parser.add_argument("--no-ltr", action="store_true")
+    parser.add_argument("--ltr-blend-weight", type=float, default=None)
+    parser.add_argument("--a5-preset", choices=("a5_full", "a5_lite", "a5_no_consensus", "a5_no_ltr"), default=None)
+    parser.add_argument("--enable-clip-consensus-boost", dest="enable_clip_consensus_boost", action="store_true")
+    parser.add_argument("--disable-clip-consensus-boost", dest="enable_clip_consensus_boost", action="store_false")
+    parser.set_defaults(enable_clip_consensus_boost=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=20261115)
     parser.add_argument("--temporal-rerank-lambda", type=float, default=0.0)
@@ -835,6 +920,9 @@ def main() -> None:
         query_plan_prompt_version=args.query_plan_prompt_version,
         query_plan_receipt=args.query_plan_receipt,
         allow_dry_run_cache=args.allow_dry_run_cache,
+        enable_clip_consensus_boost=args.enable_clip_consensus_boost,
+        ltr_blend_weight=args.ltr_blend_weight,
+        a5_preset=args.a5_preset,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
 

@@ -549,5 +549,102 @@ def test_unified_clip_consensus_boost_promotes_unanimous_top1():
     assert updated[0].ranking_score == pytest.approx(0.522, abs=1e-6)
 
 
+def test_unified_preserves_single_non_redundant_llm_clause_and_normalizes_flat_screen(tmp_path):
+    import json
+    from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend
+
+    query = "a man holding a sign watches two flat screens"
+    wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "man holding a sign",
+                "ocr": [],
+                "asr": [],
+                "objs": [{"id": "o1", "cls": "flat screen", "cnt": 2, "color": ""}],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(wire)),
+        cache_path=tmp_path / "cache.jsonl",
+        enable_disk_cache=False,
+        query_plan_prompt_version="extractive-v2",
+    )
+    decomposer.decompose(query)
+    encoded_texts: list[str] = []
+    pipeline = _make_lightweight_unified_pipeline(query_decomposer=decomposer)
+
+    def spy_encode(texts):
+        encoded_texts.extend(texts)
+        vectors = np.zeros((len(texts), 768), dtype=np.float32)
+        vectors[:, 0] = 1.0
+        return vectors
+
+    pipeline.encode_texts = spy_encode
+    out = pipeline.search_with_metadata(snapshot_id="s1", query=query, top_k=2, mode="accurate")
+    assert "man holding a sign" in encoded_texts
+    assert out["diagnostics"]["query_plan_mode"] == "llm_compact"
+
+
+def test_unified_detector_unknown_vs_verified_empty_and_consensus_toggle():
+    from videntra.relations.entities import compute_object_verification_boost
+    from videntra.retrieval.visual import RankedMoment
+
+    reqs = [{"class_name": "laptop", "canonical_class": "laptop", "cardinality": 1, "count": 1}]
+    assert compute_object_verification_boost(reqs, [], detector_ran=False) == 0.0
+    assert compute_object_verification_boost(reqs, [], detector_ran=True) == pytest.approx(-0.10, abs=1e-6)
+
+    p_off = UnifiedMultimodalSearchPipeline(
+        lazy_load=True,
+        use_disk_cache=False,
+        enable_clip_consensus_boost=False,
+    )
+    emb_768 = np.zeros((10, 768), dtype=np.float32)
+    emb_768[2:4, 0] = 0.90
+    emb_768[2:4, 1] = 0.43589
+    emb_768[0, 0] = 0.85
+    emb_768[0, 2] = 0.52678
+    emb_768[1, 0] = 0.70
+    emb_768[1, 2] = 0.71414
+    for fid in range(4, 10):
+        emb_768[fid, 0] = 0.20
+        emb_768[fid, 3] = 0.97980
+    p_off.all_embeddings = emb_768
+    p_off.augmented_embeddings = np.pad(emb_768, ((0, 0), (0, 96)))
+    p_off.video_keyframes = {
+        "v_a5": [{"faiss_id": 0, "pts_time": 1.0}, {"faiss_id": 1, "pts_time": 2.0}],
+        "v_win": [{"faiss_id": 2, "pts_time": 1.0}, {"faiss_id": 3, "pts_time": 2.0}],
+        "v_2": [{"faiss_id": 4, "pts_time": 1.0}, {"faiss_id": 5, "pts_time": 2.0}],
+        "v_3": [{"faiss_id": 6, "pts_time": 1.0}, {"faiss_id": 7, "pts_time": 2.0}],
+        "v_4": [{"faiss_id": 8, "pts_time": 1.0}, {"faiss_id": 9, "pts_time": 2.0}],
+    }
+    p_off.video_kf_fids = {vid: [k["faiss_id"] for k in kfs] for vid, kfs in p_off.video_keyframes.items()}
+    p_off.keyframe_map = {
+        k["faiss_id"]: {"video_id": vid, "pts_time": k["pts_time"], "source_frame_index": i}
+        for vid, kfs in p_off.video_keyframes.items()
+        for i, k in enumerate(kfs)
+    }
+
+    p_off.encode_texts = lambda texts: np.tile(np.eye(1, 768, dtype=np.float32), (len(texts), 1))
+    import faiss
+
+    aug_idx = faiss.IndexFlatIP(864)
+    aug_idx.add(p_off.augmented_embeddings.astype(np.float32))
+    p_off.aug_index = aug_idx
+    p_off.index = faiss.IndexFlatIP(768)
+    p_off.index.add(emb_768)
+    res_off = p_off.search_with_metadata(snapshot_id="s1", query="person playing guitar", top_k=3, ablation_config="A5")
+    assert res_off["diagnostics"]["feature_flags"]["enable_clip_consensus_boost"] is False
+    assert res_off["diagnostics"]["clip_consensus_stats"]["applied"] is False
+    assert res_off["diagnostics"]["clip_consensus_stats"]["reason"] == "disabled_by_flag"
+    assert "ltr_stats" in res_off["diagnostics"]
+    assert "detector_evidence_status" in res_off["diagnostics"]
+
+
 
 

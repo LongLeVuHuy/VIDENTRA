@@ -359,3 +359,44 @@ class TestClipBranchPipelineIntegration:
         assert 0.0 <= top_moment.moment_start_seconds < top_moment.moment_end_seconds <= 10.0
         assert top_moment.representative_original_frame_index in (20, 40, 60)
         assert len(top_moment.evidence_frame_indices) >= 1
+
+
+def test_clip_branch_snapshot_mutation_detection_and_invalidation():
+    from videntra.retrieval.clip_branch import SnapshotMismatchError, build_clip_branch_index
+    from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
+
+    embs = np.zeros((10, 4), dtype=np.float32)
+    embs[:, 0] = 1.0
+    kfs = {
+        f"v{i}": [
+            {"faiss_id": 2 * i, "pts_time": 1.0, "source_frame_index": 10},
+            {"faiss_id": 2 * i + 1, "pts_time": 2.0, "source_frame_index": 20},
+        ]
+        for i in range(5)
+    }
+    idx = build_clip_branch_index(embs, video_keyframes=kfs)
+    idx.validate_snapshot(embs, video_keyframes=kfs)
+
+    # Tail embedding mutation (row >= 3) must be detected by full-bytes SHA-256
+    mutated = embs.copy()
+    mutated[9, 1] = 0.5
+    with pytest.raises(SnapshotMismatchError, match="Snapshot vector content mismatch"):
+        idx.validate_snapshot(mutated, video_keyframes=kfs)
+    assert idx.matches(mutated) is False
+
+    # PTS mutation must also be detected
+    kfs_pts = {k: [dict(x) for x in v] for k, v in kfs.items()}
+    kfs_pts["v4"][1]["pts_time"] = 99.0
+    with pytest.raises(SnapshotMismatchError, match="Snapshot mapping/PTS mismatch"):
+        idx.validate_snapshot(embs, video_keyframes=kfs_pts)
+
+    # In-memory cache & explicit invalidation on pipeline
+    pipe = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipe.all_embeddings = embs.copy()
+    pipe.video_keyframes = kfs
+    first = pipe._ensure_clip_branch_index()
+    assert first is not None
+    assert pipe._ensure_clip_branch_index() is first
+    pipe.invalidate_clip_branch_index()
+    second = pipe._ensure_clip_branch_index()
+    assert second is not None and second is not first

@@ -879,10 +879,12 @@ def run_p85_keyframe_backfill(
             "sha256": _sha256_file_if_exists(out_dir / "e5_caption_manifest.json"),
         }
 
+    p85_coverage_mode = "subset" if (allow_subset or not is_contiguous_dense) else "dense_all_keyframes"
     receipt = {
-        "receipt_version": "1.0",
+        "receipt_version": "1.1",
         "status": "success",
         "mode": "p85_keyframe_backfill",
+        "p85_coverage_mode": p85_coverage_mode,
         "inputs": {
             "keyframes_manifest_sha256": _sha256_file_if_exists(keyframes_manifest),
             "num_keyframes": len(kf_inputs),
@@ -891,6 +893,8 @@ def run_p85_keyframe_backfill(
         },
         "artifacts": receipt_artifacts,
         "siglip": {"model_id": SIGLIP_MODEL_ID, "revision": SIGLIP_REVISION, "weights_sha256": weights_hash},
+        "florence2": {"model_id": FLORENCE2_MODEL_ID, "revision": FLORENCE2_REVISION, "enabled": enable_florence2},
+        "e5_text": {"model_id": E5_MODEL_ID, "revision": E5_REVISION, "embedding_dim": E5_EMBEDDING_DIM},
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     receipt_path = out_dir / "p85_receipt.json"

@@ -1270,3 +1270,57 @@ def test_validator_extractive_clause_and_np_scoped_negation_cardinality(prompt_v
     assert ok_asr_quote.visual_clauses == ("sits on a bench",)
 
 
+def test_is_redundant_visual_clause_preserves_word_order_multiplicity_and_quotes():
+    from videntra.query.llm import is_redundant_visual_clause
+
+    assert (
+        is_redundant_visual_clause(
+            "comedy show with baseball player in sony channel",
+            "a comedy show with a baseball player in a sony channel",
+        )
+        is True
+    )
+    assert (
+        is_redundant_visual_clause(
+            "man kisses woman after woman hits man",
+            "woman hits man after man kisses woman",
+        )
+        is False
+    )
+    assert (
+        is_redundant_visual_clause(
+            "a dog chases",
+            "a dog chases a dog",
+        )
+        is False
+    )
+    assert (
+        is_redundant_visual_clause(
+            'person holds sign saying "end"',
+            'person holds sign saying "the end"',
+        )
+        is False
+    )
+
+
+def test_resolve_coco_class_and_normalize_object_requirements():
+    from videntra.query.rules import normalize_object_requirements, resolve_coco_class
+
+    assert resolve_coco_class("flat screen") == "tv"
+    assert resolve_coco_class("tv screen") == "tv"
+    assert resolve_coco_class("television screen") == "tv"
+    assert resolve_coco_class("phone screen") is None
+    assert resolve_coco_class("laptop screen") is None
+
+    normalized = normalize_object_requirements([
+        {"cls": "flat screen", "cnt": 1},
+        {"cls": "touch screen", "cnt": 1},
+        {"cls": "sofa", "cnt": 2, "color": "blue"},
+        {"cls": "water", "cnt": 1},
+    ])
+    assert [(r["class_name"], r["cardinality"]) for r in normalized] == [
+        ("tv", 1),
+        ("couch", 2),
+    ]
+
+

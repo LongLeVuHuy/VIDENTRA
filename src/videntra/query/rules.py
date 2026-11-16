@@ -95,7 +95,9 @@ COCO_SYNONYM_MAP: dict[str, str] = {
     "dining table": "dining table", "table": "dining table", "desk": "dining table", "bàn": "dining table",
     "toilet": "toilet", "bồn cầu": "toilet",
     # Electronics
-    "tv": "tv", "television": "tv", "monitor": "tv", "screen": "tv", "tivi": "tv", "màn hình": "tv",
+    "tv": "tv", "television": "tv", "monitor": "tv", "screen": "tv",
+    "flat screen": "tv", "tv screen": "tv", "television screen": "tv",
+    "tivi": "tv", "màn hình": "tv",
     "laptop": "laptop", "computer": "laptop", "pc": "laptop", "máy tính": "laptop",
     "mouse": "mouse", "mice": "mouse", "chuột máy tính": "mouse",
     "remote": "remote", "điều khiển": "remote",
@@ -186,6 +188,48 @@ def _singularize_coco_token(word: str) -> str:
         if cand in COCO_SYNONYM_MAP:
             return cand
     return w
+
+
+VALID_COCO_CLASSES: frozenset[str] = frozenset(COCO_SYNONYM_MAP.values())
+
+_ALLOWED_TV_SCREEN_MODIFIERS: frozenset[str] = frozenset({
+    "flat", "tv", "television", "wide", "big", "large", "lcd", "led", "plasma", "oled", "qled",
+})
+
+
+def resolve_coco_class(raw_cls: str) -> str | None:
+    """Resolve a raw object label to a canonical COCO-80 class, checking phrase aliases before head noun."""
+    cleaned = " ".join(str(raw_cls or "").strip().lower().replace("_", " ").split())
+    if not cleaned:
+        return None
+    if cleaned in COCO_SYNONYM_MAP:
+        return COCO_SYNONYM_MAP[cleaned]
+    if cleaned in VALID_COCO_CLASSES:
+        return cleaned
+
+    words = cleaned.split()
+    sing_last = _singularize_coco_token(words[-1])
+    normalized_words = words[:-1] + [sing_last]
+    normalized_phrase = " ".join(normalized_words)
+    if normalized_phrase in COCO_SYNONYM_MAP:
+        return COCO_SYNONYM_MAP[normalized_phrase]
+    if normalized_phrase in VALID_COCO_CLASSES:
+        return normalized_phrase
+
+    if len(normalized_words) >= 2:
+        bigram = f"{normalized_words[-2]} {normalized_words[-1]}"
+        if bigram in COCO_SYNONYM_MAP:
+            return COCO_SYNONYM_MAP[bigram]
+
+    head = normalized_words[-1]
+    if head in COCO_SYNONYM_MAP:
+        mapped = COCO_SYNONYM_MAP[head]
+        if head in ("screen", "monitor"):
+            modifier = normalized_words[-2] if len(normalized_words) >= 2 else ""
+            if modifier and modifier not in _ALLOWED_TV_SCREEN_MODIFIERS:
+                return None
+        return mapped
+    return None
 
 
 def _get_noun_plural_regex(noun: str) -> str:
@@ -368,6 +412,87 @@ def extract_object_requirements(query: str) -> list[dict[str, Any]]:
         req.pop("_has_num", None)
         results.append(req)
     return results
+
+
+def normalize_object_requirements(
+    raw_requirements: list[dict[str, Any]] | tuple[dict[str, Any], ...] | Any,
+) -> list[dict[str, Any]]:
+    """Normalize detector requirements to canonical COCO-80 entries while preserving span, color, and count."""
+    if not raw_requirements:
+        return []
+
+    normalized_by_class: dict[str, dict[str, Any]] = {}
+    ordered_classes: list[str] = []
+
+    def _upsert(req: dict[str, Any]) -> None:
+        canon = req["canonical_class"]
+        if canon not in normalized_by_class:
+            normalized_by_class[canon] = req
+            ordered_classes.append(canon)
+            return
+        existing = normalized_by_class[canon]
+        if int(req["cardinality"]) > int(existing["cardinality"]):
+            normalized_by_class[canon]["cardinality"] = int(req["cardinality"])
+            normalized_by_class[canon]["count"] = int(req["cardinality"])
+        if req.get("color") and not existing.get("color"):
+            existing["color"] = req["color"]
+        if req.get("span") and not existing.get("span"):
+            existing["span"] = req["span"]
+            existing["mention"] = req["span"]
+
+    for item in raw_requirements:
+        if not isinstance(item, dict):
+            continue
+        raw_name = item.get("class_name") or item.get("class") or item.get("cls")
+        if not raw_name:
+            continue
+        cls_str = str(raw_name).strip().lower()
+        canonical_cls = resolve_coco_class(cls_str)
+        raw_count = item.get("cardinality") or item.get("count") or item.get("cnt") or 1
+        try:
+            count_val = max(1, int(raw_count))
+        except (ValueError, TypeError):
+            count_val = 1
+        raw_color = str(item.get("color") or "").strip()
+        canon_color = canonicalize_color(raw_color) if raw_color else None
+        raw_span = str(item.get("span") or item.get("mention") or "").strip()
+
+        if canonical_cls is not None and canonical_cls in VALID_COCO_CLASSES:
+            entry: dict[str, Any] = {
+                **item,
+                "class": canonical_cls,
+                "class_name": canonical_cls,
+                "canonical_class": canonical_cls,
+                "cardinality": count_val,
+                "count": count_val,
+                "color": canon_color,
+            }
+            if raw_span:
+                entry["span"] = raw_span
+                entry["mention"] = raw_span
+            _upsert(entry)
+        else:
+            for ext_req in extract_object_requirements(cls_str):
+                ext_cls = resolve_coco_class(str(ext_req.get("canonical_class") or ext_req.get("class_name") or ""))
+                if ext_cls is None or ext_cls not in VALID_COCO_CLASSES:
+                    continue
+                ext_cnt = max(count_val, int(ext_req.get("cardinality") or ext_req.get("count") or 1))
+                entry = {
+                    **ext_req,
+                    "class": ext_cls,
+                    "class_name": ext_cls,
+                    "canonical_class": ext_cls,
+                    "cardinality": ext_cnt,
+                    "count": ext_cnt,
+                    "color": canon_color,
+                }
+                if raw_span or ext_req.get("mention"):
+                    span_val = raw_span or str(ext_req.get("mention"))
+                    entry["span"] = span_val
+                    entry["mention"] = span_val
+                _upsert(entry)
+
+    return [normalized_by_class[c] for c in ordered_classes]
 
 
 class RuleBasedQueryParser:

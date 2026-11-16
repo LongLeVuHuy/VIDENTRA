@@ -117,3 +117,33 @@ Ngày 16/11/2026. Khóa phân tách `tune`/`confirm` 70/30 theo `source_group` t
 - **VideoPrism (`R01`, `R11`, `Q11`):** Kaggle `lvhuylong/videntra-msr-videoprism-dev-20261115` đang ở trạng thái `KernelWorkerStatus.CANCEL_ACKNOWLEDGED`; **chờ artifact**.
 - **Kết luận nghiệm thu P1/P3:** Việc kết hợp lọc COCO-80, loại bỏ sub-clause trùng, validator `extractive-v2` và LoRA SFT đã xóa bỏ hoàn toàn sụt giảm `-7.42 pp` (`compact-v1`) xuống còn tương đương thống kê trên `confirm` (`+0.00 pp`, `0W/0L`) với độ tuân thủ schema `821/822 (99.88%)`; tuy nhiên theo tiêu chí P3 (Hit@1 trên `confirm` phải $\ge +1.0\text{ pp}$ với CI $> 0$), **giữ `rules` làm cấu hình mặc định**.
 
+---
+
+## 6. Cập nhật Kiểm toán Phase 9 (`B1–B6`) & Đối chứng Bước 0 (17/11/2026)
+
+Sau khi triển khai các bản vá `B1–B6` (lọc/chuẩn hóa COCO-80 & `detector_ran` guard, `--a5-preset` tách `ClipConsensusBoost` khỏi `LTR`, snapshot-safe `ClipBranchIndex` v2, provenance gate nối `assign_connected_source_groups`, per-fold LightGBM CV và P8-5 receipt v1.1 + atomic ingest):
+
+### 6.1. Ma trận 2×2 Consensus × LTR trên `dev_full_859` & `heldout_test_201` (cùng snapshot, rules-only)
+
+| Split | Cấu hình (`--a5-preset`) | Hit@1 | MRR | Recall@10 / nDCG@10 | Consensus (`applied/swap`) | LTR (`applied/flip`) | Delta Hit@1 vs `C0_L0` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`dev_full_859`** (`859 q`, OOF `742`) | `C0_L0` (`a5_lite --no-ltr`) | `41.56% (357/859)` | `0.5009` | `68.80% (591)` | `0 / 0` | `0 / 0` | Baseline |
+| **`dev_full_859`** | `C0_L1` (`a5_no_consensus`) | `41.56% (357/859)` | `0.5010` | `68.80% (591)` | `0 / 0` | `859 / 0` | `0W/0L (+0.00 pp)` |
+| **`dev_full_859`** | `C1_L0` (`a5_no_ltr`) | `43.77% (376/859)` | `0.5141` | `68.80% (591)` | `46 / 46` | `0 / 0` | `+2.21 pp (21W/2L, CI [+1.16, +3.37])` |
+| **`dev_full_859`** | **`C1_L1` (`a5_full`)** | **`43.77% (376/859)`** | **`0.5142`** | `68.80% (591)` | `46 / 46` | `859 / 0` | **`+2.21 pp`** (`confirm +2.71 pp, 7W/0L`) |
+| **`heldout_test_201`** (`201 q`, `clean_disjoint`) | `C0_L0` (`a5_lite --no-ltr`) | `38.81% (78/201)` | `0.4754` | nDCG@10 `0.5254` | `0 / 0` | `0 / 0` | Baseline (`Moment 0/2`) |
+| **`heldout_test_201`** | `C0_L1` (`a5_no_consensus`) | `38.81% (78/201)` | `0.4755` | nDCG@10 `0.5255` | `0 / 0` | `201 / 0` | `+0.00 pp` |
+| **`heldout_test_201`** | `C1_L0` (`a5_no_ltr`) | `39.80% (80/201)` | `0.4804` | nDCG@10 `0.5291` | `7 / 7` | `0 / 0` | `+1.00 pp` (`Moment 1/2 = 50%`) |
+| **`heldout_test_201`** | **`C1_L1` (`a5_full`)** | **`39.80% (80/201)`** | **`0.4805`** | nDCG@10 **`0.5291`** | `7 / 7` | `201 / 0` | **`+1.00 pp`** (`Within-DS 41.29%`) |
+
+### 6.2. Kiểm chứng Qwen `extractive-v2` (`Q00`) & `lora-sft-v1` (`L00`) hậu-B1 (`dev_full_859`)
+
+- **`Q00` (`extractive-v2`, `205` cache hits) vs `C1_L1` (`a5_full`, rules-only):** Hit@1 giữ nguyên `43.77% (376/859)` (`0W/0L`), Recall@10 khôi phục hoàn toàn từ `590/859` (bản tiền-B1) lên **`591/859`** (`+1` net recall gain so với tiền-B1; `tune +1`, `confirm -1`), MRR `0.5142 -> 0.5132`.
+- **`L00` (`lora-sft-v1`, `821` cache hits) vs `C1_L1` & tiền-B1:** `859/859 ties` so với tiền-B1 `L00_k10` (`43.66% = 375/859`, MRR `0.5134`, `0W/1L` so với `C1_L1` ở `tune`, `0W/0L` trên `confirm`, Moment@0.5 `0.6818`), tiếp tục giữ `--rules-only` + `--a5-preset a5_full` làm cấu hình mặc định.
+
+### 6.3. Lệnh tái lập preset mới (`B2`)
+```powershell
+.\.venv\Scripts\python.exe -B scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --a5-preset a5_full --rules-only --out-dir work/experiments/phase9_step0/c1_l1/pools --eval-dir work/experiments/phase9_step0/c1_l1/eval
+.\.venv\Scripts\python.exe -B scripts/run_validation_benchmark.py --splits dev_150,dev_full_859,heldout_test_201 --a5-preset a5_full
+```
+

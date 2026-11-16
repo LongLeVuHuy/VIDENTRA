@@ -56,9 +56,15 @@ from videntra.evaluation.evaluator import (
     compute_paired_sign_test_pvalue,
 )
 from videntra.evaluation.provenance import (
+    compute_code_sha256,
+    compute_effective_config_sha256,
     evaluate_provenance_gate,
+    get_cpu_thread_settings,
     hash_paths,
     load_ltr_model_info,
+    resolve_a5_preset,
+    resolve_oof_fold_for_query,
+    resolve_query_source_groups,
     verify_hashes,
 )
 
@@ -202,6 +208,8 @@ class MultimodalBenchmarkRunner:
         temporal_rerank_mode: str = "attention",
         temporal_rerank_lambda: float = 0.0,
         temporal_rerank_top_k: int = 10,
+        enable_clip_consensus_boost: bool = True,
+        ltr_blend_weight: float = 0.015,
     ):
         self.db_path = db_path
         self.faiss_path = faiss_path
@@ -222,6 +230,8 @@ class MultimodalBenchmarkRunner:
             "temporal_rerank_mode": str(temporal_rerank_mode),
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
             "temporal_rerank_top_k": int(temporal_rerank_top_k),
+            "enable_clip_consensus_boost": bool(enable_clip_consensus_boost),
+            "ltr_blend_weight": float(ltr_blend_weight),
         }
 
         print("1. Đang nạp UnifiedMultimodalSearchPipeline (SSOT)...")
@@ -234,6 +244,7 @@ class MultimodalBenchmarkRunner:
             use_disk_cache=use_disk_cache,
             memory_cache_size=0,
             ltr_model_path=ltr_model_path,
+            ltr_blend_weight=float(ltr_blend_weight),
             enable_spatial_patches=bool(enable_spatial_patches),
             enable_vlm_caption_lexical=bool(enable_vlm_caption_lexical),
             enable_vlm_caption_dense=bool(enable_vlm_caption_dense),
@@ -241,6 +252,7 @@ class MultimodalBenchmarkRunner:
             temporal_rerank_mode=str(temporal_rerank_mode),
             temporal_rerank_lambda=float(temporal_rerank_lambda),
             temporal_rerank_top_k=int(temporal_rerank_top_k),
+            enable_clip_consensus_boost=bool(enable_clip_consensus_boost),
         )
         self.indexed_videos = set(self.pipeline.video_durations.keys()) if self.pipeline.video_durations else set()
         if not self.indexed_videos and self.pipeline.keyframe_map:
@@ -377,6 +389,8 @@ def load_validation_queries(
 
 
 def _snapshot_ltr_ranker_state(ltr_ranker: Any) -> dict[str, Any]:
+    if hasattr(ltr_ranker, "snapshot_state"):
+        return ltr_ranker.snapshot_state()
     return {
         "is_loaded": ltr_ranker.is_loaded,
         "model_type": ltr_ranker.model_type,
@@ -389,6 +403,9 @@ def _snapshot_ltr_ranker_state(ltr_ranker: Any) -> dict[str, Any]:
 
 
 def _restore_ltr_ranker_state(ltr_ranker: Any, state: dict[str, Any]) -> None:
+    if hasattr(ltr_ranker, "restore_state"):
+        ltr_ranker.restore_state(state)
+        return
     ltr_ranker.is_loaded = state["is_loaded"]
     ltr_ranker.model_type = state["model_type"]
     ltr_ranker.weights = state["weights"].copy()
@@ -399,6 +416,9 @@ def _restore_ltr_ranker_state(ltr_ranker: Any, state: dict[str, Any]) -> None:
 
 
 def _apply_ltr_fold_payload(ltr_ranker: Any, fold_payload: dict[str, Any]) -> None:
+    if hasattr(ltr_ranker, "apply_fold_payload"):
+        ltr_ranker.apply_fold_payload(fold_payload)
+        return
     if "model_type" in fold_payload:
         ltr_ranker.model_type = str(fold_payload["model_type"]).lower()
     elif "trees" in fold_payload:
@@ -541,6 +561,7 @@ def evaluate_query_set(
     ablation_config: str = "A5",
     show_progress: bool = True,
     fold_query_map: dict[str, dict[str, Any]] | None = None,
+    ltr_info: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Runs evaluation on a query list and returns (summary_dict, per_query_records)."""
     if not queries:
@@ -611,10 +632,16 @@ def evaluate_query_set(
     pure_asr_fp_top1_count = 0
     oof_applied_count = 0
     oof_fallback_count = 0
+    ltr_applied_count = 0
+    ltr_top1_flipped_count = 0
+    ltr_max_abs_deltas: list[float] = []
+    consensus_applied_count = 0
+    consensus_top1_changed_count = 0
     taxonomy_counts: dict[str, int] = defaultdict(int)
     channel_agg: dict[str, dict[str, Any]] = {}
     ltr_ranker = getattr(getattr(runner, "pipeline", None), "ltr_ranker", None)
-    orig_ltr_state = _snapshot_ltr_ranker_state(ltr_ranker) if (ltr_ranker is not None and fold_query_map) else None
+    use_oof_swapping = bool(fold_query_map or (ltr_info and ltr_info.get("has_fold_weights")))
+    orig_ltr_state = _snapshot_ltr_ranker_state(ltr_ranker) if (ltr_ranker is not None and use_oof_swapping) else None
 
     ds_stats: dict[str, dict[str, list[Any]]] = defaultdict(
         lambda: {
@@ -638,10 +665,16 @@ def evaluate_query_set(
         target_vids = set(q["target_videos"])
         target_wins = q.get("target_windows", [])
 
-        if ltr_ranker is not None and fold_query_map:
+        if ltr_ranker is not None and use_oof_swapping:
             qid_str = str(q["query_id"])
-            if qid_str in fold_query_map:
-                _apply_ltr_fold_payload(ltr_ranker, fold_query_map[qid_str])
+            payload_match: dict[str, Any] | None = None
+            if ltr_info is not None:
+                q_groups, _, _ = resolve_query_source_groups(q)
+                payload_match, _status = resolve_oof_fold_for_query(qid_str, q_groups, ltr_info)
+            if payload_match is None and fold_query_map and qid_str in fold_query_map:
+                payload_match = fold_query_map[qid_str]
+            if payload_match is not None:
+                _apply_ltr_fold_payload(ltr_ranker, payload_match)
                 oof_applied_count += 1
             else:
                 oof_fallback_count += 1
@@ -656,6 +689,21 @@ def evaluate_query_set(
         timings = runner.timings
         diag = runner.diagnostics
         _collect_channel_diagnostics(diag, channel_agg)
+        if isinstance(diag, dict):
+            ltr_st = diag.get("ltr_stats")
+            if isinstance(ltr_st, dict):
+                if ltr_st.get("applied"):
+                    ltr_applied_count += 1
+                if ltr_st.get("top1_flipped"):
+                    ltr_top1_flipped_count += 1
+                if isinstance(ltr_st.get("max_abs_delta"), (int, float)):
+                    ltr_max_abs_deltas.append(float(ltr_st["max_abs_delta"]))
+            cons_st = diag.get("clip_consensus_stats")
+            if isinstance(cons_st, dict):
+                if cons_st.get("applied"):
+                    consensus_applied_count += 1
+                if cons_st.get("top1_changed"):
+                    consensus_top1_changed_count += 1
 
         required_timings = {"t_total_ms", "t_non_neural_ms", "t_faiss_ms", "t_fts5_ms",
                             "t_fusion_ms", "t_boundary_ms"}
@@ -982,6 +1030,16 @@ def evaluate_query_set(
             "fallback_count": oof_fallback_count,
             "total_queries": len(queries),
         },
+        "ltr_stats": {
+            "applied_count": ltr_applied_count,
+            "top1_flipped_count": ltr_top1_flipped_count,
+            "max_abs_delta": round(max(ltr_max_abs_deltas), 6) if ltr_max_abs_deltas else 0.0,
+            "p50_max_abs_delta": round(float(np.median(ltr_max_abs_deltas)), 6) if ltr_max_abs_deltas else 0.0,
+        },
+        "clip_consensus_stats": {
+            "applied_count": consensus_applied_count,
+            "top1_changed_count": consensus_top1_changed_count,
+        },
         "metrics_overall": {
             "video_hit_at_1": round(sum(hits1) / total_n, 4),
             "video_hit_at_1_ci95": [round(h1_ci_l, 4), round(h1_ci_h, 4)],
@@ -1180,9 +1238,19 @@ def run_benchmark(
     enable_spatial_patches: bool = True,
     enable_vlm_caption_lexical: bool = True,
     enable_vlm_caption_dense: bool = True,
+    enable_clip_consensus_boost: bool | None = None,
+    ltr_blend_weight: float | None = None,
+    a5_preset: str | None = None,
+    publish_reference: bool = False,
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
+    git_worktree = get_git_worktree_status()
+    if publish_reference and git_worktree.get("git_dirty") is not False:
+        raise RuntimeError(
+            f"Refusing --publish-reference with dirty/unknown git worktree: {git_worktree.get('git_dirty_files')}"
+        )
+
     valid_splits = ("dev_150", "dev_full_859", "heldout_test_201")
     if splits is not None:
         raw_splits = [s.strip() for s in (splits.split(",") if isinstance(splits, str) else splits) if str(s).strip()]
@@ -1196,6 +1264,12 @@ def run_benchmark(
     else:
         selected_splits = ["dev_150", "dev_full_859", "heldout_test_201"] if run_all_splits else ["dev_150"]
         run_ablation_matrix = bool(run_all_splits)
+
+    resolved_consensus_boost, resolved_ltr_weight = resolve_a5_preset(
+        a5_preset,
+        enable_clip_consensus_boost=enable_clip_consensus_boost,
+        ltr_blend_weight=ltr_blend_weight,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
@@ -1213,6 +1287,9 @@ def run_benchmark(
         "temporal_rerank_mode": str(temporal_rerank_mode),
         "temporal_rerank_lambda": float(temporal_rerank_lambda),
         "temporal_rerank_top_k": int(temporal_rerank_top_k),
+        "enable_clip_consensus_boost": resolved_consensus_boost,
+        "ltr_blend_weight": float(resolved_ltr_weight),
+        "a5_preset": a5_preset,
     }
 
     src_videntra_files = [
@@ -1247,6 +1324,8 @@ def run_benchmark(
             "temporal_rerank_mode": str(temporal_rerank_mode),
             "temporal_rerank_lambda": float(temporal_rerank_lambda),
             "temporal_rerank_top_k": int(temporal_rerank_top_k),
+            "enable_clip_consensus_boost": resolved_consensus_boost,
+            "ltr_blend_weight": float(resolved_ltr_weight),
         },
     )
     if ltr_model_path is not None:
@@ -1264,10 +1343,18 @@ def run_benchmark(
     def _can_use_oof(queries_list: list[dict[str, Any]]) -> bool:
         if not ltr_info.get("has_fold_weights"):
             return False
-        fold_map = ltr_info["fold_query_map"]
         trained_set = {str(q) for q in ltr_info.get("trained_query_ids", [])}
-        overlapping = [str(q["query_id"]) for q in queries_list if not trained_set or str(q["query_id"]) in trained_set]
-        return bool(overlapping) and all(qid in fold_map for qid in overlapping)
+        trained_groups = {str(g) for g in ltr_info.get("trained_group_ids", [])}
+        relevant: list[tuple[str, list[str]]] = []
+        for q_item in queries_list:
+            qid_str = str(q_item["query_id"])
+            q_groups, _, _ = resolve_query_source_groups(q_item)
+            if (not trained_set and not trained_groups) or qid_str in trained_set or bool(set(q_groups) & trained_groups):
+                relevant.append((qid_str, q_groups))
+        return bool(relevant) and all(
+            resolve_oof_fold_for_query(qid_item, q_grps, ltr_info)[0] is not None
+            for qid_item, q_grps in relevant
+        )
 
     used_oof_splits: set[str] = set()
     split_query_ids: dict[str, list[str]] = {}
@@ -1275,6 +1362,8 @@ def run_benchmark(
     all_disabled_channels: set[str] = set()
     all_channel_status: dict[str, dict[str, Any]] = {}
     oof_stats_by_split: dict[str, dict[str, int]] = {}
+    ltr_stats_by_split: dict[str, dict[str, Any]] = {}
+    clip_consensus_stats_by_split: dict[str, dict[str, Any]] = {}
 
     def _merge_summary_channels(s_obj: dict[str, Any], split_key: str) -> None:
         all_degraded_channels.update(s_obj.get("degraded_channels", []))
@@ -1289,6 +1378,10 @@ def run_benchmark(
                     prev["sample_reason"] = info["sample_reason"]
         if "oof_stats" in s_obj:
             oof_stats_by_split[split_key] = dict(s_obj["oof_stats"])
+        if "ltr_stats" in s_obj:
+            ltr_stats_by_split[split_key] = dict(s_obj["ltr_stats"])
+        if "clip_consensus_stats" in s_obj:
+            clip_consensus_stats_by_split[split_key] = dict(s_obj["clip_consensus_stats"])
 
     print(f"\n2. Đang thu thập câu truy vấn cho các tập đánh giá ({', '.join(selected_splits)})...")
     ablation_summaries: dict[str, dict[str, Any]] = {}
@@ -1303,8 +1396,9 @@ def run_benchmark(
         split_query_ids["dev_150"] = [str(q["query_id"]) for q in queries_dev150]
         print(f"   - dev_150          : {len(queries_dev150)} queries")
 
-        dev150_fold_map = ltr_info["fold_query_map"] if _can_use_oof(queries_dev150) else None
-        if dev150_fold_map is not None:
+        use_oof_dev150 = _can_use_oof(queries_dev150)
+        dev150_fold_map = ltr_info["fold_query_map"] if use_oof_dev150 else None
+        if use_oof_dev150:
             used_oof_splits.add("dev_150")
 
         print("\n3. BẮT ĐẦU CHẠY ĐÁNH GIÁ CHÍNH TRÊN TẬP DEV_150 (A5 FULL PIPELINE)...")
@@ -1316,6 +1410,7 @@ def run_benchmark(
             ablation_config="A5",
             show_progress=True,
             fold_query_map=dev150_fold_map,
+            ltr_info=ltr_info if use_oof_dev150 else None,
         )
         _merge_summary_channels(dev150_summary, "dev_150")
         split_raw_summaries["dev_150"] = dev150_summary
@@ -1332,6 +1427,7 @@ def run_benchmark(
                     ablation_config=cfg,
                     show_progress=True,
                     fold_query_map=dev150_fold_map,
+                    ltr_info=ltr_info if use_oof_dev150 else None,
                 )
                 _merge_summary_channels(s_cfg, f"ablation_{cfg}")
                 ablation_summaries[cfg] = s_cfg
@@ -1356,8 +1452,9 @@ def run_benchmark(
         queries_dev859 = load_validation_queries(val_dir, runner.indexed_videos, max_msrvtt=None)
         split_queries_map["dev_full_859"] = queries_dev859
         split_query_ids["dev_full_859"] = [str(q["query_id"]) for q in queries_dev859]
-        dev859_fold_map = ltr_info["fold_query_map"] if _can_use_oof(queries_dev859) else None
-        if dev859_fold_map is not None:
+        use_oof_dev859 = _can_use_oof(queries_dev859)
+        dev859_fold_map = ltr_info["fold_query_map"] if use_oof_dev859 else None
+        if use_oof_dev859:
             used_oof_splits.add("dev_full_859")
         print(f"\n5. ĐANG CHẠY TRÊN TOÀN BỘ TẬP VALIDATION (dev_full_859: {len(queries_dev859)} queries)...")
         dev859_summary, dev859_records = evaluate_query_set(
@@ -1367,6 +1464,7 @@ def run_benchmark(
             ablation_config="A5",
             show_progress=True,
             fold_query_map=dev859_fold_map,
+            ltr_info=ltr_info if use_oof_dev859 else None,
         )
         _merge_summary_channels(dev859_summary, "dev_full_859")
         split_raw_summaries["dev_full_859"] = dev859_summary
@@ -1443,12 +1541,14 @@ def run_benchmark(
         degraded_channels=all_degraded_channels,
         feature_flags=feature_flags,
         selected_splits=selected_splits,
+        split_queries=split_queries_map,
     )
     run_config = {
         "max_msrvtt": max_msrvtt,
         "run_all_splits": run_all_splits,
         "splits": selected_splits,
         "allow_insample_eval": allow_insample_eval,
+        "publish_reference": bool(publish_reference),
         "ltr_model_path": str(ltr_model_path) if ltr_model_path is not None else None,
         "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
         "ablation_config": "A5",
@@ -1459,9 +1559,18 @@ def run_benchmark(
             "max_msrvtt": max_msrvtt,
         },
     }
+    effective_config_sha256 = compute_effective_config_sha256(run_config)
+    code_sha256 = compute_code_sha256([Path(__file__).resolve()])
+    cpu_thread_settings = get_cpu_thread_settings()
+
+    gallery_coverage_rate: float | None = None
+    ensure_clip_fn = getattr(getattr(runner, "pipeline", None), "_ensure_clip_branch_index", None)
+    if callable(ensure_clip_fn) and runner.indexed_videos:
+        clip_idx = ensure_clip_fn()
+        if clip_idx is not None:
+            gallery_coverage_rate = round(len(clip_idx.video_ids) / max(1, len(runner.indexed_videos)), 6)
 
     git_sha = get_git_sha()
-    git_worktree = get_git_worktree_status()
     hardware_info = get_hardware_info(device=getattr(runner, "device", "cpu"))
     snapshot_artifacts = {
         k: v for k, v in input_hashes.items()
@@ -1469,11 +1578,15 @@ def run_benchmark(
     }
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
     final_summary = {
-        "status": "completed_leakage_free" if gate["leakage_free"] else "fit_all_leakage_detected",
+        "status": "completed_leakage_free" if gate["leakage_free"] else str(gate.get("eval_mode") or "fit_all_leakage_detected"),
         "run_id": run_id,
         "benchmark_timestamp": ts_str,
         "git_sha": git_sha,
         "git_worktree": git_worktree,
+        "code_sha256": code_sha256,
+        "effective_config_sha256": effective_config_sha256,
+        "cpu_thread_settings": cpu_thread_settings,
+        "gallery_coverage_rate": gallery_coverage_rate,
         "ltr_model_sha256": gate["ltr_model_sha256"],
         "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
         "ltr_feature_schema": gate.get("ltr_feature_schema"),
@@ -1481,7 +1594,11 @@ def run_benchmark(
         "source_group_rule": gate.get("source_group_rule"),
         "eval_mode": gate["eval_mode"],
         "overlap_with_eval": gate["overlap_with_eval"],
+        "source_group_overlap_with_eval": gate.get("source_group_overlap_with_eval", {}),
+        "heldout_source_leakage": gate.get("heldout_source_leakage", False),
         "oof_stats": oof_stats_by_split,
+        "ltr_stats": ltr_stats_by_split,
+        "clip_consensus_stats": clip_consensus_stats_by_split,
         "degraded_channels": gate["degraded_channels"],
         "disabled_channels": sorted(all_disabled_channels),
         "channel_status": all_channel_status,
@@ -1528,6 +1645,10 @@ def run_benchmark(
         "run_id": run_id,
         "git_sha": git_sha,
         "git_worktree": git_worktree,
+        "code_sha256": code_sha256,
+        "effective_config_sha256": effective_config_sha256,
+        "cpu_thread_settings": cpu_thread_settings,
+        "gallery_coverage_rate": gallery_coverage_rate,
         "ltr_model_sha256": gate["ltr_model_sha256"],
         "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
         "ltr_feature_schema": gate.get("ltr_feature_schema"),
@@ -1537,7 +1658,11 @@ def run_benchmark(
         "oof_validation_errors": gate.get("oof_validation_errors", []),
         "fold_summary": gate.get("fold_summary", []),
         "oof_stats": oof_stats_by_split,
+        "ltr_stats": ltr_stats_by_split,
+        "clip_consensus_stats": clip_consensus_stats_by_split,
         "overlap_with_eval": gate["overlap_with_eval"],
+        "source_group_overlap_with_eval": gate.get("source_group_overlap_with_eval", {}),
+        "heldout_source_leakage": gate.get("heldout_source_leakage", False),
         "eval_mode": gate["eval_mode"],
         "eval_mode_by_split": gate["eval_mode_by_split"],
         "leakage_free": gate["leakage_free"],
@@ -1577,6 +1702,10 @@ def run_benchmark(
             f"overlap_with_eval={gate['overlap_with_eval']}, leakage_free={gate['leakage_free']}. "
             "Pass --allow-insample-eval to override non-heldout overlap."
         )
+    if publish_reference and not gate["leakage_free"]:
+        raise RuntimeError(
+            f"Refusing --publish-reference when leakage_free=False (eval_mode={gate['eval_mode']})"
+        )
 
     # E9: Save immutable provenance snapshot in work/experiments/<timestamp>_<split>_<git_sha>/
     exp_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -1585,6 +1714,23 @@ def run_benchmark(
     for src_f in out_dir.iterdir():
         if src_f.is_file():
             shutil.copy2(src_f, exp_dir / src_f.name)
+
+    if publish_reference:
+        ref_dir = Path("benchmark")
+        if out_dir.resolve() != ref_dir.resolve():
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            for src_f in out_dir.iterdir():
+                if src_f.is_file():
+                    tmp_dst = ref_dir / f"{src_f.name}.tmp.{os.getpid()}"
+                    try:
+                        shutil.copy2(src_f, tmp_dst)
+                        os.replace(tmp_dst, ref_dir / src_f.name)
+                    finally:
+                        if tmp_dst.exists():
+                            try:
+                                tmp_dst.unlink()
+                            except OSError:
+                                pass
 
     runner.pipeline.close()
 
@@ -1880,6 +2026,12 @@ if __name__ == "__main__":
     parser.add_argument("--allow-insample-eval", action="store_true")
     parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
     parser.add_argument("--no-ltr", action="store_true")
+    parser.add_argument("--ltr-blend-weight", type=float, default=None)
+    parser.add_argument("--a5-preset", choices=("a5_full", "a5_lite", "a5_no_consensus", "a5_no_ltr"), default=None)
+    parser.add_argument("--enable-clip-consensus-boost", dest="enable_clip_consensus_boost", action="store_true")
+    parser.add_argument("--disable-clip-consensus-boost", dest="enable_clip_consensus_boost", action="store_false")
+    parser.set_defaults(enable_clip_consensus_boost=None)
+    parser.add_argument("--publish-reference", action="store_true")
     parser.add_argument("--temporal-rerank-mode", type=str, default="attention", choices=["attention", "mean", "mean_top2", "mean_top3"])
     parser.add_argument("--temporal-rerank-lambda", type=float, default=0.0)
     parser.add_argument("--temporal-rerank-top-k", type=int, default=10)
@@ -1903,4 +2055,8 @@ if __name__ == "__main__":
         enable_spatial_patches=not args.disable_spatial_patches,
         enable_vlm_caption_lexical=not args.disable_vlm_caption_lexical,
         enable_vlm_caption_dense=not args.disable_vlm_caption_dense,
+        enable_clip_consensus_boost=args.enable_clip_consensus_boost,
+        ltr_blend_weight=args.ltr_blend_weight,
+        a5_preset=args.a5_preset,
+        publish_reference=args.publish_reference,
     )

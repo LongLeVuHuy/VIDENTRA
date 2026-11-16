@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_NORM: float = 1e-8
 DEFAULT_RRF_K: float = 60.0
+CLIP_BRANCH_SCHEMA_VERSION: str = "clip_branch_v2"
 
 
 class SnapshotMismatchError(ValueError):
@@ -89,22 +90,59 @@ def build_dual_prompt_query_vector(
     return l2_normalize_vector(blended, min_norm=min_norm, name="dual_prompt_query")
 
 
-def compute_snapshot_signature(
-    all_embeddings: np.ndarray,
-    video_kf_fids: Mapping[str, Sequence[int]],
-) -> str:
-    """Compute a lightweight deterministic signature for snapshot consistency checks."""
+def compute_embedding_signature(all_embeddings: np.ndarray) -> str:
+    """Compute a full deterministic SHA-256 checksum over the entire embedding matrix."""
+    emb = np.asarray(all_embeddings)
     h = hashlib.sha256()
-    h.update(f"shape={all_embeddings.shape};dtype={all_embeddings.dtype};".encode("utf-8"))
-    if all_embeddings.size > 0:
-        # Hash first, middle, and last rows plus norm sum for fast mismatch detection.
-        n = all_embeddings.shape[0]
-        sample_idx = sorted({0, n // 2, n - 1})
-        h.update(np.ascontiguousarray(all_embeddings[sample_idx], dtype=np.float32).tobytes())
+    h.update(f"shape={emb.shape};dtype={emb.dtype};".encode("utf-8"))
+    if emb.size > 0:
+        h.update(np.ascontiguousarray(emb, dtype=np.float32).tobytes())
+    return h.hexdigest()
+
+
+def compute_fids_signature(video_kf_fids: Mapping[str, Sequence[int]]) -> str:
+    """Compute deterministic SHA-256 over video_id -> presentation-ordered faiss_id sequences."""
+    h = hashlib.sha256()
     for vid in sorted(video_kf_fids.keys()):
         fids = video_kf_fids[vid]
         h.update(f"{vid}:{','.join(str(int(x)) for x in fids)};".encode("utf-8"))
     return h.hexdigest()
+
+
+def compute_mapping_signature(
+    per_video_frames: Mapping[str, Sequence[tuple[int, float, int]]],
+) -> str:
+    """Compute deterministic SHA-256 over video_id -> (ordinal, faiss_id, pts_time) mappings."""
+    h = hashlib.sha256()
+    for vid in sorted(per_video_frames.keys()):
+        items = per_video_frames[vid]
+        parts = [f"{int(ord_idx)}:{int(fid)}:{float(pts):.6f}" for fid, pts, ord_idx in items]
+        h.update(f"{vid}:{'|'.join(parts)};".encode("utf-8"))
+    return h.hexdigest()
+
+
+def compute_snapshot_signature(
+    all_embeddings: np.ndarray,
+    video_kf_fids: Mapping[str, Sequence[int]] | None = None,
+    *,
+    video_keyframes: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    keyframe_map: Mapping[int, Mapping[str, Any]] | None = None,
+    schema_version: str = CLIP_BRANCH_SCHEMA_VERSION,
+) -> str:
+    """Compute a complete deterministic signature covering vectors, fids, ordinals, and PTS."""
+    emb_sig = compute_embedding_signature(all_embeddings)
+    if video_keyframes is not None or keyframe_map is not None:
+        ordered = _extract_ordered_video_frames_with_ordinals(video_keyframes, video_kf_fids, keyframe_map)
+        fids_sig = compute_fids_signature({vid: [fid for fid, _, _ in pairs] for vid, pairs in ordered.items()})
+        map_sig = compute_mapping_signature(ordered)
+    elif video_kf_fids is not None:
+        fids_sig = compute_fids_signature(video_kf_fids)
+        map_sig = "fids_only"
+    else:
+        fids_sig = "no_mapping"
+        map_sig = "no_mapping"
+    payload = f"{schema_version}|{emb_sig}|{fids_sig}|{map_sig}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass
@@ -123,15 +161,21 @@ class ClipBranchIndex:
     frame_pts: np.ndarray
     video_frame_ranges: dict[str, tuple[int, int]]
     invalid_videos: dict[str, str]
+    embedding_signature: str = ""
+    fids_signature: str = ""
+    mapping_signature: str = ""
+    schema_version: str = CLIP_BRANCH_SCHEMA_VERSION
 
     def validate_snapshot(
         self,
         all_embeddings: np.ndarray,
         video_kf_fids: Mapping[str, Sequence[int]] | None = None,
         *,
+        video_keyframes: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+        keyframe_map: Mapping[int, Mapping[str, Any]] | None = None,
         expected_signature: str | None = None,
     ) -> None:
-        """Raise SnapshotMismatchError if `all_embeddings` or mapping differs from this index."""
+        """Raise SnapshotMismatchError if `all_embeddings`, fids, ordinals, or PTS differ from this index."""
         emb = np.asarray(all_embeddings)
         if emb.ndim != 2 or emb.shape[1] != self.dim or emb.shape[0] != self.num_source_rows:
             raise SnapshotMismatchError(
@@ -141,57 +185,84 @@ class ClipBranchIndex:
             raise SnapshotMismatchError(
                 f"Snapshot signature mismatch: expected {self.snapshot_signature}, got {expected_signature}"
             )
-        if video_kf_fids is not None:
-            sig = compute_snapshot_signature(emb, video_kf_fids)
-            if sig != self.snapshot_signature:
+        emb_sig = compute_embedding_signature(emb)
+        if self.embedding_signature and emb_sig != self.embedding_signature:
+            raise SnapshotMismatchError(
+                f"Snapshot vector content mismatch: expected {self.embedding_signature}, got {emb_sig}"
+            )
+        if video_keyframes is not None or keyframe_map is not None:
+            ordered = _extract_ordered_video_frames_with_ordinals(video_keyframes, video_kf_fids, keyframe_map)
+            map_sig = compute_mapping_signature(ordered)
+            if self.mapping_signature and map_sig != self.mapping_signature:
                 raise SnapshotMismatchError(
-                    f"Snapshot content mismatch: expected {self.snapshot_signature}, got {sig}"
+                    f"Snapshot mapping/PTS mismatch: expected {self.mapping_signature}, got {map_sig}"
+                )
+        elif video_kf_fids is not None:
+            fids_sig = compute_fids_signature(video_kf_fids)
+            if self.fids_signature and fids_sig != self.fids_signature:
+                raise SnapshotMismatchError(
+                    f"Snapshot faiss_id mapping mismatch: expected {self.fids_signature}, got {fids_sig}"
                 )
 
     def matches(
         self,
         all_embeddings: np.ndarray,
         video_kf_fids: Mapping[str, Sequence[int]] | None = None,
+        *,
+        video_keyframes: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+        keyframe_map: Mapping[int, Mapping[str, Any]] | None = None,
+        expected_signature: str | None = None,
     ) -> bool:
-        """Return True iff `all_embeddings` and `video_kf_fids` match this cached index."""
+        """Return True iff `all_embeddings` and mappings/PTS match this cached index."""
         try:
-            self.validate_snapshot(all_embeddings, video_kf_fids)
+            self.validate_snapshot(
+                all_embeddings,
+                video_kf_fids,
+                video_keyframes=video_keyframes,
+                keyframe_map=keyframe_map,
+                expected_signature=expected_signature,
+            )
             return True
         except SnapshotMismatchError:
             return False
 
 
-def _extract_ordered_video_frames(
+def _extract_ordered_video_frames_with_ordinals(
     video_keyframes: Mapping[str, Sequence[Mapping[str, Any]]] | None,
     video_kf_fids: Mapping[str, Sequence[int]] | None,
     keyframe_map: Mapping[int, Mapping[str, Any]] | None,
-) -> dict[str, list[tuple[int, float]]]:
-    """Resolve per-video presentation-order `(faiss_id, pts_time)` pairs without label leakage."""
-    per_video: dict[str, list[tuple[int, float]]] = {}
+) -> dict[str, list[tuple[int, float, int]]]:
+    """Resolve per-video presentation-order `(faiss_id, pts_time, presentation_ordinal)` tuples."""
+    per_video: dict[str, list[tuple[int, float, int]]] = {}
 
     if video_keyframes:
         for vid in sorted(video_keyframes.keys()):
             kfs = video_keyframes[vid]
-            pairs: list[tuple[int, float]] = []
-            for kf in kfs:
+            triples: list[tuple[int, float, int]] = []
+            for pos, kf in enumerate(kfs):
                 if "faiss_id" not in kf:
                     continue
                 fid = int(kf["faiss_id"])
                 pts = float(kf.get("pts_time", 0.0))
-                pairs.append((fid, pts))
-            per_video[vid] = pairs
+                raw_ord = kf.get("presentation_ordinal", kf.get("original_frame_index", pos))
+                ord_idx = int(raw_ord) if raw_ord is not None else pos
+                triples.append((fid, pts, ord_idx))
+            per_video[vid] = triples
         return per_video
 
     if video_kf_fids:
         for vid in sorted(video_kf_fids.keys()):
-            pairs = []
-            for fid_raw in video_kf_fids[vid]:
+            triples = []
+            for pos, fid_raw in enumerate(video_kf_fids[vid]):
                 fid = int(fid_raw)
                 pts = 0.0
+                ord_idx = pos
                 if keyframe_map and fid in keyframe_map:
                     pts = float(keyframe_map[fid].get("pts_time", 0.0))
-                pairs.append((fid, pts))
-            per_video[vid] = pairs
+                    raw_ord = keyframe_map[fid].get("presentation_ordinal", keyframe_map[fid].get("original_frame_index", pos))
+                    ord_idx = int(raw_ord) if raw_ord is not None else pos
+                triples.append((fid, pts, ord_idx))
+            per_video[vid] = triples
         return per_video
 
     if keyframe_map:
@@ -201,14 +272,25 @@ def _extract_ordered_video_frames(
             if not vid:
                 continue
             fid = int(fid_raw)
-            orig_idx = int(info.get("original_frame_index", fid))
+            raw_ord = info.get("presentation_ordinal", info.get("original_frame_index", fid))
+            orig_idx = int(raw_ord) if raw_ord is not None else fid
             pts = float(info.get("pts_time", 0.0))
             grouped.setdefault(str(vid), []).append((orig_idx, pts, fid))
         for vid in sorted(grouped.keys()):
             grouped[vid].sort(key=lambda item: (item[0], item[1], item[2]))
-            per_video[vid] = [(fid, pts) for _, pts, fid in grouped[vid]]
+            per_video[vid] = [(fid, pts, orig_idx) for orig_idx, pts, fid in grouped[vid]]
 
     return per_video
+
+
+def _extract_ordered_video_frames(
+    video_keyframes: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    video_kf_fids: Mapping[str, Sequence[int]] | None,
+    keyframe_map: Mapping[int, Mapping[str, Any]] | None,
+) -> dict[str, list[tuple[int, float]]]:
+    """Resolve per-video presentation-order `(faiss_id, pts_time)` pairs without label leakage."""
+    ordered = _extract_ordered_video_frames_with_ordinals(video_keyframes, video_kf_fids, keyframe_map)
+    return {vid: [(fid, pts) for fid, pts, _ in triples] for vid, triples in ordered.items()}
 
 
 def build_clip_branch_index(
@@ -226,11 +308,22 @@ def build_clip_branch_index(
         raise ValueError(f"all_embeddings must have shape (N, D) with D > 0, got {emb.shape}")
     n_rows, dim = emb.shape
 
-    per_video_raw = _extract_ordered_video_frames(video_keyframes, video_kf_fids, keyframe_map)
+    per_video_ordered = _extract_ordered_video_frames_with_ordinals(video_keyframes, video_kf_fids, keyframe_map)
     resolved_fids_map: dict[str, list[int]] = {
-        vid: [fid for fid, _ in pairs] for vid, pairs in per_video_raw.items()
+        vid: [fid for fid, _, _ in pairs] for vid, pairs in per_video_ordered.items()
     }
-    sig = snapshot_signature or compute_snapshot_signature(emb, resolved_fids_map)
+    emb_sig = compute_embedding_signature(emb)
+    fids_sig = compute_fids_signature(resolved_fids_map)
+    map_sig = compute_mapping_signature(per_video_ordered)
+    sig = snapshot_signature or compute_snapshot_signature(
+        emb,
+        video_kf_fids=resolved_fids_map,
+        video_keyframes=video_keyframes,
+        keyframe_map=keyframe_map,
+    )
+    per_video_raw: dict[str, list[tuple[int, float]]] = {
+        vid: [(fid, pts) for fid, pts, _ in pairs] for vid, pairs in per_video_ordered.items()
+    }
 
     video_ids: list[str] = []
     video_to_pos: dict[str, int] = {}
@@ -315,6 +408,10 @@ def build_clip_branch_index(
         frame_pts=np.asarray(frame_pts_list, dtype=np.float64),
         video_frame_ranges=video_frame_ranges,
         invalid_videos=invalid_videos,
+        embedding_signature=emb_sig,
+        fids_signature=fids_sig,
+        mapping_signature=map_sig,
+        schema_version=CLIP_BRANCH_SCHEMA_VERSION,
     )
 
 

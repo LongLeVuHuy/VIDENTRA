@@ -74,12 +74,9 @@ class LearnedRankerLTR:
         if self.model_path is not None and self.model_path.is_file():
             self.load(self.model_path)
 
-    def load(self, path: str | Path) -> None:
-        """Load linear/logistic or tree-ensemble LTR weights from a JSON file."""
-        src = Path(path)
-        payload = json.loads(src.read_text(encoding="utf-8"))
-
-        names = tuple(payload.get("feature_names", LTR_FEATURE_NAMES))
+    def _apply_payload(self, payload: Mapping[str, Any], *, src_path: Path | None = None, update_metadata: bool = True) -> None:
+        """Validate and apply a linear/logistic or tree-ensemble payload onto this ranker."""
+        names = tuple(payload.get("feature_names", self.feature_names or LTR_FEATURE_NAMES))
         if len(names) not in (18, 22, self.n_features):
             raise ValueError(
                 f"Expected {self.n_features} (or legacy 18/22) features in LTR model, got {len(names)}"
@@ -87,10 +84,12 @@ class LearnedRankerLTR:
         legacy_prefix_len = len(names) if len(names) < self.n_features else 0
         self.feature_names = LTR_FEATURE_NAMES if legacy_prefix_len else names
 
-        model_type = str(payload.get("model_type", "pairwise_logistic")).lower()
+        default_type = "tree_ensemble" if "trees" in payload else "pairwise_logistic"
+        model_type = str(payload.get("model_type", default_type)).lower()
         self.model_type = model_type
-        self.fold_weights = list(payload.get("fold_weights", []))
-        self.metadata = dict(payload.get("metadata", {}))
+        if update_metadata:
+            self.fold_weights = list(payload.get("fold_weights", []))
+            self.metadata = dict(payload.get("metadata", {}))
 
         mean_arr = payload.get("feature_mean")
         std_arr = payload.get("feature_std")
@@ -128,9 +127,9 @@ class LearnedRankerLTR:
 
         if model_type in {"tree_ensemble", "gbdt", "lightgbm"}:
             trees = payload.get("trees")
-            if not isinstance(trees, list):
-                raise ValueError("tree_ensemble model JSON must contain a 'trees' list")
-            self.trees = trees
+            if not isinstance(trees, list) or not trees:
+                raise ValueError("tree_ensemble model JSON must contain a non-empty 'trees' list")
+            self.trees = list(trees)
             self.weights = np.zeros(self.n_features, dtype=np.float64)
         else:
             raw_weights = payload.get("weights")
@@ -146,8 +145,48 @@ class LearnedRankerLTR:
                 self.weights = np.asarray(raw_weights, dtype=np.float64)
             self.trees = []
 
-        self.model_path = src
+        if src_path is not None:
+            self.model_path = src_path
         self.is_loaded = True
+
+    def load(self, path: str | Path) -> None:
+        """Load linear/logistic or tree-ensemble LTR weights from a JSON file."""
+        src = Path(path)
+        payload = json.loads(src.read_text(encoding="utf-8"))
+        self._apply_payload(payload, src_path=src, update_metadata=True)
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Capture a deep snapshot of mutable ranker state for temporary OOF fold swaps."""
+        return {
+            "is_loaded": self.is_loaded,
+            "model_type": self.model_type,
+            "feature_names": self.feature_names,
+            "weights": self.weights.copy(),
+            "bias": self.bias,
+            "learning_rate": self.learning_rate,
+            "feature_mean": self.feature_mean.copy(),
+            "feature_std": self.feature_std.copy(),
+            "trees": list(self.trees),
+        }
+
+    def restore_state(self, state: Mapping[str, Any]) -> None:
+        """Restore a previously captured snapshot created by snapshot_state()."""
+        self.is_loaded = bool(state["is_loaded"])
+        self.model_type = str(state["model_type"])
+        if "feature_names" in state:
+            self.feature_names = tuple(state["feature_names"])
+        self.weights = np.asarray(state["weights"], dtype=np.float64).copy()
+        self.bias = float(state["bias"])
+        self.learning_rate = float(state.get("learning_rate", 1.0))
+        self.feature_mean = np.asarray(state["feature_mean"], dtype=np.float64).copy()
+        self.feature_std = np.asarray(state["feature_std"], dtype=np.float64).copy()
+        self.trees = list(state["trees"])
+
+    def apply_fold_payload(self, fold_payload: Mapping[str, Any]) -> None:
+        """Validate and temporarily apply an OOF fold payload while keeping artifact metadata intact."""
+        payload = dict(fold_payload)
+        payload.setdefault("feature_names", list(self.feature_names))
+        self._apply_payload(payload, src_path=None, update_metadata=False)
 
     def _predict_tree_batch(self, tree: dict[str, Any], X: np.ndarray) -> np.ndarray:
         """Evaluate one compact decision tree over all rows in X."""

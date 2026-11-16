@@ -199,6 +199,20 @@ def _preflight_p85_artifacts(
                         f"SHA-256 mismatch for visual index {vis_name}: "
                         f"receipt={vis_art['sha256']}, actual={actual_vis_sha}"
                     )
+        cov_mode = receipt.get("p85_coverage_mode")
+        if cov_mode is not None:
+            if cov_mode not in {"dense_all_keyframes", "subset"}:
+                raise ValueError(f"Unsupported p85_coverage_mode in p85_receipt.json: {cov_mode!r}")
+            if cov_mode == "subset" and not allow_partial_keyframes:
+                raise ValueError(
+                    "p85_receipt.json declares p85_coverage_mode='subset'; pass --allow-partial-keyframes to ingest partial coverage"
+                )
+        for model_key in ("siglip", "florence2", "e5_text"):
+            pin = receipt.get(model_key)
+            if pin is None:
+                continue
+            if not isinstance(pin, dict) or not str(pin.get("model_id", "")).strip() or not str(pin.get("revision", "")).strip():
+                raise ValueError(f"p85_receipt.json '{model_key}' entry must include non-empty 'model_id' and 'revision'")
         receipt_status = "verified"
 
     # 1. Validate spatial_patches_fp16.npy + spatial_patches_map.jsonl
@@ -372,13 +386,16 @@ def ingest_p85_artifacts(
         raise FileNotFoundError(f"Metadata DB not found: {db_path}")
 
     target_dir = processed_dir or db_path.parent
-    with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+    preflight_conn = sqlite3.connect(str(db_path), timeout=30.0)
+    try:
         preflight = _preflight_p85_artifacts(
             outputs_dir,
             target_dir,
-            conn,
+            preflight_conn,
             allow_partial_keyframes=allow_partial_keyframes,
         )
+    finally:
+        preflight_conn.close()
 
     raw_captions: list[dict[str, Any]] = preflight["raw_captions"]
     result: dict[str, object] = {
@@ -394,75 +411,132 @@ def ingest_p85_artifacts(
     if dry_run:
         return result
 
-    # 1. Copy validated spatial_patches_fp16.npy + spatial_patches_map.jsonl + p85_receipt.json
+    # Transactional backup/rollback across processed_dir targets and metadata.db.
+    # Copy processed_dir files first so a file failure never mutates metadata.db;
+    # run SQLite caption ingestion last inside a single rollback-safe transaction.
+    pid = os.getpid()
+    backups: list[tuple[Path, Path | None]] = []
+    candidate_targets: list[Path] = []
     patches_src = outputs_dir / "spatial_patches_fp16.npy"
-    if patches_src.is_file():
-        _atomic_copy_file(patches_src, target_dir / "spatial_patches_fp16.npy")
-        map_src = outputs_dir / "spatial_patches_map.jsonl"
-        if map_src.is_file():
-            _atomic_copy_file(map_src, target_dir / "spatial_patches_map.jsonl")
+    map_src = outputs_dir / "spatial_patches_map.jsonl"
     receipt_src = outputs_dir / "p85_receipt.json"
-    if receipt_src.is_file():
-        _atomic_copy_file(receipt_src, target_dir / "p85_receipt.json")
-
-    # 2. Ingest keyframe_captions.json -> KeyframeCaptions + fts_vlm_caption
-    if raw_captions:
-        now = current_iso()
-        with sqlite3.connect(str(db_path), timeout=30.0) as conn:
-            _ensure_caption_schema(conn)
-            conn.execute("DELETE FROM fts_vlm_caption;")
-            cap_rows = []
-            fts_rows = []
-            for idx, rec in enumerate(raw_captions):
-                vid = str(rec["video_id"])
-                fid = int(rec.get("faiss_id", idx))
-                kf_id = str(rec.get("keyframe_id") or f"{vid}__kf_{fid}")
-                ts_ms = int(rec["timestamp_ms"])
-                cap_txt = str(rec["caption_text"]).strip()
-                norm_txt = normalize_text(cap_txt)
-                unacc_txt = fold_diacritics(norm_txt)
-                cap_id = f"{kf_id}__florence2"
-                cap_rows.append((
-                    cap_id,
-                    kf_id,
-                    vid,
-                    fid,
-                    ts_ms,
-                    cap_txt,
-                    norm_txt,
-                    "microsoft/Florence-2-base",
-                    now,
-                ))
-                if norm_txt:
-                    fts_rows.append((norm_txt, unacc_txt, vid, kf_id, str(fid), str(ts_ms)))
-
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO KeyframeCaptions (
-                    caption_id, keyframe_id, video_id, faiss_id, timestamp_ms,
-                    caption_text, normalized_text, model_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                cap_rows,
-            )
-            if fts_rows:
-                conn.executemany(
-                    """
-                    INSERT INTO fts_vlm_caption (
-                        normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    fts_rows,
-                )
-            conn.commit()
-
-    # 3. Copy faiss_e5_caption_384.bin + e5_caption_manifest.json
     cap_faiss_src = outputs_dir / "faiss_e5_caption_384.bin"
     cap_manifest_src = outputs_dir / "e5_caption_manifest.json"
+
+    if patches_src.is_file():
+        candidate_targets.append(target_dir / "spatial_patches_fp16.npy")
+        if map_src.is_file():
+            candidate_targets.append(target_dir / "spatial_patches_map.jsonl")
+    if receipt_src.is_file():
+        candidate_targets.append(target_dir / "p85_receipt.json")
     if cap_faiss_src.is_file():
         if cap_manifest_src.is_file():
-            _atomic_copy_file(cap_manifest_src, target_dir / "e5_caption_manifest.json")
-        _atomic_copy_file(cap_faiss_src, target_dir / "faiss_e5_caption_384.bin")
+            candidate_targets.append(target_dir / "e5_caption_manifest.json")
+        candidate_targets.append(target_dir / "faiss_e5_caption_384.bin")
+
+    seen_targets: set[Path] = set()
+    for dst in candidate_targets:
+        if dst in seen_targets:
+            continue
+        seen_targets.add(dst)
+        if dst.exists():
+            bak_path = dst.with_name(f"{dst.name}.bak.{pid}")
+            shutil.copy2(dst, bak_path)
+            backups.append((dst, bak_path))
+        else:
+            backups.append((dst, None))
+
+    try:
+        # 1. Copy validated spatial_patches_fp16.npy + spatial_patches_map.jsonl + p85_receipt.json
+        if patches_src.is_file():
+            _atomic_copy_file(patches_src, target_dir / "spatial_patches_fp16.npy")
+            if map_src.is_file():
+                _atomic_copy_file(map_src, target_dir / "spatial_patches_map.jsonl")
+        if receipt_src.is_file():
+            _atomic_copy_file(receipt_src, target_dir / "p85_receipt.json")
+
+        # 2. Copy faiss_e5_caption_384.bin + e5_caption_manifest.json
+        if cap_faiss_src.is_file():
+            if cap_manifest_src.is_file():
+                _atomic_copy_file(cap_manifest_src, target_dir / "e5_caption_manifest.json")
+            _atomic_copy_file(cap_faiss_src, target_dir / "faiss_e5_caption_384.bin")
+
+        # 3. Ingest keyframe_captions.json -> KeyframeCaptions + fts_vlm_caption atomically last
+        if raw_captions:
+            now = current_iso()
+            conn = sqlite3.connect(str(db_path), timeout=30.0, isolation_level=None)
+            try:
+                conn.execute("BEGIN IMMEDIATE;")
+                try:
+                    _ensure_caption_schema(conn)
+                    conn.execute("DELETE FROM fts_vlm_caption;")
+                    cap_rows = []
+                    fts_rows = []
+                    for idx, rec in enumerate(raw_captions):
+                        vid = str(rec["video_id"])
+                        fid = int(rec.get("faiss_id", idx))
+                        kf_id = str(rec.get("keyframe_id") or f"{vid}__kf_{fid}")
+                        ts_ms = int(rec["timestamp_ms"])
+                        cap_txt = str(rec["caption_text"]).strip()
+                        norm_txt = normalize_text(cap_txt)
+                        unacc_txt = fold_diacritics(norm_txt)
+                        cap_id = f"{kf_id}__florence2"
+                        cap_rows.append((
+                            cap_id,
+                            kf_id,
+                            vid,
+                            fid,
+                            ts_ms,
+                            cap_txt,
+                            norm_txt,
+                            "microsoft/Florence-2-base",
+                            now,
+                        ))
+                        if norm_txt:
+                            fts_rows.append((norm_txt, unacc_txt, vid, kf_id, str(fid), str(ts_ms)))
+
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO KeyframeCaptions (
+                            caption_id, keyframe_id, video_id, faiss_id, timestamp_ms,
+                            caption_text, normalized_text, model_id, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        cap_rows,
+                    )
+                    if fts_rows:
+                        conn.executemany(
+                            """
+                            INSERT INTO fts_vlm_caption (
+                                normalized_text, unaccented_text, video_id, keyframe_id, faiss_id, timestamp_ms
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            fts_rows,
+                        )
+                    conn.execute("COMMIT;")
+                except Exception:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK;")
+                    raise
+            finally:
+                conn.close()
+    except Exception:
+        for dst, bak_path in reversed(backups):
+            if bak_path is not None and bak_path.exists():
+                os.replace(bak_path, dst)
+            elif bak_path is None and dst.exists():
+                try:
+                    dst.unlink()
+                except OSError:
+                    pass
+        raise
+    finally:
+        for _dst, bak_path in backups:
+            if bak_path is not None and bak_path.exists():
+                try:
+                    bak_path.unlink()
+                except OSError:
+                    pass
 
     return result
 
@@ -1052,6 +1126,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest Kaggle offline GPU outputs into local storage.")
     parser.add_argument("--mode", choices=("full", "p85", "ocr_asr"), default="full")
     parser.add_argument("--outputs-dir", type=Path, default=Path("work/kaggle/offline_outputs"))
+    parser.add_argument("--staging-dir", type=Path, default=None, help="Optional alias/override for --outputs-dir.")
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
     parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
     parser.add_argument("--processed-dir", type=Path, default=None, help="Target dir for P8-5 artifacts (defaults to db_path.parent).")
@@ -1059,17 +1134,18 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Validate artifacts without modifying DB or files.")
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()
+    effective_outputs_dir = args.staging_dir if args.staging_dir is not None else args.outputs_dir
 
     if args.mode == "ocr_asr":
         res = ingest_ocr_asr_artifacts(
-            outputs_dir=args.outputs_dir,
+            outputs_dir=effective_outputs_dir,
             db_path=args.db_path,
             dry_run=args.dry_run,
         )
         print(json.dumps(res, indent=2, ensure_ascii=False))
     elif args.mode == "p85":
         res = ingest_p85_artifacts(
-            outputs_dir=args.outputs_dir,
+            outputs_dir=effective_outputs_dir,
             db_path=args.db_path,
             processed_dir=args.processed_dir,
             allow_partial_keyframes=args.allow_partial_keyframes,
@@ -1078,7 +1154,7 @@ if __name__ == "__main__":
         print(json.dumps(res, indent=2, ensure_ascii=False))
     else:
         ingest_kaggle_offline_outputs(
-            outputs_dir=args.outputs_dir,
+            outputs_dir=effective_outputs_dir,
             db_path=args.db_path,
             faiss_path=args.faiss_path,
             reset=args.reset,

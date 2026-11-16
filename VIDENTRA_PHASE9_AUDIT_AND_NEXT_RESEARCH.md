@@ -164,4 +164,47 @@ Dùng `capture_msr_candidate_pools.py --rules-only` để tạo baseline replay 
 
 - `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` trên Windows CPU, PyTorch `2.15.0+cpu`: **588 passed, 3 warnings trong 75,38 giây**. Các warning liên quan API CPU quantization. Kiểm thử gồm fixtures/regression theo suite hiện hành.
 - Probe read-only đã xác nhận signature bỏ sót một hàng embedding và PTS, hàm token-set đồng nhất hai câu đảo vai trò, và cache SHA-256 trùng receipt ở cả base lẫn LoRA. Phép ghép held-out dùng hai run trong `work/experiments` và predictions/target đã lưu, không sinh thêm predictions.
-- Lượt này chưa chạy engine benchmark mới, Kaggle GPU hoặc đo trên RTX 3060. Các mục ở B–D là kế hoạch triển khai và tiêu chí đo.
+- Lượt rà soát ban đầu chưa chạy engine benchmark mới, Kaggle GPU hoặc đo trên RTX 3060.
+
+---
+
+## F. Kết quả triển khai B1–B6 và Thực nghiệm Bước 0 (16–17/11/2026)
+
+### F.1. Các bản sửa B1–B6 đã hoàn tất & kiểm thử hồi quy
+- **B1 (Query Decomposer, chuẩn hóa COCO & `detector_ran` guard):** Bổ sung `"flat screen"/"tv screen"/"television screen": "tv"`, `VALID_COCO_CLASSES`, `resolve_coco_class()`, `normalize_object_requirements()` ([rules.py](src/videntra/query/rules.py)); `canonical_clause_key()` & `is_redundant_visual_clause()` bảo toàn thứ tự từ và ngoặc kép ([llm.py](src/videntra/query/llm.py)); truyền cờ `detector_ran` vào `compute_object_verification_boost` ([entities.py](src/videntra/relations/entities.py)) và `_fast_object_boost_from_summary` ([unified_pipeline.py](src/videntra/retrieval/unified_pipeline.py)) để video chưa chạy YOLO không bị phạt `-0.10`; bảo toàn single-clause `use_llm_clauses` trước khi lọc mệnh đề thừa (fallback `decompose_query_clauses` khi rỗng và không có OCR/ASR).
+- **B2 (`--a5-preset` & cờ tách Consensus/LTR):** Thêm `--a5-preset {a5_full,a5_lite,a5_no_consensus,a5_no_ltr}`, `--enable-clip-consensus-boost` / `--disable-clip-consensus-boost`, `--ltr-blend-weight` vào `UnifiedMultimodalSearchPipeline`, [capture_msr_candidate_pools.py](scripts/capture_msr_candidate_pools.py), và [run_validation_benchmark.py](scripts/run_validation_benchmark.py); telemetry ghi đầy đủ `clip_consensus_stats` và `ltr_stats` (`applied_count`, `top1_flipped_count`, `max_abs_delta`, `p50_max_abs_delta`).
+- **B3 (Snapshot-safe `ClipBranchIndex` v2 & cache O(1)):** Nâng cấp `CLIP_BRANCH_SCHEMA_VERSION = "clip_branch_v2"` kèm SHA-256 toàn phần embeddings (`compute_embedding_signature`), `fids` và `mapping` bao gồm `(presentation_ordinal, pts_time)` ([clip_branch.py](src/videntra/retrieval/clip_branch.py)); thêm `invalidate_clip_branch_index()`, `publish_snapshot()`, khóa `_clip_index_lock`, `_ensure_clip_branch_index()` kiểm tra O(1) qua `_snapshot_clip_token` và tái sử dụng `_last_clip_score_res`/`_last_primary_q_768`.
+- **B4 (Provenance Gate theo connected source group & media SHA-256):** Hợp nhất quy tắc `assign_connected_source_groups()`, `resolve_oof_fold_for_query()`, `compute_source_manifest_hash()`, `compute_effective_config_sha256()`, `compute_code_sha256()`, `get_cpu_thread_settings()` ([provenance.py](src/videntra/evaluation/provenance.py)); phát hiện và chặn rò rỉ liên thông nguồn/media (`"source_leakage_detected"`, `"unverified_source_group"`, `"fold_model_type_mismatch"`).
+- **B5 (Per-fold LightGBM CV & state isolation):** Thêm `_apply_payload()`, `snapshot_state()`, `restore_state()`, `apply_fold_payload()` ([learned_ranker.py](src/videntra/ranking/learned_ranker.py)); mặc định `--backend pairwise_logistic` và huấn luyện/đánh giá `tree_ensemble` bên trong từng CV fold cho nhánh `lightgbm` ([train_ltr_ranker_cv.py](scripts/train_ltr_ranker_cv.py)), kiểm thử với `tests/ranking/test_learned_ranker.py` (`11 passed, 0 skipped`).
+- **B6 (P8-5 Receipt v1.1 & Atomic Staging Ingest):** Bổ sung `p85_coverage_mode` và pin model/license Florence-2/E5 trong [kaggle_multimodal_offline_worker.py](scripts/kaggle_multimodal_offline_worker.py); bổ sung `--staging-dir`, đóng kết nối SQLite tường minh (`conn.close()`), copy file-first kèm rollback `.bak.<pid>` trên giao dịch `BEGIN IMMEDIATE`/`COMMIT` trong [ingest_kaggle_offline_results.py](scripts/ingest_kaggle_offline_results.py).
+
+### F.2. Kết quả Ma trận 2×2 Consensus × LTR (Bước 0 — Same Snapshot, Same Rules)
+
+#### Trên `dev_full_859` (859 queries / 858 source groups, `eval_mode=oof` 742 OOF + 117 fallback)
+
+| Cell (`--a5-preset`) | Consensus / LTR | Global Hit@1 | MSR-VTT (`n=809`) | MRR@10 | Recall@10 | Consensus (`applied/swap`) | LTR (`applied/flip`) | So với `C0_L0` |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`C0_L0` (`a5_lite --no-ltr`)** | OFF / OFF | `41.56% (357/859)` | `38.57% (312/809)` | `0.5009` | `68.80% (591)` | `0 / 0` | `0 / 0` | Baseline |
+| **`C0_L1` (`a5_no_consensus`)** | OFF / `0.015` | `41.56% (357/859)` | `38.57% (312/809)` | `0.5010` | `68.80% (591)` | `0 / 0` | `859 / 0` | `0W/0L (+0.00 pp)` |
+| **`C1_L0` (`a5_no_ltr`)** | ON / OFF | **`43.77% (376/859)`** | **`40.91% (331/809)`** | `0.5141` | `68.80% (591)` | `46 / 46` | `0 / 0` | **`21W/2L (+2.21 pp, CI [+1.16, +3.37])`** |
+| **`C1_L1` (`a5_full`)** | ON / `0.015` | **`43.77% (376/859)`** | **`40.91% (331/809)`** | **`0.5142`** | `68.80% (591)` | `46 / 46` | `859 / 0` | **`21W/2L (+2.21 pp, CI [+1.16, +3.37])`** |
+
+- Khớp `100%` (`859/859 ties`) giữa `C1_L1` mới và `R00_k10` lịch sử; trên lát cắt `confirm` (`n=258`, gồm `243` MSR-VTT), `C1_L1 vs C0_L0` và `C1_L1 vs C0_L1` đều đạt **`+2.71 pp` (`37.98% -> 40.70%`, `7W/0L`, CI `[+0.78, +4.65]`)**; trên `tune` (`n=601`): **`+2.00 pp` (`14W/2L`, CI `[+0.83, +3.33]`)**; `0W/0L` trên AVC (`26/28`), QVHighlights (`19/22`), và Moment (`0.7273`).
+
+#### Trên `heldout_test_201` (201 queries, `eval_mode=clean_disjoint`, `source_group_overlap=0`, `leakage_free=True`, `gate_passed=True`)
+
+| Cell (`--a5-preset`) | Global Hit@1 | Within-DS Hit@1 | Hit@5 / Hit@10 | Global MRR | nDCG@10 | Moment nDCG@5 / Hit@1@0.5 | Consensus / LTR Swaps |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`C0_L0` (`a5_lite --no-ltr`)** | `38.81% (78/201)` | `40.80%` | `58.21% / 68.66%` | `0.4754` | `0.5254` | `0.3155` / `0.00%` | `0 / 0` |
+| **`C0_L1` (`a5_no_consensus`)** | `38.81% (78/201)` | `40.80%` | `58.21% / 68.66%` | `0.4755` | `0.5255` | `0.3155` / `0.00%` | `0 / 0` |
+| **`C1_L0` (`a5_no_ltr`)** | **`39.80% (80/201)`** | `41.29%` | `58.21% / 68.66%` | `0.4804` | **`0.5291`** | **`0.5000` / `50.00%`** | `7 / 0` |
+| **`C1_L1` (`a5_full`)** | **`39.80% (80/201)`** | **`41.29%`** | `58.21% / 68.66%` | **`0.4805`** | **`0.5291`** | **`0.5000` / `50.00%`** | `7 / 0` |
+
+### F.3. Kiểm chứng Qwen hậu-B1 & Benchmark Đa Tập Tham Chiếu
+- **Post-B1 `Q00` (`extractive-v2`, `205` cache hits):** Khôi phục hoàn toàn Recall@10 từ `590/859` (tiền-B1) lên **`591/859`** (`+1` net recall gain so với tiền-B1; hòa `0W/0L` về Hit@1 `43.77%` so với `C1_L1`, MRR `0.5142 -> 0.5132`).
+- **Post-B1 `L00` (`lora-sft-v1`, `821` cache hits):** Khớp `859/859` so với tiền-B1 `L00_k10` (`43.66% (375/859)`, MRR `0.5134`, `0W/1L` so với `C1_L1` ở `tune`, `0W/0L` trên `confirm`). Theo tiêu chí B7/P3, giữ **`--rules-only` + `a5_full`** làm mặc định.
+- **Benchmark Đa Tập Tham Chiếu (`Run ID 41473d9023c54a2fadf405801367659a`, snapshot bất biến `work/experiments/20261117_002157_all_splits_a9f4367_41473d90`, `leakage_free=True`, `gate_passed=True`):**
+  - `dev_150` (OOF `129/150`): Video Hit@1 **`62.00%` (`93/150`, `[54.00%, 69.33%]`)**, MRR **`0.6548`**, nDCG@10 **`0.6752`**, Moment Hit@1@0.5 **`72.73%`**, Moment nDCG@5 **`0.5121`**, Pure-ASR FP **`0/2`**, Non-Neural p50/p95 **`71.37 / 169.05 ms`**.
+  - `dev_full_859` (OOF `742/859`): Hit@1 **`43.77%`**, MRR **`0.5142`**, nDCG@10 **`0.5558`**, Non-Neural p50/p95 **`50.32 / 111.63 ms`**.
+  - `heldout_test_201` (`clean_disjoint`): Hit@1 **`39.80%`**, MRR **`0.4805`**, nDCG@10 **`0.5291`**, Non-Neural p50/p95 **`47.51 / 89.48 ms`**.
+- **Trạng thái các bước GPU Kaggle (`C1`, `C2`, `C3`):** Phần local B1–B6 và Bước 0 đã nghiệm thu; các bước phụ thuộc GPU Kaggle (`VideoPrism-LvT-B` `C1`, `P8-5` Florence-2 captions & spatial patches `B6/C2`, `VLM Top-5` `C3`) giữ ở trạng thái **chờ chạy Kaggle GPU**.

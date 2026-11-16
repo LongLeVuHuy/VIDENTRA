@@ -1,5 +1,29 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 17/11/2026 — Hoàn tất Phase 9 Audit Remediation (`B1–B6`) & Thực nghiệm Bước 0 (`597/597` PASS, Run `41473d90`)
+
+- **Triển khai đầy đủ `B1–B6` theo [`VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md`](file:///C:/Users/DELL/Desktop/VIDENTRA/VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md):**
+  1. **B1 (`llm.py`, `rules.py`, `entities.py`, `unified_pipeline.py`):** Bổ sung `"flat screen"/"tv screen"/"television screen" -> "tv"`, `VALID_COCO_CLASSES`, `resolve_coco_class()`, `normalize_object_requirements()`, `canonical_clause_key()` & `is_redundant_visual_clause()` (bảo toàn trật tự từ và trích dẫn ngoặc kép); truyền `detector_ran` (`FrameObjectRuns`) vào `compute_object_verification_boost` / `_fast_object_boost_from_summary` (video chưa chạy YOLO trả `0.0` thay vì `-0.10`); bảo toàn single-clause `use_llm_clauses` và fallback `decompose_query_clauses` khi mệnh đề rỗng & không có OCR/ASR.
+  2. **B2 (`unified_pipeline.py`, `provenance.py`, `capture_msr_candidate_pools.py`, `run_validation_benchmark.py`):** Thêm `resolve_a5_preset()` (`a5_full`, `a5_lite`, `a5_no_consensus`, `a5_no_ltr`), flags `--a5-preset`, `--enable/disable-clip-consensus-boost`, `--ltr-blend-weight`, ghi telemetry `clip_consensus_stats` và `ltr_stats` đầy đủ; tái dùng `_last_clip_score_res`/`_last_primary_q_768` trong `SigLIP2ClipBranchScorer`.
+  3. **B3 (`clip_branch.py`, `unified_pipeline.py`):** Nâng cấp `CLIP_BRANCH_SCHEMA_VERSION = "clip_branch_v2"` kèm SHA-256 toàn phần `compute_embedding_signature`, `compute_fids_signature`, `compute_mapping_signature` (`presentation_ordinal`, `pts_time`), `_extract_ordered_video_frames_with_ordinals()`; thêm `_clip_index_lock`, `_snapshot_clip_token`, `invalidate_clip_branch_index()`, `publish_snapshot()`, kiểm tra cache O(1) theo snapshot token.
+  4. **B4 (`provenance.py`, `run_validation_benchmark.py`, `capture_msr_candidate_pools.py`):** Hợp nhất `assign_connected_source_groups()`, `resolve_canonical_source_group()`, `resolve_oof_fold_for_query()`, `compute_source_manifest_hash()`, `compute_effective_config_sha256()`, `compute_code_sha256()`, `get_cpu_thread_settings()`, kiểm tra `fold_model_type_mismatch`, phát hiện và chặn rò rỉ liên thông nguồn/media SHA-256 (`"source_leakage_detected"`, `"unverified_source_group"`).
+  5. **B5 (`learned_ranker.py`, `train_ltr_ranker_cv.py`):** Tách `_apply_payload()`, thêm `snapshot_state()`, `restore_state()`, `apply_fold_payload()`; đổi mặc định `--backend pairwise_logistic` và huấn luyện/đánh giá `tree_ensemble` ngay bên trong từng CV fold cho `--backend lightgbm`; kiểm thử `tests/ranking/test_learned_ranker.py` (`11 passed, 0 skipped`).
+  6. **B6 (`kaggle_multimodal_offline_worker.py`, `ingest_kaggle_offline_results.py`):** Cập nhật `p85_receipt.json` v1.1 (`p85_coverage_mode`, pin Florence-2 & E5); bổ sung `--staging-dir`, đóng kết nối SQLite tường minh (`conn.close()`), copy file trước rồi chạy giao dịch SQLite `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` với rollback `.bak.<pid>`.
+- **Thực nghiệm Bước 0 trên cùng snapshot (`1,324` videos, rules-only mặc định):**
+  - **`dev_full_859` 2×2 (`C0_L0` / `C0_L1` / `C1_L0` / `C1_L1`):**
+    - `C0_L0` (`a5_lite --no-ltr`): Hit@1 `41.56% (357/859)`, MRR `0.5009`, Recall@10 `68.80% (591)`, MSR-VTT `312/809 (38.57%)`.
+    - `C0_L1` (`a5_no_consensus`): Hit@1 `41.56% (357/859)`, MRR `0.5010` (`0W/0L` vs `C0_L0`).
+    - `C1_L0` (`a5_no_ltr`): Hit@1 **`43.77% (376/859)`**, MRR `0.5141`, MSR-VTT **`331/809 (40.91%)`** (`+2.21 pp` overall `21W/2L` CI `[+1.16, +3.37]`; `confirm +2.71 pp, 7W/0L`).
+    - `C1_L1` (`a5_full`): Hit@1 **`43.77% (376/859)`**, MRR **`0.5142`** (`+0.000135` MRR vs `C1_L0`, `0` LTR flips), khớp `100%` (`859/859 ties`) với `R00_k10`.
+  - **`heldout_test_201` 2×2 (`clean_disjoint`, `source_group_overlap=0`, `leakage_free=True`, `gate_passed=True`):**
+    - `C0_L0` `38.81% (78/201)` MRR `0.4754` nDCG@10 `0.5254`; `C0_L1` `38.81%` MRR `0.4755`; `C1_L0` `39.80% (80/201)` MRR `0.4804` nDCG@10 `0.5291`; **`C1_L1` (`a5_full`) `39.80% (80/201)`**, Within-DS `41.29%`, MRR **`0.4805`**, nDCG@10 **`0.5291`**, QVH Moment@0.5 `0% -> 50%` (`7/7` Consensus swaps, `201/0` LTR flips).
+  - **Qwen hậu-B1 (`dev_full_859`):** `Q00` (`extractive-v2`, `205` cache hits) khôi phục Recall@10 `590 -> 591/859` (`+1` net recall vs tiền-B1 `Q00_k10`), Hit@1 `43.77% (0W/0L vs C1_L1)`, MRR `0.5132`; `L00` (`lora-sft-v1`, `821` cache hits) giữ nguyên `43.66% (375/859, 0W/1L vs C1_L1)` -> giữ `--rules-only + a5_full`.
+- **Reference Multi-Split Benchmark (`Run ID 41473d9023c54a2fadf405801367659a`, `work/experiments/20261117_002157_all_splits_a9f4367_41473d90`, đồng bộ vào [`benchmark/`](file:///C:/Users/DELL/Desktop/VIDENTRA/benchmark/)):**
+  - `dev_150` (OOF `129/150`): Video Hit@1 **`62.00%` (`93/150`, `[54.00%, 69.33%]`)**, MRR **`0.6548`**, nDCG@10 **`0.6752`**, Moment Hit@1@0.5 **`72.73%`**, Moment nDCG@5 **`0.5121`**, Pure-ASR FP **`0/2`**, Non-Neural p50/p95 **`71.37 / 169.05 ms`**.
+  - `dev_full_859` (OOF `742/859`): Hit@1 **`43.77%`**, MRR **`0.5142`**, nDCG@10 **`0.5558`**, Non-Neural p50/p95 **`50.32 / 111.63 ms`**.
+  - `heldout_test_201` (`clean_disjoint`): Hit@1 **`39.80%`**, MRR **`0.4805`**, nDCG@10 **`0.5291`**, Non-Neural p50/p95 **`47.51 / 89.48 ms`**.
+  - **Các bước tiếp theo trên Kaggle GPU (`C1`, `C2`, `C3`):** chạy `VideoPrism-LvT-B` worker, `P8-5` (`Florence-2` + spatial patches staging), và `VLM Top-5` rerank (chờ phiên GPU Kaggle).
+
 ## 16/11/2026 — Rà soát lại kế hoạch Phase 9 theo code và artifact Antigravity
 
 - Cập nhật [kế hoạch Phase 9](../VIDENTRA_PHASE9_AUDIT_AND_NEXT_RESEARCH.md) với vị trí lỗi, cách sửa, kiểm thử hồi quy, thứ tự nâng cấp và cổng nghiệm thu. Tách Consensus mặc định trong A5 khỏi clip reserve opt-in. Giữ rules cho MSR-VTT theo replay Qwen/LoRA.

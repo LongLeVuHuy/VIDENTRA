@@ -11,31 +11,32 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-import hashlib
 import json
 import math
 from pathlib import Path
-import re
 import time
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from videntra.evaluation.split_lock import qvh_source_id
+from videntra.evaluation.provenance import (
+    SOURCE_GROUP_RULE,
+    assign_connected_source_groups,
+    compute_source_manifest_hash,
+    resolve_canonical_source_group,
+)
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
     compute_query_z_scores,
     extract_ltr_features_24d,
 )
+from videntra.ranking.learned_ranker import LearnedRankerLTR
 
 DEFAULT_DATASET_PATH = Path("work/ltr_dev859_features.jsonl")
 DEFAULT_VAL_DIR = Path("validation")
 DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr_v1.json")
 
 _FORBIDDEN_PATH_TOKENS = ("heldout_test_201", "heldout", "test_queries")
-_AVC_WINDOW_RE = re.compile(r"^(.+?)__s\d+__e\d+$")
-_MSRVTT_ID_RE = re.compile(r"^video\d+$")
-SOURCE_GROUP_RULE = "canonical_avc_window_qvh_youtube_msrvtt_connected_components_v1"
 
 POSITIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "s_vis_blend_max",
@@ -78,169 +79,6 @@ def assert_no_heldout_leakage(path: str | Path) -> Path:
                 f"Refusing to access forbidden held-out/test path during LTR training: {p}"
             )
     return p
-
-
-def resolve_canonical_source_group(
-    clip_id: str,
-    *,
-    dataset: str | None = None,
-    asset_manifest: Mapping[str, str] | None = None,
-) -> tuple[str, str]:
-    """Resolve a clip/video ID to its canonical ``(source_group, status)``.
-
-    Strips AVC ``__s...__e...`` window suffixes, extracts QVHighlights YouTube
-    source IDs, preserves MSR-VTT video IDs, and falls back to an explicit
-    ``unknown:<clip_id>`` group with ``unknown_unverified`` status.
-    """
-    cid = str(clip_id).strip()
-    if not cid:
-        raise ValueError("clip_id must be a non-empty string")
-
-    if asset_manifest and cid in asset_manifest:
-        mapped = str(asset_manifest[cid]).strip()
-        if mapped:
-            return mapped, "manifest_verified"
-
-    avc_match = _AVC_WINDOW_RE.fullmatch(cid)
-    if avc_match:
-        return avc_match.group(1), "avc_window_stripped"
-
-    try:
-        return qvh_source_id(cid), "qvh_youtube_id"
-    except ValueError:
-        pass
-
-    if dataset == "msrvtt" or _MSRVTT_ID_RE.fullmatch(cid):
-        return cid, "msrvtt_video_id"
-
-    return f"unknown:{cid}", "unknown_unverified"
-
-
-def compute_source_manifest_hash(manifest_records: Sequence[Mapping[str, Any]]) -> str:
-    """Compute a deterministic SHA-256 hash over canonical query -> source_group records."""
-    normalized = sorted(
-        (dict(rec) for rec in manifest_records),
-        key=lambda rec: str(rec.get("query_id", "")),
-    )
-    payload = json.dumps(
-        normalized,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def assign_connected_source_groups(
-    query_targets: Sequence[tuple[str, Sequence[str]]],
-    *,
-    dataset_by_query: Mapping[str, str] | None = None,
-    asset_manifest: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Resolve canonical source groups and merge multi-target groups via connected components.
-
-    All target clips/groups of a query (and any queries sharing a source group)
-    are assigned to the same connected-component fold group so no source group
-    or multi-target query can split across CV folds.
-    """
-    parent: dict[str, str] = {}
-
-    def _find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def _union(a: str, b: str) -> None:
-        ra, rb = _find(a), _find(b)
-        if ra != rb:
-            if ra < rb:
-                parent[rb] = ra
-            else:
-                parent[ra] = rb
-
-    raw_groups_by_query: dict[str, list[str]] = {}
-    statuses_by_query: dict[str, list[str]] = {}
-    status_counts: dict[str, int] = defaultdict(int)
-    unknown_clips: list[str] = []
-    unique_clips: set[str] = set()
-    unique_raw_groups: set[str] = set()
-
-    for qid, targets in query_targets:
-        q_str = str(qid)
-        ds = dataset_by_query.get(q_str) if dataset_by_query else None
-        q_groups: list[str] = []
-        q_statuses: list[str] = []
-        for tgt in targets:
-            t_str = str(tgt).strip()
-            if not t_str:
-                continue
-            unique_clips.add(t_str)
-            grp, status = resolve_canonical_source_group(
-                t_str, dataset=ds, asset_manifest=asset_manifest
-            )
-            unique_raw_groups.add(grp)
-            status_counts[status] += 1
-            if status == "unknown_unverified":
-                unknown_clips.append(t_str)
-            if grp not in parent:
-                parent[grp] = grp
-            q_groups.append(grp)
-            q_statuses.append(status)
-
-        if not q_groups:
-            raise ValueError(f"Query {q_str} has no target clips for source_group resolution")
-
-        first = q_groups[0]
-        for g in q_groups[1:]:
-            _union(first, g)
-
-        raw_groups_by_query[q_str] = sorted(set(q_groups))
-        statuses_by_query[q_str] = sorted(set(q_statuses))
-
-    groups_by_root: dict[str, set[str]] = defaultdict(set)
-    for grp in parent:
-        groups_by_root[_find(grp)].add(grp)
-
-    fold_group_by_query: dict[str, str] = {}
-    manifest_records: list[dict[str, Any]] = []
-    multi_group_queries: list[str] = []
-
-    for qid, _ in query_targets:
-        q_str = str(qid)
-        q_groups = raw_groups_by_query[q_str]
-        root = _find(q_groups[0])
-        comp_groups = sorted(groups_by_root[root])
-        if len(comp_groups) == 1:
-            comp_id = comp_groups[0]
-        else:
-            comp_id = "cc:" + "+".join(comp_groups)
-            if len(q_groups) > 1:
-                multi_group_queries.append(q_str)
-        fold_group_by_query[q_str] = comp_id
-        manifest_records.append({
-            "query_id": q_str,
-            "source_group": comp_id,
-            "raw_source_groups": q_groups,
-            "resolution_statuses": statuses_by_query[q_str],
-        })
-
-    manifest_hash = compute_source_manifest_hash(manifest_records)
-    return {
-        "fold_group_by_query": fold_group_by_query,
-        "raw_groups_by_query": raw_groups_by_query,
-        "manifest_records": manifest_records,
-        "manifest_hash": manifest_hash,
-        "group_stats": {
-            "total_queries": len(query_targets),
-            "unique_clips": len(unique_clips),
-            "unique_source_groups": len(unique_raw_groups),
-            "unique_fold_groups": len(set(fold_group_by_query.values())),
-            "multi_group_queries": sorted(set(multi_group_queries)),
-            "status_counts": dict(sorted(status_counts.items())),
-            "unknown_clips": sorted(set(unknown_clips)),
-        },
-    }
 
 
 def group_kfold_indices(
@@ -545,7 +383,7 @@ def run_group_kfold_cv(
     source_video_ids: Sequence[str],
     n_splits: int = 5,
     l2_reg: float = 250000.0,
-    backend: str = "auto",
+    backend: str = "pairwise_logistic",
     base_scores: np.ndarray | None = None,
     blend_weight: float = 0.015,
     manifest_hash: str | None = None,
@@ -597,6 +435,8 @@ def run_group_kfold_cv(
             use_lgb = True
         except ImportError:
             use_lgb = False
+    elif use_lgb:
+        import lightgbm  # noqa: F401
 
     def _groups_for_indices(indices: np.ndarray) -> set[str]:
         grps: set[str] = set()
@@ -622,16 +462,7 @@ def run_group_kfold_cv(
             overlap = sorted(tr_groups & val_groups)
             raise ValueError(f"GroupKFold source group leakage in fold {fold_idx}: {overlap[:5]}")
 
-        # Per-fold normalization: f_mean and f_std are fit strictly on X_tr
-        w, bias, f_mean, f_std = train_pairwise_logistic_l2(
-            X_tr,
-            y_tr,
-            q_tr,
-            l2_reg=l2_reg,
-            base_scores_train=base_tr,
-            blend_weight=blend_weight,
-        )
-        fold_weights.append({
+        fold_meta_base = {
             "fold_id": fold_idx,
             "fold": fold_idx,
             "train_group_ids": sorted(tr_groups),
@@ -639,13 +470,42 @@ def run_group_kfold_cv(
             "eval_query_ids": sorted({str(q) for q in q_val}),
             "eval_source_video_ids": sorted({str(source_video_ids[i]) for i in val_idx}),
             "manifest_hash": resolved_manifest_hash,
-            "weights": [round(float(v), 6) for v in w],
-            "bias": round(float(bias), 6),
-            "feature_mean": [round(float(v), 6) for v in f_mean],
-            "feature_std": [round(float(v), 6) for v in f_std],
-        })
+        }
+        fold_lgb_payload = _train_lightgbm_fold(X_tr, y_tr, q_tr) if use_lgb else None
+        if use_lgb and fold_lgb_payload is None:
+            raise RuntimeError("backend='lightgbm' requested but LightGBM training returned None")
+        if fold_lgb_payload is not None:
+            fold_entry = {
+                **fold_meta_base,
+                "model_type": "tree_ensemble",
+                "feature_names": list(LTR_FEATURE_NAMES),
+                "trees": fold_lgb_payload["trees"],
+                "bias": float(fold_lgb_payload.get("bias", 0.0)),
+                "learning_rate": float(fold_lgb_payload.get("learning_rate", 1.0)),
+            }
+        else:
+            # Per-fold normalization: f_mean and f_std are fit strictly on X_tr
+            w, bias, f_mean, f_std = train_pairwise_logistic_l2(
+                X_tr,
+                y_tr,
+                q_tr,
+                l2_reg=l2_reg,
+                base_scores_train=base_tr,
+                blend_weight=blend_weight,
+            )
+            fold_entry = {
+                **fold_meta_base,
+                "model_type": "pairwise_logistic",
+                "weights": [round(float(v), 6) for v in w],
+                "bias": round(float(bias), 6),
+                "feature_mean": [round(float(v), 6) for v in f_mean],
+                "feature_std": [round(float(v), 6) for v in f_std],
+            }
+        fold_weights.append(fold_entry)
 
-        ltr_val_scores = ((X_val - f_mean) / f_std) @ w + bias
+        fold_ranker = LearnedRankerLTR(model_path=None)
+        fold_ranker.apply_fold_payload(fold_entry)
+        ltr_val_scores = fold_ranker.score_matrix(X_val)
         if base_arr is not None:
             val_scores = base_arr[val_idx] + float(blend_weight) * np.tanh(ltr_val_scores)
         else:
@@ -1026,7 +886,7 @@ def main() -> None:
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
     parser.add_argument("--l2-reg", type=float, default=250000.0, help="L2 regularization strength")
     parser.add_argument("--blend-weight", type=float, default=0.015, help="Residual blend weight matching pipeline inference")
-    parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="auto")
+    parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="pairwise_logistic")
     args = parser.parse_args()
 
     extraction_meta: dict[str, Any] = {}

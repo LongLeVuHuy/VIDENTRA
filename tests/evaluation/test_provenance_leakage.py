@@ -585,3 +585,112 @@ def test_splits_excludes_heldout_and_records_feature_flags_in_config_and_provena
     assert prov["feature_flags"]["temporal_rerank_mode"] == "mean_top2"
     assert prov["feature_flags"]["temporal_rerank_lambda"] == 0.10
     assert prov["feature_flags"]["enable_vlm_caption_dense"] is False
+
+
+def test_provenance_blocks_heldout_source_and_media_overlap_and_resolves_shared_group_oof(tmp_path):
+    from videntra.evaluation.provenance import resolve_oof_fold_for_query
+
+    ltr_path = tmp_path / "ltr_source.json"
+    _write_ltr_artifact(
+        ltr_path,
+        {
+            "model_type": "pairwise_logistic",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "weights": [0.0] * len(LTR_FEATURE_NAMES),
+            "trained_query_ids": ["dev_q1", "dev_q2"],
+            "fold_weights": [
+                {
+                    "fold_id": 0,
+                    "model_type": "pairwise_logistic",
+                    "train_group_ids": ["src_B"],
+                    "eval_group_ids": ["src_A"],
+                    "eval_query_ids": ["dev_q1"],
+                    "weights": [0.1] * len(LTR_FEATURE_NAMES),
+                },
+                {
+                    "fold_id": 1,
+                    "model_type": "pairwise_logistic",
+                    "train_group_ids": ["src_A"],
+                    "eval_group_ids": ["src_B"],
+                    "eval_query_ids": ["dev_q2"],
+                    "weights": [0.2] * len(LTR_FEATURE_NAMES),
+                },
+            ],
+            "metadata": {"dataset": "dev_full_859"},
+        },
+    )
+    ltr_info = load_ltr_model_info(ltr_path)
+
+    # Shared-source query not in trained_query_ids resolves OOF via eval_group_ids
+    fold_p, status = resolve_oof_fold_for_query("dev_unseen_q3", ["src_A"], ltr_info)
+    assert status == "oof_source_group"
+    assert fold_p is not None and fold_p["fold_id"] == 0
+
+    # Held-out query sharing canonical source group (AVC sibling window) must fail
+    gate_src_leak = evaluate_provenance_gate(
+        ltr_info=ltr_info,
+        split_query_ids={"heldout_test_201": ["test_t1"]},
+        split_queries={
+            "heldout_test_201": [
+                {"query_id": "test_t1", "dataset": "avc", "target_videos": ["src_A__s30__e40"]}
+            ]
+        },
+    )
+    assert gate_src_leak["heldout_source_leakage"] is True
+    assert gate_src_leak["eval_mode"] == "source_leakage_detected"
+    assert gate_src_leak["gate_passed"] is False
+
+    # Media SHA-256 overlap must fail even with disjoint IDs
+    gate_media_leak = evaluate_provenance_gate(
+        ltr_info=ltr_info,
+        split_query_ids={"dev_full_859": ["dev_q1", "dev_q2"], "heldout_test_201": ["test_t2"]},
+        used_oof_splits={"dev_full_859"},
+        split_queries={
+            "dev_full_859": [
+                {"query_id": "dev_q1", "dataset": "msrvtt", "target_videos": ["src_A__s0__e10"]},
+                {"query_id": "dev_q2", "dataset": "msrvtt", "target_videos": ["src_B__s0__e10"]},
+            ],
+            "heldout_test_201": [
+                {"query_id": "test_t2", "dataset": "msrvtt", "target_videos": ["video9999"]}
+            ],
+        },
+        media_sha256_by_video={"src_A__s0__e10": "same_sha256", "video9999": "same_sha256"},
+    )
+    assert gate_media_leak["media_sha256_overlap_with_eval"]["heldout_test_201"] == 1
+    assert gate_media_leak["gate_passed"] is False
+
+
+def test_oof_rejects_fold_model_type_mismatch_and_dirty_publish_reference(tmp_path, monkeypatch):
+    bad_ltr = tmp_path / "bad_fold_type.json"
+    _write_ltr_artifact(
+        bad_ltr,
+        {
+            "model_type": "tree_ensemble",
+            "feature_names": list(LTR_FEATURE_NAMES),
+            "trees": [{"leaf_value": 0.0}],
+            "trained_query_ids": ["q1"],
+            "fold_weights": [
+                {
+                    "fold_id": 0,
+                    "model_type": "pairwise_logistic",
+                    "train_group_ids": ["g2"],
+                    "eval_group_ids": ["g1"],
+                    "eval_query_ids": ["q1"],
+                    "weights": [0.1] * len(LTR_FEATURE_NAMES),
+                }
+            ],
+        },
+    )
+    bad_info = load_ltr_model_info(bad_ltr)
+    assert any("fold_model_type_mismatch" in e for e in bad_info["oof_validation_errors"])
+
+    monkeypatch.setattr(
+        rvb,
+        "get_git_worktree_status",
+        lambda: {"git_dirty": True, "git_dirty_count": 1, "git_dirty_files": ["M src/videntra/foo.py"]},
+    )
+    with pytest.raises(RuntimeError, match="dirty/unknown git worktree"):
+        rvb.run_benchmark(
+            out_dir=tmp_path / "pub_out",
+            publish_reference=True,
+        )

@@ -27,7 +27,13 @@ from .schemas import (
     PredicateScope,
     QueryGraph,
 )
-from .rules import COCO_SYNONYM_MAP, RuleBasedQueryParser
+from .rules import (
+    COCO_SYNONYM_MAP,
+    RuleBasedQueryParser,
+    VALID_COCO_CLASSES,
+    normalize_object_requirements,
+    resolve_coco_class,
+)
 from .canonicalize import canonicalize_color, canonicalize_spatial
 from .cache import QueryGraphCache
 
@@ -256,6 +262,63 @@ def _meaningful_grounding_tokens(text: str) -> set[str]:
     """Extract diacritic-folded non-stopword tokens (>=2 chars) for extractive lexical overlap."""
     folded = fold_diacritics(_normalize_for_grounding(text))
     return {tok for tok in folded.split() if len(tok) >= 2 and tok not in _GROUNDING_STOPWORDS}
+
+
+_CLAUSE_QUOTE_SPLIT_RE = re.compile(r'("[^"]*"|(?:^|(?<!\w))\'[^\']*\'(?!\w))')
+_CLAUSE_TOKEN_RE = re.compile(r"[\w%]+(?:'[\w%]+)*")
+_EN_ARTICLES: frozenset[str] = frozenset({"a", "an", "the"})
+_LABEL_BEFORE_A: frozenset[str] = frozenset({
+    "grade", "type", "part", "option", "plan", "vitamin", "level", "group", "class", "section", "category",
+})
+
+
+def canonical_clause_key(text: str, *, strip_articles: bool = True) -> tuple[str, ...]:
+    """Build an order- and multiplicity-preserving token key for conservative clause dedup.
+
+    Normalizes NFC, case, whitespace and outer punctuation, keeps quoted literals verbatim,
+    and optionally removes unquoted English articles when safe while preserving order,
+    repetitions, numbers, and negation tokens.
+    """
+    nfc = unicodedata.normalize("NFC", str(text or "")).strip().lower()
+    nfc = re.sub(r"\s+", " ", nfc).strip(".,!?;:")
+    if not nfc:
+        return ()
+
+    tokens: list[str] = []
+    for segment in _CLAUSE_QUOTE_SPLIT_RE.split(nfc):
+        if not segment:
+            continue
+        if len(segment) >= 2 and (
+            (segment.startswith('"') and segment.endswith('"'))
+            or (segment.startswith("'") and segment.endswith("'"))
+        ):
+            inner = re.sub(r"\s+", " ", segment[1:-1].strip())
+            if inner:
+                tokens.append(f"__quote__:{inner}")
+            continue
+        raw_toks = _CLAUSE_TOKEN_RE.findall(segment)
+        for idx, tok in enumerate(raw_toks):
+            if strip_articles and tok in _EN_ARTICLES:
+                if tok == "a" and idx > 0 and raw_toks[idx - 1] in _LABEL_BEFORE_A:
+                    tokens.append(tok)
+                elif idx == len(raw_toks) - 1 and tok == "a" and len(raw_toks) >= 2:
+                    tokens.append(tok)
+                continue
+            tokens.append(tok)
+    return tuple(tokens)
+
+
+def is_redundant_visual_clause(clause: str, original_query: str) -> bool:
+    """Return True iff `clause` is equivalent to `original_query` under conservative normalization."""
+    c_clean = re.sub(r"\s+", " ", unicodedata.normalize("NFC", str(clause or "")).strip().lower()).strip(".,!?;:")
+    q_clean = re.sub(r"\s+", " ", unicodedata.normalize("NFC", str(original_query or "")).strip().lower()).strip(".,!?;:")
+    if not c_clean:
+        return True
+    if c_clean == q_clean:
+        return True
+    c_key = canonical_clause_key(c_clean, strip_articles=True)
+    q_key = canonical_clause_key(q_clean, strip_articles=True)
+    return bool(c_key and c_key == q_key)
 
 _VALID_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _QUOTED_RE = re.compile(r'["\']([^"\']+)["\']')
@@ -755,30 +818,8 @@ def _topological_event_order(
     return sorted_ids
 
 
-_VALID_COCO_CLASSES: frozenset[str] = frozenset(COCO_SYNONYM_MAP.values())
-
-
-def _resolve_coco_class(raw_cls: str) -> str | None:
-    """Resolve a raw object class label to a canonical COCO-80 class name, or None if non-COCO."""
-    cleaned = str(raw_cls or "").strip().lower().replace("_", " ")
-    if not cleaned:
-        return None
-    if cleaned in COCO_SYNONYM_MAP:
-        return COCO_SYNONYM_MAP[cleaned]
-    if cleaned in _VALID_COCO_CLASSES:
-        return cleaned
-    words = cleaned.split()
-    if len(words) >= 2:
-        bigram = f"{words[-2]} {words[-1]}"
-        if bigram in COCO_SYNONYM_MAP:
-            return COCO_SYNONYM_MAP[bigram]
-    head = words[-1] if words else ""
-    if head in COCO_SYNONYM_MAP:
-        mapped = COCO_SYNONYM_MAP[head]
-        # Avoid mapping generic 'screen' modifier like 'phone screen' to 'tv'
-        if mapped != "tv" or head in ("tv", "television"):
-            return mapped
-    return None
+_VALID_COCO_CLASSES: frozenset[str] = VALID_COCO_CLASSES
+_resolve_coco_class = resolve_coco_class
 
 
 def expand_compact_wire_to_query_graph(
@@ -798,7 +839,7 @@ def expand_compact_wire_to_query_graph(
 
     entities: list[Entity] = []
     seen_entity_ids: set[str] = set()
-    object_requirements: list[dict[str, Any]] = []
+    raw_object_requirements: list[dict[str, Any]] = []
     ambiguities: list[str] = []
 
     predicates: list[Predicate] = []
@@ -823,10 +864,10 @@ def expand_compact_wire_to_query_graph(
                 continue
             ent_id = _sanitize_id(obj.get("id") or f"obj_{ev_idx}_{obj_idx}", prefix="o")
             raw_cls = str(obj.get("cls", "object")).strip().lower()
-            coco_cls = _resolve_coco_class(raw_cls)
+            coco_cls = resolve_coco_class(raw_cls)
             display_cls = coco_cls or COCO_SYNONYM_MAP.get(raw_cls, raw_cls)
-            ent_type = "person" if coco_cls == "person" else "object"
             span = _ground_span(str(obj.get("span") or display_cls), original_query)
+            ent_type = "person" if coco_cls == "person" else "object"
             cnt = int(obj.get("cnt", 1) or 1)
             color_raw = str(obj.get("color") or "").strip()
 
@@ -854,15 +895,15 @@ def expand_compact_wire_to_query_graph(
                         uncertainty=uncertainty,
                     )
                 )
-                if coco_cls is not None and coco_cls in _VALID_COCO_CLASSES:
-                    object_requirements.append(
-                        {
-                            "id": ent_id,
-                            "class": coco_cls,
-                            "count": cnt,
-                            "color": canonicalize_color(color_raw) if color_raw else None,
-                        }
-                    )
+                raw_object_requirements.append(
+                    {
+                        "id": ent_id,
+                        "class": raw_cls,
+                        "count": cnt,
+                        "color": color_raw,
+                        "span": span,
+                    }
+                )
             ev_entity_ids.append(ent_id)
 
         vis_text = str(ev.get("vis") or "").strip()
@@ -1031,6 +1072,7 @@ def expand_compact_wire_to_query_graph(
         schema_version="1.0",
     )
 
+    object_requirements = normalize_object_requirements(raw_object_requirements)
     plan = ModalityRoutingPlan(
         original_query=original_query,
         query_length_tier=query_length_tier,

@@ -459,3 +459,91 @@ def test_oof_fold_schema_per_fold_normalization_and_leakage_guards():
             n_splits=5,
             backend="pairwise_logistic",
         )
+
+
+def test_learned_ranker_snapshot_restore_apply_and_lightgbm_cv():
+    import argparse
+
+    ranker = LearnedRankerLTR(model_path=None)
+    orig = ranker.snapshot_state()
+    fold_payload = {
+        "model_type": "pairwise_logistic",
+        "weights": [0.25] * len(LTR_FEATURE_NAMES),
+        "bias": 0.5,
+        "feature_mean": [0.0] * len(LTR_FEATURE_NAMES),
+        "feature_std": [1.0] * len(LTR_FEATURE_NAMES),
+    }
+    ranker.apply_fold_payload(fold_payload)
+    assert ranker.is_loaded is True
+    assert float(ranker.weights[0]) == 0.25
+    assert ranker.bias == 0.5
+    ranker.restore_state(orig)
+    assert ranker.is_loaded is False
+
+    # Verify invalid tree_ensemble fold without trees raises ValueError
+    with pytest.raises(ValueError, match="trees"):
+        ranker.apply_fold_payload({"model_type": "tree_ensemble", "trees": []})
+
+    import scripts.train_ltr_ranker_cv as ltr_cv
+    import sys
+    import types
+
+    class FakeBooster:
+        def dump_model(self):
+            return {
+                "tree_info": [
+                    {
+                        "tree_structure": {
+                            "split_feature": 0,
+                            "threshold": 0.5,
+                            "left_child": {"leaf_value": -0.5},
+                            "right_child": {"leaf_value": 1.2},
+                        }
+                    }
+                ]
+            }
+
+    class FakeLGBMRanker:
+        def __init__(self, **_kwargs):
+            self.booster_ = FakeBooster()
+
+        def fit(self, _X, _y, group=None):
+            assert group is not None and sum(group) > 0
+            return self
+
+    fake_lgb = types.SimpleNamespace(LGBMRanker=FakeLGBMRanker)
+    orig_lgb = sys.modules.get("lightgbm")
+    sys.modules["lightgbm"] = fake_lgb  # type: ignore[assignment]
+    try:
+        rng = np.random.default_rng(7)
+        X_rows, y_rows, qids, grps = [], [], [], []
+        for i in range(10):
+            qid = f"q_{i}"
+            grp = f"g_{i}"
+            for c in range(4):
+                f = rng.normal(0.0, 0.2, size=len(LTR_FEATURE_NAMES))
+                if c == 0:
+                    f[0] += 2.0
+                X_rows.append(f)
+                y_rows.append(1.0 if c == 0 else 0.0)
+                qids.append(qid)
+                grps.append(grp)
+        artifact = run_group_kfold_cv(
+            X=np.vstack(X_rows),
+            y=np.asarray(y_rows),
+            query_ids=qids,
+            source_video_ids=grps,
+            n_splits=5,
+            backend="lightgbm",
+        )
+    finally:
+        if orig_lgb is None:
+            sys.modules.pop("lightgbm", None)
+        else:
+            sys.modules["lightgbm"] = orig_lgb
+
+    assert artifact["model_type"] == "tree_ensemble"
+    for fw in artifact["fold_weights"]:
+        assert fw["model_type"] == "tree_ensemble"
+        assert len(fw["trees"]) > 0
+        assert "weights" not in fw

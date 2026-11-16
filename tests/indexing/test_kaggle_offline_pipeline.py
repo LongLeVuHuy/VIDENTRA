@@ -499,3 +499,59 @@ def test_prewarm_split_no_gt_leakage_and_atomic_merge(tmp_path: Path):
         "--cache-path", str(local_cache),
         "--dry-run",
     ]) == 0
+
+
+def test_ingest_p85_transactional_rollback_on_mid_ingest_failure(tmp_path: Path, monkeypatch):
+    import scripts.ingest_kaggle_offline_results as ingest_mod
+
+    db_path = tmp_path / "processed" / "metadata.db"
+    _seed_minimal_db(db_path, num_keyframes=2)
+    processed_dir = db_path.parent
+
+    old_patches = np.full((2, 9, 768), 7.0, dtype=np.float16)
+    np.save(processed_dir / "spatial_patches_fp16.npy", old_patches)
+    old_db_bytes = db_path.read_bytes()
+
+    outputs = tmp_path / "kaggle_out"
+    outputs.mkdir()
+    new_patches = np.ones((2, 9, 768), dtype=np.float16)
+    np.save(outputs / "spatial_patches_fp16.npy", new_patches)
+    _write_valid_p85_sidecar_and_receipt(outputs, new_patches)
+
+    captions = [
+        {"faiss_id": 0, "keyframe_id": "vid_001__kf_00000", "video_id": "vid_001", "timestamp_ms": 0, "caption_text": "Rollback test 1"},
+        {"faiss_id": 1, "keyframe_id": "vid_001__kf_00001", "video_id": "vid_001", "timestamp_ms": 1000, "caption_text": "Rollback test 2"},
+    ]
+    (outputs / "keyframe_captions.json").write_text(json.dumps(captions), encoding="utf-8")
+    idx = faiss.IndexFlatIP(384)
+    vecs = np.zeros((2, 384), dtype=np.float32)
+    vecs[:, 0] = 1.0
+    idx.add(vecs)
+    faiss.write_index(idx, str(outputs / "faiss_e5_caption_384.bin"))
+    (outputs / "e5_caption_manifest.json").write_text(json.dumps(captions), encoding="utf-8")
+
+    orig_atomic_copy = ingest_mod._atomic_copy_file
+
+    def fail_on_faiss_copy(src: Path, dst: Path) -> None:
+        if dst.name == "faiss_e5_caption_384.bin":
+            raise OSError("Simulated disk full during final artifact copy")
+        orig_atomic_copy(src, dst)
+
+    monkeypatch.setattr(ingest_mod, "_atomic_copy_file", fail_on_faiss_copy)
+    with pytest.raises(OSError, match="Simulated disk full"):
+        ingest_p85_artifacts(outputs_dir=outputs, db_path=db_path, dry_run=False)
+
+    restored_patches = np.load(str(processed_dir / "spatial_patches_fp16.npy"))
+    assert np.allclose(restored_patches, old_patches)
+    assert db_path.read_bytes() == old_db_bytes
+    assert not (processed_dir / "p85_receipt.json").exists()
+    assert not (processed_dir / "e5_caption_manifest.json").exists()
+    assert not list(processed_dir.glob("*.bak.*"))
+
+    # Verify subset p85_coverage_mode rejection without --allow-partial-keyframes
+    receipt_path = outputs / "p85_receipt.json"
+    rec = json.loads(receipt_path.read_text(encoding="utf-8"))
+    rec["p85_coverage_mode"] = "subset"
+    receipt_path.write_text(json.dumps(rec), encoding="utf-8")
+    with pytest.raises(ValueError, match="allow-partial-keyframes"):
+        ingest_p85_artifacts(outputs_dir=outputs, db_path=db_path, dry_run=True)

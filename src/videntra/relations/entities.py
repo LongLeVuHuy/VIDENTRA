@@ -168,17 +168,23 @@ def compute_object_verification_boost(
     base_match_boost: float = 0.15,
     cardinality_boost: float = 0.10,
     no_object_penalty: float = 0.10,
+    *,
+    detector_ran: bool = True,
 ) -> float:
     """Calculate ranking score adjustment based on detected YOLO objects and query requirements.
 
     Rules:
     - If no object requirements: return 0.0
-    - If query requires objects but frame has 0 detected objects: return -no_object_penalty
+    - If detector has not run / coverage is unknown (`detector_ran=False` and no detections): return 0.0
+    - If query requires objects and detector ran (`detector_ran=True`) with 0 detected objects: return -no_object_penalty
     - Non-person objects receive base_match_boost * conf (+0.15 * conf) and cardinality_boost (+0.10)
     - Person class receives mild adjustment (0.04 * conf) to prevent disrupting visual semantics
     - Multi-object cardinality is evaluated within a single frame if keyframe_id/pts_sec is available
     """
     if not object_requirements:
+        return 0.0
+
+    if not detector_ran and not detected_objects:
         return 0.0
 
     if not detected_objects:
