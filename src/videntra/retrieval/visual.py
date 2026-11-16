@@ -432,3 +432,136 @@ def build_or_load_keyframe_hubness_radii(
     return radii, median_r
 
 
+def compute_hubness_report(
+    predictions: Sequence[Sequence[str]],
+    *,
+    top_k: int = 5,
+    top_hubs_limit: int = 10,
+) -> dict[str, Any]:
+    """Measure Top-1 and Top-K appearance hubness across predicted video rankings."""
+    n_queries = len(predictions)
+    if n_queries == 0 or top_k < 1:
+        return {
+            "num_queries": n_queries,
+            "top_k": max(1, int(top_k)),
+            "unique_top1_videos": 0,
+            "unique_topk_videos": 0,
+            "top1_max_freq": 0,
+            "topk_max_freq": 0,
+            "top1_gini": 0.0,
+            "topk_gini": 0.0,
+            "tail_singletons_top1": 0,
+            "top1_hubs": [],
+            "topk_hubs": [],
+        }
+
+    top1_counts: dict[str, int] = {}
+    topk_counts: dict[str, int] = {}
+    top1_wrong_counts: dict[str, int] = {}
+    for item in predictions:
+        target_set: set[str] | None = None
+        if isinstance(item, dict):
+            ranked = item.get("ranked_video_ids") or item.get("ranked_videos") or []
+            raw_targets = item.get("target_videos")
+            if raw_targets is not None:
+                target_set = {str(t).strip() for t in raw_targets if str(t).strip()}
+        else:
+            ranked = item
+        seen_k: set[str] = set()
+        for rank_idx, vid in enumerate(ranked[:top_k]):
+            v_str = str(vid).strip()
+            if not v_str:
+                continue
+            if rank_idx == 0:
+                top1_counts[v_str] = top1_counts.get(v_str, 0) + 1
+                if target_set is not None and v_str not in target_set:
+                    top1_wrong_counts[v_str] = top1_wrong_counts.get(v_str, 0) + 1
+            if v_str not in seen_k:
+                seen_k.add(v_str)
+                topk_counts[v_str] = topk_counts.get(v_str, 0) + 1
+
+    def _gini(counts: dict[str, int]) -> float:
+        if not counts:
+            return 0.0
+        vals = np.sort(np.asarray(list(counts.values()), dtype=np.float64))
+        total = float(vals.sum())
+        if total <= 0.0:
+            return 0.0
+        m = len(vals)
+        idx = np.arange(1, m + 1, dtype=np.float64)
+        return round(float((2.0 * np.sum(idx * vals)) / (m * total) - (m + 1.0) / m), 6)
+
+    sorted_top1 = sorted(top1_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    sorted_topk = sorted(topk_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {
+        "num_queries": n_queries,
+        "top_k": int(top_k),
+        "unique_top1_videos": len(top1_counts),
+        "unique_topk_videos": len(topk_counts),
+        "top1_max_freq": sorted_top1[0][1] if sorted_top1 else 0,
+        "topk_max_freq": sorted_topk[0][1] if sorted_topk else 0,
+        "top1_gini": _gini(top1_counts),
+        "topk_gini": _gini(topk_counts),
+        "tail_singletons_top1": sum(1 for _, c in sorted_top1 if c == 1),
+        "top1_hubs": [
+            {
+                "video_id": v,
+                "count": c,
+                "top1_wrong_wins": top1_wrong_counts.get(v, 0),
+            }
+            for v, c in sorted_top1[:top_hubs_limit]
+        ],
+        "topk_hubs": [{"video_id": v, "count": c} for v, c in sorted_topk[:top_hubs_limit]],
+    }
+
+
+def apply_querybank_norm(
+    target_sims: np.ndarray,
+    querybank_sims: np.ndarray,
+    *,
+    temperature: float = 20.0,
+) -> np.ndarray:
+    """Apply numerically stable Inverted Softmax Querybank Normalisation (QB-Norm).
+
+    Normalizes target similarity scores column-wise using a frozen source-disjoint
+    reference querybank matrix ``querybank_sims`` of shape ``(num_bank_queries, num_items)``:
+        p(v | q) = sim_scale * exp(T * s(q, v)) / sum_{b in bank} exp(T * s(b, v))
+    Computed via log-sum-exp to prevent overflow/underflow.
+    """
+    t = float(temperature)
+    if t <= 0.0 or not np.isfinite(t):
+        raise ValueError(f"temperature must be finite and > 0, got {temperature}")
+
+    bank = np.asarray(querybank_sims, dtype=np.float64)
+    if bank.ndim != 2 or bank.shape[0] == 0 or bank.shape[1] == 0:
+        raise ValueError(f"querybank_sims must be 2D non-empty, got shape={bank.shape}")
+
+    target = np.asarray(target_sims, dtype=np.float64)
+    squeeze_1d = False
+    if target.ndim == 1:
+        target_2d = target.reshape(1, -1)
+        squeeze_1d = True
+    elif target.ndim == 2:
+        target_2d = target
+    else:
+        raise ValueError(f"target_sims must be 1D or 2D, got shape={target.shape}")
+
+    if target_2d.shape[1] != bank.shape[1]:
+        raise ValueError(
+            f"Item count mismatch between target_sims ({target_2d.shape[1]}) "
+            f"and querybank_sims ({bank.shape[1]})"
+        )
+
+    scaled_bank = t * np.nan_to_num(bank, nan=-1e9, posinf=1.0, neginf=-1e9)
+    max_per_col = np.max(scaled_bank, axis=0, keepdims=True)
+    log_z = max_per_col + np.log(np.sum(np.exp(scaled_bank - max_per_col), axis=0, keepdims=True))
+
+    scaled_target = t * np.nan_to_num(target_2d, nan=-1e9, posinf=1.0, neginf=-1e9)
+    normed_log = scaled_target - log_z
+    # Convert back smoothly into bounded score using exp(log_p) weighted with target affinity
+    weights = np.exp(np.clip(normed_log, -60.0, 20.0))
+    out = np.asarray(target_2d * weights, dtype=np.float32)
+    out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    return out.reshape(-1) if squeeze_1d else out
+
+

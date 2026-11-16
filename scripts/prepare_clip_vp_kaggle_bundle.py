@@ -453,11 +453,26 @@ def prepare_kaggle_bundle(
     copy_media: bool = False,
     compute_recipe: bool = False,
     export_frames: bool = False,
+    max_queries: int | None = None,
+    max_videos: int | None = None,
 ) -> dict[str, Any]:
     """Export inference-only Kaggle bundle (queries, candidates, media_manifest, optional recipe)."""
     queries = load_inference_queries(queries_path)
+    if max_queries is not None:
+        if max_queries <= 0:
+            raise ValueError(f"max_queries must be positive, got {max_queries}")
+        queries = queries[:max_queries]
     query_ids = [q["query_id"] for q in queries]
     candidates, union_video_ids = load_and_merge_candidate_pools(query_ids, pool_paths)
+    if max_videos is not None:
+        if max_videos <= 0:
+            raise ValueError(f"max_videos must be positive, got {max_videos}")
+        union_video_ids = union_video_ids[:max_videos]
+        kept_video_set = set(union_video_ids)
+        for cand_row in candidates:
+            cand_row["pool_video_ids"] = [
+                v for v in cand_row.get("pool_video_ids", []) if v in kept_video_set
+            ]
 
     registry = _load_video_registry(
         video_registry_path=video_registry_path,
@@ -474,6 +489,8 @@ def prepare_kaggle_bundle(
     recipe_rows: list[dict[str, Any]] = []
     missing_media_video_ids: list[str] = []
     decode_errors: list[dict[str, str]] = []
+    seen_rel_paths: dict[str, str] = {}
+    seen_copied_basenames: dict[str, str] = {}
 
     for vid in union_video_ids:
         entry = registry.get(vid, {})
@@ -496,11 +513,29 @@ def prepare_kaggle_bundle(
                 rel_path_str = media_path.name
 
         if copy_media and media_path is not None:
+            basename = media_path.name
+            prev_vid = seen_copied_basenames.get(basename)
+            if prev_vid is not None and prev_vid != vid:
+                raise ValueError(
+                    f"Duplicate media basename collision '{basename}' for distinct video_ids "
+                    f"'{prev_vid}' and '{vid}' when copying media"
+                )
+            seen_copied_basenames[basename] = vid
             media_out_dir.mkdir(parents=True, exist_ok=True)
-            dest_media = media_out_dir / media_path.name
+            dest_media = media_out_dir / basename
             if not dest_media.exists():
                 shutil.copy2(media_path, dest_media)
-            rel_path_str = f"media/{media_path.name}"
+            rel_path_str = f"media/{basename}"
+
+        if rel_path_str:
+            norm_rel = rel_path_str.replace("\\", "/")
+            prev_rel_vid = seen_rel_paths.get(norm_rel)
+            if prev_rel_vid is not None and prev_rel_vid != vid:
+                raise ValueError(
+                    f"Duplicate relative_path collision '{norm_rel}' for distinct video_ids "
+                    f"'{prev_rel_vid}' and '{vid}'"
+                )
+            seen_rel_paths[norm_rel] = vid
 
         timeline_rev = str(entry.get("timeline_revision") or "tl_v1")
         clip_start = float(entry.get("clip_start_sec", 0.0))
@@ -635,6 +670,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--copy-media", action="store_true")
     parser.add_argument("--compute-recipe", action="store_true")
     parser.add_argument("--export-frames", action="store_true")
+    parser.add_argument("--max-queries", type=int, default=None, help="Deterministic prefix limit on queries for smoke tests")
+    parser.add_argument("--max-videos", type=int, default=None, help="Deterministic prefix limit on candidate videos for smoke tests")
     return parser
 
 
@@ -662,6 +699,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         copy_media=args.copy_media,
         compute_recipe=args.compute_recipe,
         export_frames=args.export_frames,
+        max_queries=args.max_queries,
+        max_videos=args.max_videos,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0

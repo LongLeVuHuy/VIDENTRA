@@ -56,6 +56,58 @@ def _decode_frames_by_ordinal(media_path: Path, target_ordinals: set[int]) -> di
     return decoded
 
 
+def _infer_dataset_bucket(video_id: str) -> str:
+    """Infer dataset bucket (msrvtt, avc, qvhighlights) from video_id."""
+    if video_id.startswith("video"):
+        return "msrvtt"
+    if "__s" in video_id:
+        return "avc"
+    return "qvhighlights"
+
+
+def _select_stratified_pilot_rows(rows: Sequence[sqlite3.Row], limit: int) -> list[sqlite3.Row]:
+    """Select balanced keyframes across datasets and distinct videos up to limit."""
+    if limit <= 0 or len(rows) <= limit:
+        return list(rows)
+    by_ds_vid: dict[str, dict[str, list[sqlite3.Row]]] = {}
+    for row in rows:
+        vid = str(row["video_id"])
+        ds = _infer_dataset_bucket(vid)
+        by_ds_vid.setdefault(ds, {}).setdefault(vid, []).append(row)
+
+    ds_queues: dict[str, list[list[sqlite3.Row]]] = {}
+    for ds, vid_map in by_ds_vid.items():
+        # Deterministic video order sorted by earliest faiss_id
+        v_lists = sorted(vid_map.values(), key=lambda items: int(items[0]["faiss_id"]))
+        ds_queues[ds] = v_lists
+
+    ds_names = sorted(ds_queues.keys())
+    selected: list[sqlite3.Row] = []
+    pos_by_ds: dict[str, int] = {ds: 0 for ds in ds_names}
+    while len(selected) < limit:
+        progressed = False
+        for ds in ds_names:
+            if len(selected) >= limit:
+                break
+            v_lists = ds_queues[ds]
+            if not v_lists:
+                continue
+            # Scan round-robin within dataset for next remaining keyframe
+            checked = 0
+            while checked < len(v_lists):
+                idx = pos_by_ds[ds] % len(v_lists)
+                pos_by_ds[ds] = (pos_by_ds[ds] + 1) % len(v_lists)
+                checked += 1
+                if v_lists[idx]:
+                    selected.append(v_lists[idx].pop(0))
+                    progressed = True
+                    break
+        if not progressed:
+            break
+    selected.sort(key=lambda r: int(r["faiss_id"]))
+    return selected
+
+
 def package_db_keyframes(
     db_path: Path,
     output_dir: str | Path = "work/kaggle/p85_inputs",
@@ -63,6 +115,7 @@ def package_db_keyframes(
     resize_to: tuple[int, int] = (224, 224),
     limit: int | None = None,
     dry_run: bool = False,
+    stratified_pilot: bool = False,
 ) -> dict[str, Any]:
     """Package keyframes from an existing metadata.db (ordered by faiss_id) for Kaggle P8-5."""
     if not db_path.is_file():
@@ -85,7 +138,11 @@ def package_db_keyframes(
         ).fetchall()
 
     if limit is not None and limit > 0:
-        rows = rows[:limit]
+        rows = (
+            _select_stratified_pilot_rows(rows, int(limit))
+            if stratified_pilot
+            else rows[:limit]
+        )
 
     if dry_run:
         return {
@@ -93,6 +150,7 @@ def package_db_keyframes(
             "db_path": str(db_path),
             "output_dir": str(out_p),
             "num_keyframes": len(rows),
+            "stratified_pilot": bool(stratified_pilot),
             "dry_run": True,
         }
 
@@ -135,6 +193,7 @@ def package_db_keyframes(
                     "timestamp_ms": ts_ms,
                     "timestamp_seconds": round(ts_ms / 1000.0, 4),
                     "image_file": img_filename,
+                    "image_sha256": sha256_file(img_path),
                 })
 
     keyframe_records.sort(key=lambda r: int(r["faiss_id"]))
@@ -146,6 +205,7 @@ def package_db_keyframes(
     package_summary = {
         "mode": "db",
         "num_keyframes": len(keyframe_records),
+        "stratified_pilot": bool(stratified_pilot),
         "keyframes_manifest_sha256": sha256_file(kf_manifest_path),
     }
     (out_p / "package_manifest.json").write_text(
@@ -353,6 +413,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-gt", action="store_true")
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
     parser.add_argument("--limit", type=int, default=None, help="Optional keyframe limit for --mode db.")
+    parser.add_argument("--stratified-pilot", action="store_true", help="Sample balanced keyframes across datasets/videos when --limit is set.")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -366,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             media_root=args.media_root,
             limit=args.limit,
             dry_run=args.dry_run,
+            stratified_pilot=args.stratified_pilot,
         )
     else:
         summary = package_inputs(

@@ -210,6 +210,13 @@ class MultimodalBenchmarkRunner:
         temporal_rerank_top_k: int = 10,
         enable_clip_consensus_boost: bool = True,
         ltr_blend_weight: float = 0.015,
+        stage2_selection_mode: str = "exact",
+        video_proposal_mode: str = "frame_topk",
+        video_proposal_top_n: int = 60,
+        video_proposal_anchors_per_video: int = 2,
+        video_proposal_min_pts_gap: float = 1.0,
+        video_proposal_clip_reserve_ratio: float = 0.0,
+        disable_pure_visual_lexical_bonus: bool = False,
     ):
         self.db_path = db_path
         self.faiss_path = faiss_path
@@ -223,6 +230,13 @@ class MultimodalBenchmarkRunner:
             else bool(enable_temporal_rerank)
         )
         self.feature_flags = {
+            "stage2_selection_mode": str(stage2_selection_mode),
+            "video_proposal_mode": str(video_proposal_mode),
+            "video_proposal_top_n": int(video_proposal_top_n),
+            "video_proposal_anchors_per_video": int(video_proposal_anchors_per_video),
+            "video_proposal_min_pts_gap": float(video_proposal_min_pts_gap),
+            "video_proposal_clip_reserve_ratio": float(video_proposal_clip_reserve_ratio),
+            "disable_pure_visual_lexical_bonus": bool(disable_pure_visual_lexical_bonus),
             "enable_spatial_patches": bool(enable_spatial_patches),
             "enable_vlm_caption_lexical": bool(enable_vlm_caption_lexical),
             "enable_vlm_caption_dense": bool(enable_vlm_caption_dense),
@@ -253,6 +267,13 @@ class MultimodalBenchmarkRunner:
             temporal_rerank_lambda=float(temporal_rerank_lambda),
             temporal_rerank_top_k=int(temporal_rerank_top_k),
             enable_clip_consensus_boost=bool(enable_clip_consensus_boost),
+            stage2_selection_mode=str(stage2_selection_mode),
+            video_proposal_mode=str(video_proposal_mode),
+            video_proposal_top_n=int(video_proposal_top_n),
+            video_proposal_anchors_per_video=int(video_proposal_anchors_per_video),
+            video_proposal_min_pts_gap=float(video_proposal_min_pts_gap),
+            video_proposal_clip_reserve_ratio=float(video_proposal_clip_reserve_ratio),
+            disable_pure_visual_lexical_bonus=bool(disable_pure_visual_lexical_bonus),
         )
         self.indexed_videos = set(self.pipeline.video_durations.keys()) if self.pipeline.video_durations else set()
         if not self.indexed_videos and self.pipeline.keyframe_map:
@@ -1227,6 +1248,9 @@ def run_benchmark(
     val_dir: Path = Path("validation"),
     test_dir: Path = Path("test_queries"),
     out_dir: Path = Path("benchmark"),
+    db_path: Path = Path("data/processed/metadata.db"),
+    faiss_path: Path = Path("data/processed/faiss_index.bin"),
+    model_dir: Path = Path("models/siglip2"),
     max_msrvtt: int = 100,
     run_all_splits: bool = True,
     allow_insample_eval: bool = False,
@@ -1242,6 +1266,13 @@ def run_benchmark(
     ltr_blend_weight: float | None = None,
     a5_preset: str | None = None,
     publish_reference: bool = False,
+    stage2_selection_mode: str = "exact",
+    video_proposal_mode: str = "frame_topk",
+    video_proposal_top_n: int = 60,
+    video_proposal_anchors_per_video: int = 2,
+    video_proposal_min_pts_gap: float = 1.0,
+    video_proposal_clip_reserve_ratio: float = 0.0,
+    disable_pure_visual_lexical_bonus: bool = False,
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
@@ -1280,6 +1311,13 @@ def run_benchmark(
         )
 
     feature_flags = {
+        "stage2_selection_mode": str(stage2_selection_mode),
+        "video_proposal_mode": str(video_proposal_mode),
+        "video_proposal_top_n": int(video_proposal_top_n),
+        "video_proposal_anchors_per_video": int(video_proposal_anchors_per_video),
+        "video_proposal_min_pts_gap": float(video_proposal_min_pts_gap),
+        "video_proposal_clip_reserve_ratio": float(video_proposal_clip_reserve_ratio),
+        "disable_pure_visual_lexical_bonus": bool(disable_pure_visual_lexical_bonus),
         "enable_spatial_patches": bool(enable_spatial_patches),
         "enable_vlm_caption_lexical": bool(enable_vlm_caption_lexical),
         "enable_vlm_caption_dense": bool(enable_vlm_caption_dense),
@@ -1292,6 +1330,11 @@ def run_benchmark(
         "a5_preset": a5_preset,
     }
 
+    db_path = Path(db_path)
+    faiss_path = Path(faiss_path)
+    model_dir = Path(model_dir)
+    processed_dir = db_path.resolve().parent
+
     src_videntra_files = [
         p for p in sorted(Path("src/videntra").rglob("*"))
         if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
@@ -1302,20 +1345,26 @@ def run_benchmark(
         Path("scripts/run_validation_benchmark.py"),
         val_dir,
         test_dir,
-        Path("data/processed/metadata.db"),
-        Path("data/processed/faiss_index.bin"),
-        Path("data/processed/faiss_text_e5_384.bin"),
-        Path("data/processed/e5_text_manifest.json"),
-        Path("data/processed/faiss_e5_caption_384.bin"),
-        Path("data/processed/e5_caption_manifest.json"),
+        db_path,
+        faiss_path,
+        processed_dir / "faiss_text_e5_384.bin",
+        processed_dir / "e5_text_manifest.json",
+        processed_dir / "faiss_e5_caption_384.bin",
+        processed_dir / "e5_caption_manifest.json",
+        processed_dir / "spatial_patches_fp16.npy",
+        processed_dir / "spatial_patches_map.jsonl",
+        processed_dir / "p85_receipt.json",
         *( [ltr_model_path] if ltr_model_path is not None else [] ),
-        Path("models/siglip2"),
+        model_dir,
         Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
     ]
     input_hashes = hash_paths(input_paths)
     runner = _construct_runner(
         MultimodalBenchmarkRunner,
         {
+            "db_path": db_path,
+            "faiss_path": faiss_path,
+            "model_dir": model_dir,
             "ltr_model_path": ltr_model_path,
             "enable_spatial_patches": bool(enable_spatial_patches),
             "enable_vlm_caption_lexical": bool(enable_vlm_caption_lexical),
@@ -1326,6 +1375,13 @@ def run_benchmark(
             "temporal_rerank_top_k": int(temporal_rerank_top_k),
             "enable_clip_consensus_boost": resolved_consensus_boost,
             "ltr_blend_weight": float(resolved_ltr_weight),
+            "stage2_selection_mode": str(stage2_selection_mode),
+            "video_proposal_mode": str(video_proposal_mode),
+            "video_proposal_top_n": int(video_proposal_top_n),
+            "video_proposal_anchors_per_video": int(video_proposal_anchors_per_video),
+            "video_proposal_min_pts_gap": float(video_proposal_min_pts_gap),
+            "video_proposal_clip_reserve_ratio": float(video_proposal_clip_reserve_ratio),
+            "disable_pure_visual_lexical_bonus": bool(disable_pure_visual_lexical_bonus),
         },
     )
     if ltr_model_path is not None:
@@ -1549,6 +1605,9 @@ def run_benchmark(
         "splits": selected_splits,
         "allow_insample_eval": allow_insample_eval,
         "publish_reference": bool(publish_reference),
+        "db_path": str(db_path),
+        "faiss_path": str(faiss_path),
+        "model_dir": str(model_dir),
         "ltr_model_path": str(ltr_model_path) if ltr_model_path is not None else None,
         "ltr_model_resolved_path": gate.get("ltr_model_resolved_path"),
         "ablation_config": "A5",
@@ -1572,9 +1631,20 @@ def run_benchmark(
 
     git_sha = get_git_sha()
     hardware_info = get_hardware_info(device=getattr(runner, "device", "cpu"))
+    artifact_tokens = (
+        "metadata.db",
+        db_path.name,
+        faiss_path.name,
+        "faiss_",
+        "manifest",
+        "spatial_patches",
+        "p85_receipt",
+        "videntra_ltr",
+        "siglip2",
+    )
     snapshot_artifacts = {
         k: v for k, v in input_hashes.items()
-        if any(tok in k for tok in ("metadata.db", "faiss_", "manifest", "videntra_ltr", "siglip2"))
+        if any(tok in k for tok in artifact_tokens)
     }
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
     final_summary = {
@@ -2020,6 +2090,9 @@ if __name__ == "__main__":
     parser.add_argument("--val-dir", type=Path, default=Path("validation"))
     parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))
     parser.add_argument("--out-dir", type=Path, default=Path("work/experiments") / ("run_" + time.strftime("%Y%m%d_%H%M%S")))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
+    parser.add_argument("--model-dir", type=Path, default=Path("models/siglip2"))
     parser.add_argument("--max-msrvtt", type=int, default=100)
     parser.add_argument("--single-split-only", action="store_true")
     parser.add_argument("--splits", type=str, default=None, help="Comma-separated splits to evaluate (e.g. dev_150,dev_full_859)")
@@ -2038,12 +2111,22 @@ if __name__ == "__main__":
     parser.add_argument("--disable-spatial-patches", action="store_true")
     parser.add_argument("--disable-vlm-caption-lexical", action="store_true")
     parser.add_argument("--disable-vlm-caption-dense", action="store_true")
+    parser.add_argument("--stage2-selection-mode", choices=("exact", "legacy_union"), default="exact")
+    parser.add_argument("--video-proposal-mode", choices=("frame_topk", "video_max", "video_mean_top2_pts", "video_rrf_max_top2"), default="frame_topk")
+    parser.add_argument("--video-proposal-top-n", type=int, default=60)
+    parser.add_argument("--video-proposal-anchors-per-video", type=int, default=2)
+    parser.add_argument("--video-proposal-min-pts-gap", type=float, default=1.0)
+    parser.add_argument("--video-proposal-clip-reserve-ratio", type=float, default=0.0)
+    parser.add_argument("--disable-pure-visual-lexical-bonus", action="store_true")
     args = parser.parse_args()
 
     run_benchmark(
         val_dir=args.val_dir,
         test_dir=args.test_dir,
         out_dir=args.out_dir,
+        db_path=args.db_path,
+        faiss_path=args.faiss_path,
+        model_dir=args.model_dir,
         max_msrvtt=args.max_msrvtt,
         run_all_splits=not args.single_split_only,
         allow_insample_eval=args.allow_insample_eval,
@@ -2059,4 +2142,11 @@ if __name__ == "__main__":
         ltr_blend_weight=args.ltr_blend_weight,
         a5_preset=args.a5_preset,
         publish_reference=args.publish_reference,
+        stage2_selection_mode=args.stage2_selection_mode,
+        video_proposal_mode=args.video_proposal_mode,
+        video_proposal_top_n=args.video_proposal_top_n,
+        video_proposal_anchors_per_video=args.video_proposal_anchors_per_video,
+        video_proposal_min_pts_gap=args.video_proposal_min_pts_gap,
+        video_proposal_clip_reserve_ratio=args.video_proposal_clip_reserve_ratio,
+        disable_pure_visual_lexical_bonus=args.disable_pure_visual_lexical_bonus,
     )

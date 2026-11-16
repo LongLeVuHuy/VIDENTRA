@@ -23,6 +23,7 @@ if str(_REPO_ROOT) not in sys.path:
 from scripts.capture_msr_candidate_pools import apply_clip_reserve, sha256_text
 from scripts.kaggle_videoprism_worker import SHARD_FILENAMES
 from videntra.evaluation.provenance import hash_paths, sha256_file
+from videntra.ranking.vl_reranker_cache import load_vl_reranker_cache, rerank_top_m_with_vl
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -193,6 +194,11 @@ def run_replay(
     allow_synthetic: bool = False,
     strict_vp: bool = True,
     vp_coverage_policy: str = "full",
+    vl_cache: Path | None = None,
+    vl_top_m: int = 5,
+    vl_mode: str = "pure",
+    vl_beta: float = 0.5,
+    strict_vl_contract: bool = True,
     out_dir: Path = Path("work/experiments/clip_vp_replay"),
 ) -> dict[str, Any]:
     if pool not in ("a5", "clip"):
@@ -205,7 +211,14 @@ def run_replay(
         raise ValueError(f"alpha must be in [0.0, 1.0], got {alpha}")
     if vp_coverage_policy not in ("full", "preserve-unscored"):
         raise ValueError(f"Unknown VP coverage policy: {vp_coverage_policy}")
+    if vl_top_m < 1:
+        raise ValueError(f"vl_top_m must be >= 1, got {vl_top_m}")
+    if vl_mode not in ("pure", "rrf"):
+        raise ValueError(f"vl_mode must be 'pure' or 'rrf', got {vl_mode}")
+    if not (0.0 <= float(vl_beta) <= 1.0):
+        raise ValueError(f"vl_beta must be in [0.0, 1.0], got {vl_beta}")
     alpha = float(alpha)
+    vl_beta = float(vl_beta)
 
     t0 = time.perf_counter()
     queries_path = pools_dir / "queries.jsonl"
@@ -266,6 +279,12 @@ def run_replay(
             vp_dir, queries_by_id, allow_synthetic=allow_synthetic
         )
 
+    vl_bundle: dict[str, Any] | None = (
+        load_vl_reranker_cache(vl_cache, strict_contract=strict_vl_contract)
+        if vl_cache is not None
+        else None
+    )
+
     capture_receipt = (
         json.loads(capture_receipt_path.read_text(encoding="utf-8"))
         if capture_receipt_path.is_file()
@@ -276,6 +295,8 @@ def run_replay(
     fallback_count = 0
     vp_coverage_count = 0
     vp_partial_count = 0
+    vl_applied_count = 0
+    vl_fallback_count = 0
     top1_eligible_count = 0
     top1_changed_count = 0
 
@@ -336,9 +357,39 @@ def run_replay(
         if vp_partial_applied:
             vp_partial_count += 1
 
+        vl_stats: dict[str, Any] = {
+            "applied": False,
+            "fallback_reason": None,
+            "scored_count": 0,
+            "top_m": vl_top_m,
+            "mode": vl_mode,
+            "beta": vl_beta,
+            "scores": {},
+        }
+        if vl_bundle is not None:
+            vl_entries = (
+                vl_bundle["by_qsha"].get(q_sha)
+                or vl_bundle["by_qid"].get(qid)
+                or {}
+            )
+            ranked_video_ids, vl_stats = rerank_top_m_with_vl(
+                ranked_video_ids,
+                vl_entries,
+                top_m=vl_top_m,
+                mode=vl_mode,
+                beta=vl_beta,
+            )
+            if vl_stats["applied"]:
+                vl_applied_count += 1
+            else:
+                vl_fallback_count += 1
+
         vp_applied = bool(alpha > 0.0 and fallback_reason is None and (vp_coverage_ok or vp_partial_applied))
         top1_has_vec = bool(base_pool and q_vec is not None and base_pool[0] in video_map)
-        top1_change_eligible = bool(vp_applied and top1_has_vec and len(covered_pool) >= 2)
+        top1_change_eligible = bool(
+            (vp_applied and top1_has_vec and len(covered_pool) >= 2)
+            or (vl_stats["applied"] and vl_stats["scored_count"] >= 2)
+        )
         base_top1 = base_pool[0] if base_pool else None
         new_top1 = ranked_video_ids[0] if ranked_video_ids else None
         if top1_change_eligible:
@@ -363,6 +414,10 @@ def run_replay(
             "vp_coverage_ok": vp_coverage_ok,
             "vp_partial_applied": vp_partial_applied,
             "vp_scored_video_count": len(covered_pool),
+            "vl_applied": bool(vl_stats["applied"]),
+            "vl_fallback_reason": vl_stats["fallback_reason"],
+            "vl_scored_count": int(vl_stats["scored_count"]),
+            "vl_scores": vl_stats["scores"],
             "query_plan_mode": a5_row.get("query_plan_mode"),
             "query_plan_cache_hit": a5_row.get("query_plan_cache_hit"),
             "anchor_by_video_id": anchor_by_vid,
@@ -399,6 +454,13 @@ def run_replay(
         "fallback_count": fallback_count,
         "vp_coverage_count": vp_coverage_count,
         "vp_partial_count": vp_partial_count,
+        "vl_cache": str(vl_cache) if vl_cache is not None else None,
+        "vl_cache_sha256": vl_bundle["cache_sha256"] if vl_bundle is not None else None,
+        "vl_top_m": vl_top_m if vl_bundle is not None else None,
+        "vl_mode": vl_mode if vl_bundle is not None else None,
+        "vl_beta": vl_beta if vl_bundle is not None else None,
+        "vl_applied_count": vl_applied_count,
+        "vl_fallback_count": vl_fallback_count,
         "top1_eligible_count": top1_eligible_count,
         "top1_changed_count": top1_changed_count,
         "vp_coverage_policy": vp_coverage_policy,
@@ -430,6 +492,11 @@ def main() -> None:
     parser.add_argument("--allow-synthetic", action="store_true", help="Allow dry-run vectors for smoke tests")
     parser.add_argument("--allow-missing-vp", action="store_true", help="Allow global fallback if VP dir/shard is missing when alpha > 0")
     parser.add_argument("--vp-coverage-policy", choices=("full", "preserve-unscored"), default="full")
+    parser.add_argument("--vl-cache", type=Path, default=None, help="Optional offline Qwen3-VL-Reranker cache JSONL")
+    parser.add_argument("--vl-top-m", type=int, default=5, help="Number of leading candidates scored by VL reranker")
+    parser.add_argument("--vl-mode", choices=("pure", "rrf"), default="pure", help="VL reranking mode over scored head slots")
+    parser.add_argument("--vl-beta", type=float, default=0.5, help="RRF blend weight for VL rank when --vl-mode=rrf")
+    parser.add_argument("--no-strict-vl-contract", action="store_true", help="Allow minimal VL cache rows in debug/smoke tests")
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args()
 
@@ -442,6 +509,11 @@ def main() -> None:
         allow_synthetic=args.allow_synthetic,
         strict_vp=not args.allow_missing_vp,
         vp_coverage_policy=args.vp_coverage_policy,
+        vl_cache=args.vl_cache,
+        vl_top_m=args.vl_top_m,
+        vl_mode=args.vl_mode,
+        vl_beta=args.vl_beta,
+        strict_vl_contract=not args.no_strict_vl_contract,
         out_dir=args.out_dir,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))

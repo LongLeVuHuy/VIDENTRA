@@ -1,15 +1,16 @@
 {
-  "run_id": "41473d9023c54a2fadf405801367659a",
-  "git_sha": "a9f4367",
+  "run_id": "0ee1a4317b97474a8dda740f8c7bc5a1",
+  "git_sha": "807839d",
   "git_worktree": {
     "git_dirty": true,
-    "git_dirty_count": 31,
+    "git_dirty_count": 28,
     "git_dirty_files": [
       " M AGENTS.md",
       " D VIDENTRA_CLIP_RETRIEVAL_VIDEOPRISM_KAGGLE_RUNBOOK.md",
       " D VIDENTRA_CODE_AUDIT_AND_RESEARCH_REPORT.md",
       " D VIDENTRA_HYDROGEN_AUDIT_AND_RESEARCH_ROADMAP.md",
       " D VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md",
+      " D VIDENTRA_MSRVTT_IMPLEMENTATION_PLAN.md",
       " D docs/audit/BLENDER_A5_TIMELINE_DIAGNOSTIC_20261111.md",
       " D docs/audit/BLENDER_LOCALIZATION_ABLATION_20261110.md",
       " D docs/audit/BLENDER_VISUAL_PILOT_20261110.md",
@@ -19,27 +20,23 @@
       " D docs/audit/PHASE9_REMEDIATION_AND_ACCURACY_ROADMAP.md",
       " D docs/audit/QVH_USAGE_EVIDENCE_20261110.md",
       " M scripts/capture_msr_candidate_pools.py",
-      " M scripts/ingest_kaggle_offline_results.py",
-      " M scripts/kaggle_multimodal_offline_worker.py",
+      " M scripts/compare_msr_runs.py",
+      " M scripts/kaggle_videoprism_worker.py",
+      " M scripts/package_kaggle_inputs.py",
+      " M scripts/prepare_clip_vp_kaggle_bundle.py",
+      " M scripts/run_clip_vp_replay.py",
       " M scripts/run_validation_benchmark.py",
-      " M scripts/train_ltr_ranker_cv.py",
-      " M src/videntra/evaluation/provenance.py",
-      " M src/videntra/query/llm.py",
-      " M src/videntra/query/rules.py",
-      " M src/videntra/ranking/learned_ranker.py",
-      " M src/videntra/relations/entities.py",
-      " M src/videntra/retrieval/clip_branch.py",
       " M src/videntra/retrieval/unified_pipeline.py",
+      " M src/videntra/retrieval/visual.py",
       " M tests/api/test_unified_parity.py",
-      " M tests/evaluation/test_provenance_leakage.py",
+      " M tests/evaluation/test_clip_vp_replay.py",
       " M tests/indexing/test_kaggle_offline_pipeline.py",
-      " M tests/query/test_llm_decomposer.py",
-      " M tests/ranking/test_learned_ranker.py",
-      " M tests/retrieval/test_clip_branch.py"
+      " M tests/indexing/test_videoprism_kaggle_pipeline.py",
+      "?? src/videntra/ranking/vl_reranker_cache.py"
     ]
   },
-  "code_sha256": "1144c45f2f288d1f6d1a00c564bb193433ab3d7ad74716290e63ff3a2504cf19",
-  "effective_config_sha256": "522aa54df7a52c27f320737e6333bcc16bdd54124a3063378f8fcab5b21c45c3",
+  "code_sha256": "e29139580e36930aecf9c3ed697207598df5942519276d5438e3e2f68bc5206e",
+  "effective_config_sha256": "bc0ccc579bab8fd75e9ef1b2a7ebf5e03f5110b9b63f030abff121e4f29a4bfe",
   "cpu_thread_settings": {
     "OMP_NUM_THREADS": null,
     "MKL_NUM_THREADS": null,
@@ -876,6 +873,31 @@
       "fallback_count": 21,
       "total_queries": 150
     },
+    "ablation_A0": {
+      "applied_count": 129,
+      "fallback_count": 21,
+      "total_queries": 150
+    },
+    "ablation_A1": {
+      "applied_count": 129,
+      "fallback_count": 21,
+      "total_queries": 150
+    },
+    "ablation_A2": {
+      "applied_count": 129,
+      "fallback_count": 21,
+      "total_queries": 150
+    },
+    "ablation_A3": {
+      "applied_count": 129,
+      "fallback_count": 21,
+      "total_queries": 150
+    },
+    "ablation_A4": {
+      "applied_count": 129,
+      "fallback_count": 21,
+      "total_queries": 150
+    },
     "dev_full_859": {
       "applied_count": 742,
       "fallback_count": 117,
@@ -894,6 +916,36 @@
       "max_abs_delta": 0.000679,
       "p50_max_abs_delta": 0.000102
     },
+    "ablation_A0": {
+      "applied_count": 150,
+      "top1_flipped_count": 0,
+      "max_abs_delta": 0.00012,
+      "p50_max_abs_delta": 5.3e-05
+    },
+    "ablation_A1": {
+      "applied_count": 150,
+      "top1_flipped_count": 0,
+      "max_abs_delta": 0.00013,
+      "p50_max_abs_delta": 6.2e-05
+    },
+    "ablation_A2": {
+      "applied_count": 150,
+      "top1_flipped_count": 0,
+      "max_abs_delta": 0.000178,
+      "p50_max_abs_delta": 8.7e-05
+    },
+    "ablation_A3": {
+      "applied_count": 150,
+      "top1_flipped_count": 0,
+      "max_abs_delta": 0.000679,
+      "p50_max_abs_delta": 0.000102
+    },
+    "ablation_A4": {
+      "applied_count": 150,
+      "top1_flipped_count": 0,
+      "max_abs_delta": 0.000679,
+      "p50_max_abs_delta": 0.000102
+    },
     "dev_full_859": {
       "applied_count": 859,
       "top1_flipped_count": 0,
@@ -904,7 +956,7 @@
       "applied_count": 201,
       "top1_flipped_count": 0,
       "max_abs_delta": 0.000792,
-      "p50_max_abs_delta": 0.000121
+      "p50_max_abs_delta": 0.000118
     }
   },
   "clip_consensus_stats": {
@@ -912,13 +964,33 @@
       "applied_count": 3,
       "top1_changed_count": 3
     },
+    "ablation_A0": {
+      "applied_count": 0,
+      "top1_changed_count": 0
+    },
+    "ablation_A1": {
+      "applied_count": 0,
+      "top1_changed_count": 0
+    },
+    "ablation_A2": {
+      "applied_count": 0,
+      "top1_changed_count": 0
+    },
+    "ablation_A3": {
+      "applied_count": 0,
+      "top1_changed_count": 0
+    },
+    "ablation_A4": {
+      "applied_count": 0,
+      "top1_changed_count": 0
+    },
     "dev_full_859": {
-      "applied_count": 46,
-      "top1_changed_count": 46
+      "applied_count": 47,
+      "top1_changed_count": 47
     },
     "heldout_test_201": {
-      "applied_count": 7,
-      "top1_changed_count": 7
+      "applied_count": 6,
+      "top1_changed_count": 6
     }
   },
   "overlap_with_eval": {
@@ -947,41 +1019,53 @@
     "vlm_caption_lexical"
   ],
   "disabled_channels": [
-    "temporal_rerank"
+    "e5_caption_index",
+    "e5_text_index",
+    "lexical_db",
+    "spatial_patches",
+    "temporal_rerank",
+    "vlm_caption_lexical"
   ],
   "channel_status": {
     "e5_text_index": {
       "status": "ready",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "loaded"
     },
     "lexical_db": {
       "status": "ready",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "connected"
     },
     "e5_caption_index": {
       "status": "missing_artifact",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "e5_caption_index_not_loaded"
     },
     "vlm_caption_lexical": {
       "status": "missing_artifact",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "fts_vlm_caption_not_available"
     },
     "spatial_patches": {
       "status": "missing_artifact",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "spatial_patches_not_loaded"
     },
     "temporal_rerank": {
       "status": "disabled_by_config",
-      "affected_queries": 1210,
+      "affected_queries": 1960,
       "sample_reason": "disabled_by_flag"
     }
   },
   "feature_flags": {
+    "stage2_selection_mode": "exact",
+    "video_proposal_mode": "frame_topk",
+    "video_proposal_top_n": 60,
+    "video_proposal_anchors_per_video": 2,
+    "video_proposal_min_pts_gap": 1.0,
+    "video_proposal_clip_reserve_ratio": 0.0,
+    "disable_pure_visual_lexical_bonus": false,
     "enable_spatial_patches": true,
     "enable_vlm_caption_lexical": true,
     "enable_vlm_caption_dense": true,
@@ -1011,10 +1095,13 @@
     "src\\videntra\\indexing\\faiss_store.py": "b21262e1f33937310586325e9c9b41ecfe6c244ec9514b1375a3a86193ebb89e",
     "data\\processed\\metadata.db": "661db52a1155726ccef2f5d546eb65b30d86b92ee37ef40b7b2893951b4720b1",
     "data\\processed\\faiss_index.bin": "420489c5d5dd5591d588720398d3fea03dc096dbc3c2dc09c4fae2ddceec3867",
-    "data\\processed\\faiss_text_e5_384.bin": "d3fdead80a2499288e0472fa643d5dec8c05b1b47a66e31b4c079b9d39b41993",
-    "data\\processed\\e5_text_manifest.json": "82c7b687d1f02dd147b3cd889eece350f497e39180369ad2676dae1e3e49bc28",
-    "data\\processed\\faiss_e5_caption_384.bin": null,
-    "data\\processed\\e5_caption_manifest.json": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\faiss_text_e5_384.bin": "d3fdead80a2499288e0472fa643d5dec8c05b1b47a66e31b4c079b9d39b41993",
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\e5_text_manifest.json": "82c7b687d1f02dd147b3cd889eece350f497e39180369ad2676dae1e3e49bc28",
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\faiss_e5_caption_384.bin": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\e5_caption_manifest.json": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_fp16.npy": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_map.jsonl": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\p85_receipt.json": null,
     "models\\ranking\\videntra_ltr_v1.json": "432c2c831ec89ef1f9f3d4d796a756c60e4fcccf97b8812171cf8a1df21f8e00",
     "models\\siglip2\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "models\\siglip2\\config.json": "fe8b5fe6d5734360678fd71c11c21e1ea3364bd8598d34295d9206335973ffd7",
@@ -1094,6 +1181,7 @@
     "src\\videntra\\ranking\\features.py": "3a562bad6e28747dc1711afa122605332aaf21fc576f77327837473a75660057",
     "src\\videntra\\ranking\\learned_ranker.py": "d6e4e911f9c27470f314ea1cd08abe6ae1cd2e12e4cec7645057510f025eaef4",
     "src\\videntra\\ranking\\ranker.py": "227742cedd98e30b0aea9398adf01b79395bb2f9111ed66466dfafafdd423f59",
+    "src\\videntra\\ranking\\vl_reranker_cache.py": "08f2aff9c02a2d1500bb8a88819a28eac2e7ae0851b47f8123f79d7f54b0daea",
     "src\\videntra\\registry\\__init__.py": "7f199e59b0ec055ac0368c023c2c8607c2189a4f32297dab8a0203402d6078ee",
     "src\\videntra\\registry\\access.py": "d5e77488b5def1a4c299dfb8a0ab50489dd795519f7125dc9bc6a2df32660949",
     "src\\videntra\\registry\\store.py": "db4d0fe3c920cc1204dc40ff2707067118866a17fef48e8f093bf0ea219e2d36",
@@ -1107,9 +1195,9 @@
     "src\\videntra\\retrieval\\branches.py": "923a565e0c7f4a5d179916b321375f22e44dd73a7c540ba6136169700e64266c",
     "src\\videntra\\retrieval\\clip_branch.py": "59cf53732d5e92a1cf03abaf7fff4894e7ab93ec7b004cc8b2023f3e78dd834e",
     "src\\videntra\\retrieval\\fusion.py": "0ee384dd7d4d918768782dfc18a6f5ca5a87655cba47275a58a2a8ced385af2a",
-    "src\\videntra\\retrieval\\unified_pipeline.py": "f4d1b7035fc839409c7c53801bd81eaa7cbb605a5121149fcefb2bc46b5c94a8",
+    "src\\videntra\\retrieval\\unified_pipeline.py": "45d2cb2a557e6e70afff7f15845a62a5b3287c8224c13e070964fb0bc98a2709",
     "src\\videntra\\retrieval\\union.py": "ab69c789e207e8728e896e6ee07a7c3318e6385fec0b7562e34522f76704c5c0",
-    "src\\videntra\\retrieval\\visual.py": "5eb6259bad9cffc7062df384da00e1fedaf3ffe9cbb78eeb829f7ca2a0bb0f13",
+    "src\\videntra\\retrieval\\visual.py": "5a24022f5dc89f686373e961dd359b63416c7956e36dc596aa898cc5fbb00884",
     "src\\videntra\\runtime\\__init__.py": "6701120409bd5f00b589d0f823709a862e58c8bb6d25e8da378e1437540005bc",
     "src\\videntra\\runtime\\budgets.py": "80088b3a2db4d282be045d22f0f1981541a317a684dbff9864a8efdd7f9ae7be",
     "src\\videntra\\runtime\\scheduler.py": "4ccfde86b4e9d6bbe7100157133a47f40c967c06fbf507de5e9d66ea131839e5",
@@ -1131,7 +1219,7 @@
     "configs\\ingestion\\m1_default.json": "3b3cbde2d28ec91c853083dc152a9e290fdc18113ab3b101eed275d7b631978c",
     "configs\\local\\asset_roots.example.json": "5c6250a866bc359c4a36d1315d157aa2028e089f80f2f8643baf46e252b75d3e",
     "configs\\local\\asset_roots.json": "5c6250a866bc359c4a36d1315d157aa2028e089f80f2f8643baf46e252b75d3e",
-    "scripts\\run_validation_benchmark.py": "73f2dea0519618ae72c6b188d6544394c21ba3b36149d94613055eb39535f79c",
+    "scripts\\run_validation_benchmark.py": "3b76c248ba81d06a8a29c74fc6c2a614cbc572af2ab3349388049f53b0801c40",
     "validation\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "validation\\avc\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "validation\\avc\\candidate_plan_inference.json": "56150c0a7c0f6b252b95cc8764861b001e0d8efd66b1b0f7554a76f5de740e3d",
@@ -1162,10 +1250,13 @@
     "test_queries\\tvr\\tvr_val_release.jsonl": "c6432dba5b07bae643d4a775a5accbd562c6e1e6fdcefbc37d600643fbe720b7",
     "data\\processed\\metadata.db": "661db52a1155726ccef2f5d546eb65b30d86b92ee37ef40b7b2893951b4720b1",
     "data\\processed\\faiss_index.bin": "420489c5d5dd5591d588720398d3fea03dc096dbc3c2dc09c4fae2ddceec3867",
-    "data\\processed\\faiss_text_e5_384.bin": "d3fdead80a2499288e0472fa643d5dec8c05b1b47a66e31b4c079b9d39b41993",
-    "data\\processed\\e5_text_manifest.json": "82c7b687d1f02dd147b3cd889eece350f497e39180369ad2676dae1e3e49bc28",
-    "data\\processed\\faiss_e5_caption_384.bin": null,
-    "data\\processed\\e5_caption_manifest.json": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\faiss_text_e5_384.bin": "d3fdead80a2499288e0472fa643d5dec8c05b1b47a66e31b4c079b9d39b41993",
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\e5_text_manifest.json": "82c7b687d1f02dd147b3cd889eece350f497e39180369ad2676dae1e3e49bc28",
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\faiss_e5_caption_384.bin": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\e5_caption_manifest.json": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_fp16.npy": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_map.jsonl": null,
+    "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\p85_receipt.json": null,
     "models\\ranking\\videntra_ltr_v1.json": "432c2c831ec89ef1f9f3d4d796a756c60e4fcccf97b8812171cf8a1df21f8e00",
     "models\\siglip2\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "models\\siglip2\\config.json": "fe8b5fe6d5734360678fd71c11c21e1ea3364bd8598d34295d9206335973ffd7",
@@ -1179,12 +1270,17 @@
     "data\\raw\\avc\\provenance\\data\\processed\\avc_1.8m\\manifests\\pilot_queries_eval_only.json": "f6b16914e958f9aae999ffa4576067e65b9f95bcb250930c4526c8e3ef609bcb"
   },
   "output_sha256": {
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\benchmark_report.md": "a02c18f3b35a485e74b6b674a945aed3a5e5b8b1fd5ff6c039ec244aded4eb90",
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\benchmark_summary.json": "d7095e46cfd9931feb11e71128080bc68e854e73fc362a454287f82309eabaaf",
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\dev_full_evaluation.jsonl": "69edbd15b56b89f6132f21525f4bc63e7b5143c9875357c5e59f30df679d1b18",
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\heldout_test_201_evaluation.jsonl": "8f0fddc78f5dcb5ce7778e2c0af1a8576842f577ac8486a154ff6e113799f4d4",
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\per_query_evaluation.csv": "10bac78f208a03d529e95d9c14d7f4e784e6e6509df45431e4517af8d235dea8",
-    "work\\experiments\\phase9_step0_20261116\\full_bench\\per_query_evaluation.jsonl": "bbe7d10a5d69de1c10c8f2475f084e74994f07d30da401dd1ae28a5c65009044"
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\ablation_A0_evaluation.jsonl": "e0b011a928433aab0469c0cd63111d83b0f2fe1b299aa18973072d5e92251465",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\ablation_A1_evaluation.jsonl": "6c21f480a1acdaaff79ee7bef35a4d7e8f63da244d75f26a4c46021dbb9cf5b5",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\ablation_A2_evaluation.jsonl": "0fbf997780cee6564a73e640ca3306e6a909db1ba9a1f744d37bea5d0b85a800",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\ablation_A3_evaluation.jsonl": "e27e2afae4c8723a83a5f310b6a37dc72753b388977b33d133e3f7d7d43768c2",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\ablation_A4_evaluation.jsonl": "1b2e04050ff8b45a4d0e6d1796b676b4b83b8dfb781de8692ad2c10eb623a58f",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\benchmark_report.md": "5743c88d0fac637797463ea16135c30708b20323f2a8b691ac087c3c46dbafcd",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\benchmark_summary.json": "ff681a2a5d25b862f01f4f9c776bb58fd4b80ee867b59ba62df8fff4b47d20b3",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\dev_full_evaluation.jsonl": "c19497254299fc992baf7b7975a683675f7458fd7fbb18e0d90be663426cd848",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\heldout_test_201_evaluation.jsonl": "d40155da0d0d8d66b3de763c30da01d7dcb8860962cb17feb1773013dde2c787",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\per_query_evaluation.csv": "082b7f60432da759eb67918dac1c88ac6c9c68a09c17822342ccfc6da58bf0a7",
+    "work\\experiments\\hit_at_1_p0_20261117\\official_benchmark\\per_query_evaluation.jsonl": "e422bf2b4005cca03c460e9edacd7f6a73473d1e4ffbf5bf0bd1e9297fd327a9"
   },
   "inputs_unchanged": true,
   "outputs_verified": true,
@@ -1195,12 +1291,10 @@
     "device": "cpu",
     "argv": [
       "scripts/run_validation_benchmark.py",
-      "--splits",
-      "dev_150,dev_full_859,heldout_test_201",
       "--a5-preset",
       "a5_full",
       "--out-dir",
-      "work/experiments/phase9_step0_20261116/full_bench"
+      "work/experiments/hit_at_1_p0_20261117/official_benchmark"
     ],
     "disk_cache": false
   },
@@ -1214,10 +1308,20 @@
     ],
     "allow_insample_eval": false,
     "publish_reference": false,
+    "db_path": "data\\processed\\metadata.db",
+    "faiss_path": "data\\processed\\faiss_index.bin",
+    "model_dir": "models\\siglip2",
     "ltr_model_path": "models\\ranking\\videntra_ltr_v1.json",
     "ltr_model_resolved_path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\models\\ranking\\videntra_ltr_v1.json",
     "ablation_config": "A5",
     "feature_flags": {
+      "stage2_selection_mode": "exact",
+      "video_proposal_mode": "frame_topk",
+      "video_proposal_top_n": 60,
+      "video_proposal_anchors_per_video": 2,
+      "video_proposal_min_pts_gap": 1.0,
+      "video_proposal_clip_reserve_ratio": 0.0,
+      "disable_pure_visual_lexical_bonus": false,
       "enable_spatial_patches": true,
       "enable_vlm_caption_lexical": true,
       "enable_vlm_caption_dense": true,

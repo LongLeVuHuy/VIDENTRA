@@ -808,3 +808,114 @@ def test_compare_filter_manifest_jsonl_hardening(tmp_path: Path) -> None:
             filter_manifest=overlap_qid_jsonl,
             filter_split="tune",
         )
+
+
+def test_c3_vl_reranker_cache_contract_order_invariance_cascade_and_flip_precision(tmp_path: Path):
+    from videntra.ranking.vl_reranker_cache import (
+        load_vl_reranker_cache,
+        rerank_top_m_with_vl,
+        verify_order_invariance,
+    )
+
+    pools_dir, labels_path, split_lock_path, queries_data = _make_synthetic_pools(tmp_path)
+    q1 = queries_data[0]  # target video0004 (at rank 4 in base A5 pool), msr_q1 base_top1=video0001 (miss)
+    q2 = queries_data[1]  # target video0001 (at rank 1 in base A5 pool), msr_q2 base_top1=video0001 (hit)
+    q1_sha = sha256_text(q1["query_text"])
+    q2_sha = sha256_text(q2["query_text"])
+
+    def _make_vl_row(q_id: str, q_sha: str, vid: str, score: float | None, status: str = "ok"):
+        return {
+            "query_id": q_id,
+            "query_text_sha256": q_sha,
+            "video_id": vid,
+            "media_sha256": "deadbeef",
+            "snapshot_sha256": "cafebabe",
+            "frame_ordinals": [0, 4, 8, 12],
+            "frame_pts_time": [0.0, 1.0, 2.0, 3.0],
+            "sampling_recipe": "uniform_4f",
+            "model_revision": "Qwen/Qwen3-VL-Reranker-2B@rev1",
+            "processor_revision": "proc@rev1",
+            "code_sha256": "code123",
+            "prompt_sha256": "prompt123",
+            "score": score,
+            "status": status,
+        }
+
+    # 1. Leakage/missing contract check
+    bad_cache = tmp_path / "bad_vl.jsonl"
+    _write_jsonl(bad_cache, [{**_make_vl_row("msr_q1", q1_sha, "video0001", 0.5), "a5_rank": 1}])
+    with pytest.raises(ValueError, match="forbidden"):
+        load_vl_reranker_cache(bad_cache, strict_contract=True)
+
+    # 2. Valid cache: rescues msr_q1 (moves video0004 -> top1); protects msr_q2 because top1 is unscored!
+    vl_cache = tmp_path / "vl_cache.jsonl"
+    vl_rows = [
+        _make_vl_row("msr_q1", q1_sha, "video0001", 0.25),
+        _make_vl_row("msr_q1", q1_sha, "video0002", None, status="oom"),
+        _make_vl_row("msr_q1", q1_sha, "video0003", 0.40),
+        _make_vl_row("msr_q1", q1_sha, "video0004", 0.95),
+        # msr_q2: baseline top1 video0001 is unscored -> baseline top1 protected!
+        _make_vl_row("msr_q2", q2_sha, "video0002", 0.99),
+        _make_vl_row("msr_q2", q2_sha, "video0003", 0.80),
+        # qvh_q3: wrong-to-wrong swap (base_top1=video0001, vl elevates video0005 to top1 while target is qvh_yt11111_0.0_10.0)
+        _make_vl_row("qvh_q3", sha256_text(queries_data[2]["query_text"]), "video0001", 0.10),
+        _make_vl_row("qvh_q3", sha256_text(queries_data[2]["query_text"]), "video0005", 0.90),
+    ]
+    _write_jsonl(vl_cache, vl_rows)
+    verify_order_invariance(vl_rows, list(reversed(vl_rows)))
+
+    # Unit check on top1_unscored & unscored slot preservation
+    reranked_q1, st_q1 = rerank_top_m_with_vl(
+        ["video0001", "video0002", "video0003", "video0004", "video0005", "video0006"],
+        load_vl_reranker_cache(vl_cache)["by_qsha"][q1_sha],
+        top_m=5,
+        mode="pure",
+    )
+    assert reranked_q1[0] == "video0004"
+    assert reranked_q1[1] == "video0002"  # unscored slot 1 preserved!
+    assert reranked_q1[5] == "video0006"  # tail beyond top_m untouched!
+    assert st_q1["applied"] is True
+
+    reranked_q2, st_q2 = rerank_top_m_with_vl(
+        ["video0001", "video0002", "video0003", "video0004"],
+        load_vl_reranker_cache(vl_cache)["by_qsha"][q2_sha],
+        top_m=5,
+        mode="pure",
+    )
+    assert reranked_q2[0] == "video0001"  # baseline top-1 returned
+    assert st_q2["fallback_reason"] == "top1_unscored"
+
+    # 3. End-to-end replay & flip_precision in compare_runs
+    base_dir = tmp_path / "base_a5"
+    chal_vl_dir = tmp_path / "chal_vl"
+    run_replay(pools_dir=pools_dir, pool="a5", k=20, alpha=0.0, out_dir=base_dir)
+    vl_rec = run_replay(
+        pools_dir=pools_dir,
+        pool="a5",
+        k=20,
+        alpha=0.0,
+        vl_cache=vl_cache,
+        vl_top_m=5,
+        vl_mode="pure",
+        out_dir=chal_vl_dir,
+    )
+    assert vl_rec["vl_cache_sha256"] == sha256_file(vl_cache)
+    assert vl_rec["vl_applied_count"] == 2  # msr_q1 and qvh_q3
+
+    cmp_summary = compare_runs(
+        baseline_dir=base_dir,
+        challenger_dir=chal_vl_dir,
+        labels_path=labels_path,
+        split_lock_path=split_lock_path,
+        out_dir=tmp_path / "cmp_vl",
+        require_same_base_pool=True,
+        n_resamples=200,
+    )
+    ov = cmp_summary["overall"]
+    assert ov["rescued_hits"] == 1
+    assert ov["lost_hits"] == 0
+    assert ov["both_wrong_swaps"] == 1
+    assert ov["top1_changed_count"] == 2
+    assert ov["flip_precision"] == pytest.approx(0.5, abs=1e-6)
+    assert "Flip precision:" in (tmp_path / "cmp_vl" / "benchmark_report.md").read_text(encoding="utf-8")
+

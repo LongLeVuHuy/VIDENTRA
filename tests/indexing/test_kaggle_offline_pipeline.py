@@ -555,3 +555,65 @@ def test_ingest_p85_transactional_rollback_on_mid_ingest_failure(tmp_path: Path,
     receipt_path.write_text(json.dumps(rec), encoding="utf-8")
     with pytest.raises(ValueError, match="allow-partial-keyframes"):
         ingest_p85_artifacts(outputs_dir=outputs, db_path=db_path, dry_run=True)
+
+
+def test_c2_package_db_keyframes_stratified_pilot_and_image_sha256(tmp_path: Path):
+    from PIL import Image
+
+    db_path = tmp_path / "meta.db"
+    store = OfflineMetadataStore(db_path)
+    for vid in ("video0001", "qvh_abc"):
+        store.register_video({
+            "video_id": vid,
+            "dataset": "msrvtt" if vid.startswith("video") else "qvhighlights",
+            "file_path": f"{vid}.mp4",
+            "duration_ms": 4000,
+            "fps": 1.0,
+            "time_base_num": 1,
+            "time_base_den": 1000,
+            "width": 64,
+            "height": 64,
+            "total_frames": 4,
+            "has_audio": 0,
+            "status": "completed",
+        })
+    kfs = []
+    fid = 0
+    for vid in ("video0001", "qvh_abc"):
+        for idx in range(3):
+            kfs.append({
+                "keyframe_id": f"{vid}__kf_{idx:05d}",
+                "video_id": vid,
+                "keyframe_index": idx,
+                "source_frame_index": idx,
+                "pts": idx * 1000,
+                "time_base": "1/1000",
+                "timestamp_ms": idx * 1000,
+                "keyframe_path": "",
+                "thumbnail_path": "",
+                "faiss_id": fid,
+                "sampling_reason": "uniform",
+            })
+            fid += 1
+    store.insert_keyframes(kfs)
+
+    out_dir = tmp_path / "pilot_pkg"
+    images_dir = out_dir / "images"
+    images_dir.mkdir(parents=True)
+    # Pre-seed image files to avoid FFmpeg dependency while verifying sha256 + stratification
+    for kf in kfs:
+        Image.new("RGB", (32, 32), color=(10, 20, 30)).save(images_dir / f"{kf['keyframe_id']}.jpg")
+
+    summary = package_db_keyframes(
+        db_path=db_path,
+        output_dir=out_dir,
+        limit=4,
+        stratified_pilot=True,
+    )
+    assert summary["num_keyframes"] == 4
+    assert summary["stratified_pilot"] is True
+    rows = [json.loads(line) for line in (out_dir / "keyframes_manifest.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    assert len(rows) == 4
+    assert {r["video_id"] for r in rows} == {"video0001", "qvh_abc"}
+    assert all(len(str(r.get("image_sha256", ""))) == 64 for r in rows)
+

@@ -336,3 +336,86 @@ def test_dry_run_shard_roundtrip_parity_and_resume(tmp_path: Path):
     (out_1 / "query_vectors.npy").write_bytes(b"corrupted")
     with pytest.raises(ValueError):
         run_videoprism_worker(bundle_dir=bundle_dir, output_dir=out_1, dry_run=True, resume=True)
+
+
+def test_c1_bundle_limits_basename_collision_and_worker_zero_error_gate(tmp_path: Path):
+    media_root = tmp_path / "media_src"
+    (media_root / "sub1").mkdir(parents=True)
+    (media_root / "sub2").mkdir(parents=True)
+    v1 = media_root / "sub1" / "clip_01.mp4"
+    v2 = media_root / "sub2" / "clip_01.mp4"  # Duplicate basename across distinct folders!
+    _write_synthetic_mp4(v1, num_frames=8, width=160, height=90, fps=4)
+    _write_synthetic_mp4(v2, num_frames=8, width=160, height=90, fps=4)
+
+    queries_p = tmp_path / "queries.jsonl"
+    pool_p = tmp_path / "a5_pool.jsonl"
+    q_rows = [
+        {"query_id": f"q{i}", "query_text": f"query {i}", "query_text_sha256": hashlib.sha256(f"query {i}".encode()).hexdigest()}
+        for i in range(5)
+    ]
+    p_rows = [
+        {"query_id": f"q{i}", "pool_video_ids": ["vid_001", "vid_002", "vid_003"]}
+        for i in range(5)
+    ]
+    queries_p.write_text("\n".join(json.dumps(r) for r in q_rows) + "\n", encoding="utf-8")
+    pool_p.write_text("\n".join(json.dumps(r) for r in p_rows) + "\n", encoding="utf-8")
+
+    # 1. max_queries / max_videos slicing works deterministically
+    reg_ok = tmp_path / "registry_ok.jsonl"
+    reg_ok.write_text(
+        "\n".join([
+            json.dumps({"video_id": "vid_001", "relative_path": "sub1/clip_01.mp4"}),
+            json.dumps({"video_id": "vid_002", "relative_path": "sub2/clip_01.mp4"}),
+            json.dumps({"video_id": "vid_003", "relative_path": "sub3/clip_03.mp4"}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    smoke_bundle = tmp_path / "smoke_bundle"
+    manifest = prepare_kaggle_bundle(
+        queries_path=queries_p,
+        pool_paths=[pool_p],
+        output_dir=smoke_bundle,
+        video_registry_path=reg_ok,
+        media_root=media_root,
+        max_queries=4,
+        max_videos=2,
+    )
+    assert manifest["num_queries"] == 4
+    assert manifest["num_candidate_videos"] == 2
+
+    # 2. copy_media raises immediately on basename collision across distinct video_ids
+    with pytest.raises(ValueError, match="Duplicate media basename collision"):
+        prepare_kaggle_bundle(
+            queries_path=queries_p,
+            pool_paths=[pool_p],
+            output_dir=tmp_path / "collision_bundle",
+            video_registry_path=reg_ok,
+            media_root=media_root,
+            copy_media=True,
+        )
+
+    # 3. Worker require_zero_errors=True fails on decode/missing media error
+    bad_bundle = tmp_path / "bad_worker_bundle"
+    bad_bundle.mkdir()
+    (bad_bundle / "queries.jsonl").write_text(json.dumps(q_rows[0]) + "\n", encoding="utf-8")
+    (bad_bundle / "media_manifest.jsonl").write_text(
+        json.dumps({"video_id": "missing_v", "relative_path": "missing.mp4", "media_sha256": "0" * 64}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="require_zero_errors=True"):
+        run_videoprism_worker(
+            bundle_dir=bad_bundle,
+            output_dir=tmp_path / "bad_worker_out",
+            dry_run=True,
+            require_zero_errors=True,
+        )
+
+    # 4. verify_shard_outputs count mismatch raises
+    with pytest.raises(ValueError, match="Video count mismatch"):
+        verify_shard_outputs(
+            tmp_path / "bad_worker_out",
+            expected_dim=768,
+            expected_video_count=1,
+            expected_query_count=1,
+        )
+

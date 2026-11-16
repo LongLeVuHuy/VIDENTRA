@@ -164,3 +164,31 @@ Lệnh minh họa một mức alpha. Trước lúc dùng kết quả để chọ
 - Đã duyệt nguồn nghiên cứu công khai và repo upstream, đọc SSOT/capture/worker/ingest, kiểm checksum hai JSONL của `41473d90`, đếm lại các rank/coverage và chạy fixture exact-blend. Đã truy vấn trạng thái và file output của notebook VideoPrism cũ bằng Kaggle CLI. Số chất lượng là từ run đã lưu.
 - Chạy `.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/retrieval/test_clip_branch.py tests/evaluation/test_clip_vp_replay.py tests/indexing/test_videoprism_kaggle_pipeline.py tests/indexing/test_kaggle_offline_pipeline.py` trên Windows CPU. **34 passed trong 7,08 giây**.
 - Lượt này là nghiên cứu và lập kế hoạch. Thay đổi retrieval, benchmark sinh predictions mới và các thí nghiệm Kaggle ở trên chờ lượt triển khai.
+
+## 9. Nhật ký triển khai cục bộ & kết quả thực nghiệm CPU (17/11/2026)
+
+### Đã triển khai & kiểm thử (`604/604` pytest PASS)
+
+- **P0.1 Exact Blended Stage 2 (`src/videntra/retrieval/unified_pipeline.py`):** Bổ sung `_build_stage2_valid_mask`, `_select_topk_valid_frames` (tie-break `(-score, fid)` ổn định ngay tại cutoff) và mặc định `stage2_selection_mode="exact"` tính `0.70*s768 + 0.30*s864` trước khi cắt Top-K; bảo toàn đường `"legacy_union"` (flag) và `"faiss_fallback"`.
+- **P0.2 Video-Level Proposal (`src/videntra/retrieval/unified_pipeline.py`):** Thêm `_build_video_level_visual_proposals()` với cờ `video_proposal_mode` (`frame_topk`, `video_max`, `video_mean_top2_pts`, `video_rrf_max_top2`), `video_proposal_top_n`, `video_proposal_anchors_per_video`, `video_proposal_min_pts_gap`, `video_proposal_clip_reserve_ratio`.
+- **P0.3 Provenance, Pure-Visual Gate & Hubness (`unified_pipeline.py`, `visual.py`):** Tách `caption_only_candidates` khỏi nhánh `visual` (`rrf_vis == 0.0`, `"visual" not in branches`, `rrf_caption` tách riêng), giới hạn $\le 2$ anchors/video/nguồn, xác minh SHA-256 `faiss_e5_caption_384.bin` & `e5_caption_manifest.json` qua `p85_receipt.json`; thêm `_classify_modality_intent()`, cờ `disable_pure_visual_lexical_bonus`, `compute_hubness_report()` & `apply_querybank_norm()`.
+- **P0.4 Traces & Fixed-Pool Capture (`unified_pipeline.py`, `capture_msr_candidate_pools.py`):** Xuất `stage_traces` (`before_base_fusion`, `before_rerank`, `after_rerank`) và kiểm tra parity `alpha=0` (`0` thay đổi Top-1).
+- **Sec 5.5 Staging Benchmark Paths (`scripts/run_validation_benchmark.py`):** Thêm `--db-path`, `--faiss-path`, `--model-dir` cùng các cờ P0.1–P0.3, resolve sidecar theo `db_path.parent` và băm đầy đủ `spatial_patches_*` / `p85_receipt.json` / `faiss_e5_*`.
+- **C1/C2/C3 Local Tooling:** Thêm `--max-queries`/`--max-videos` & kiểm lỗi trùng `relative_path`/basename (`prepare_clip_vp_kaggle_bundle.py`), `expected_video_count`/`expected_query_count` + `require_zero_errors=True` (`kaggle_videoprism_worker.py`), `--stratified-pilot` + `image_sha256` (`package_kaggle_inputs.py`), `src/videntra/ranking/vl_reranker_cache.py` + cascade `--vl-cache`/`--vl-top-m`/`--vl-mode`/`--vl-beta` (`run_clip_vp_replay.py`) + `flip_precision`, `rescued_hits`, `lost_hits`, `both_wrong_swaps` (`compare_msr_runs.py`).
+
+### Kết quả thực nghiệm CPU P0 trên `dev_full_859` (`rules-only`, `a5_full`, `K=20`)
+
+| Thí nghiệm | Slice | Hit@1 (Base $\to$ Chal) | W / L | MRR@10 | Recall@20 | QVH Hit@1 | AVC Hit@1 | Quyết định |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| `legacy -> exact` | `overall` (`859`) | `43.77% -> 43.77%` | `0 / 0` | `0.5142 -> 0.5146` | `76.13%` | `86.36%` | `92.86%` | **Chấp nhận mặc định** (`Hit@5`: `534 -> 535`) |
+| `legacy -> exact` | `tune` / `confirm` | `45.09% -> 45.09%` / `40.70% -> 40.70%` | `0/0` / `0/0` | `0.5242` / `0.4921` | `76.21% (+1)` / `75.97% (-1)` | `93.33%` / `71.43%` | `95.00%` / `87.50%` | Giữ nguyên guardrails |
+| `exact -> v_max` | `overall` (`859`) | `43.77% -> 41.44%` | `10 / 30` | `0.5002` | `75.79%` | `68.18%` | `92.86%` | Không chọn mặc định (tụt QVH `-18.18 pp`) |
+| `exact -> v_top2` | `overall` (`859`) | `43.77% -> 41.33%` | `10 / 31` | `0.4996` | `75.67%` | `68.18%` | `92.86%` | Không chọn mặc định |
+| `exact -> v_rrf` | `overall` (`859`) | `43.77% -> 41.44%` | `10 / 30` | `0.5002` | `75.55%` | `68.18%` | `92.86%` | Không chọn mặc định |
+| `exact -> v_top2_clip10` | `overall` (`859`) | `43.77% -> 41.33%` | `10 / 31` | `0.4995` | `75.79%` (`tune 76.54%`) | `68.18%` | `92.86%` | Giữ flag nghiên cứu |
+| `exact -> no_lex_pv` | `overall` (`859`) | `43.77% -> 42.84%` | `8 / 16` | `0.5058` | `75.90%` | `86.36%` | `75.00%` | Giữ mặc định `False` (tụt AVC `-17.86 pp`) |
+
+- **Hubness trên `exact` (`dev_full_859`):** `unique_top1_videos = 571/859`, `top1_gini = 0.2738` (`tune = 0.2268`, `confirm = 0.1281`), `topk_gini = 0.4576`, `topk_max_freq = 54`.
+- **Benchmark tham chiếu mới (`Run ID 0ee1a4317b97474a8dda740f8c7bc5a1`, đồng bộ [`benchmark/`](benchmark/)):** `dev_150` Hit@1 **`62.00%`**, MRR **`0.6571`**, nDCG@10 **`0.6770`**, Moment@0.5 **`72.73%`**, Pure-ASR FP `0/2`; `dev_full_859` **`43.77%`**, MRR **`0.5146`**; `heldout_test_201` **`39.80%`**, MRR **`0.4805`**, `leakage_free=True`, `gate_passed=True`.
+- **Chờ chạy Kaggle GPU:** `C1` (VideoPrism-LvT-B 6v×4q smoke & full shard), `C2` (`P8-5` Florence-2/E5/patches staging), `C3` (`Qwen3-VL-Reranker-2B` Top-5 / VP→VL cascade).
+

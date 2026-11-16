@@ -473,6 +473,13 @@ def capture_pools(
     enable_clip_consensus_boost: bool | None = None,
     ltr_blend_weight: float | None = None,
     a5_preset: str | None = None,
+    stage2_selection_mode: str = "exact",
+    video_proposal_mode: str = "frame_topk",
+    video_proposal_top_n: int = 60,
+    video_proposal_anchors_per_video: int = 2,
+    video_proposal_min_pts_gap: float = 1.0,
+    video_proposal_clip_reserve_ratio: float = 0.0,
+    disable_pure_visual_lexical_bonus: bool = False,
 ) -> dict[str, Any]:
     if max_k < 2:
         raise ValueError(f"max_k must be >= 2, got {max_k}")
@@ -521,6 +528,13 @@ def capture_pools(
         query_plan_cache=query_plan_cache,
         query_plan_revision=query_plan_revision,
         query_plan_prompt_version=query_plan_prompt_version,
+        stage2_selection_mode=stage2_selection_mode,
+        video_proposal_mode=video_proposal_mode,
+        video_proposal_top_n=video_proposal_top_n,
+        video_proposal_anchors_per_video=video_proposal_anchors_per_video,
+        video_proposal_min_pts_gap=video_proposal_min_pts_gap,
+        video_proposal_clip_reserve_ratio=video_proposal_clip_reserve_ratio,
+        disable_pure_visual_lexical_bonus=disable_pure_visual_lexical_bonus,
     )
     try:
         indexed_videos = set(pipeline.video_durations.keys()) if pipeline.video_durations else set()
@@ -660,6 +674,10 @@ def capture_pools(
                 "pool_size": a5_built["pool_size"],
                 "query_plan_mode": query_plan.routing_mode if query_plan is not None else None,
                 "query_plan_cache_hit": query_plan.cache_hit if query_plan is not None else None,
+                "modality_intent": diag.get("modality_intent"),
+                "stage2_retrieval_path": diag.get("stage2_retrieval_path"),
+                "video_proposal_stats": diag.get("video_proposal_stats"),
+                "stage_traces": diag.get("stage_traces"),
             })
             clip_rows.append({
                 "query_id": qid,
@@ -752,6 +770,13 @@ def capture_pools(
             "max_k": max_k,
             "branch_top_n": branch_top_n,
             "a5_preset": a5_preset,
+            "stage2_selection_mode": str(stage2_selection_mode),
+            "video_proposal_mode": str(video_proposal_mode),
+            "video_proposal_top_n": int(video_proposal_top_n),
+            "video_proposal_anchors_per_video": int(video_proposal_anchors_per_video),
+            "video_proposal_min_pts_gap": float(video_proposal_min_pts_gap),
+            "video_proposal_clip_reserve_ratio": float(video_proposal_clip_reserve_ratio),
+            "disable_pure_visual_lexical_bonus": bool(disable_pure_visual_lexical_bonus),
             "enable_spatial_patches": True,
             "enable_vlm_caption_lexical": True,
             "enable_vlm_caption_dense": True,
@@ -896,6 +921,13 @@ def main() -> None:
     parser.add_argument("--query-plan-prompt-version", default="compact-v1")
     parser.add_argument("--query-plan-receipt", type=Path)
     parser.add_argument("--allow-dry-run-cache", action="store_true")
+    parser.add_argument("--stage2-selection-mode", choices=("exact", "legacy_union"), default="exact")
+    parser.add_argument("--video-proposal-mode", choices=("frame_topk", "video_max", "video_mean_top2_pts", "video_rrf_max_top2"), default="frame_topk")
+    parser.add_argument("--video-proposal-top-n", type=int, default=60)
+    parser.add_argument("--video-proposal-anchors-per-video", type=int, default=2)
+    parser.add_argument("--video-proposal-min-pts-gap", type=float, default=1.0)
+    parser.add_argument("--video-proposal-clip-reserve-ratio", type=float, default=0.0)
+    parser.add_argument("--disable-pure-visual-lexical-bonus", action="store_true")
     args = parser.parse_args()
 
     receipt = capture_pools(
@@ -923,6 +955,13 @@ def main() -> None:
         enable_clip_consensus_boost=args.enable_clip_consensus_boost,
         ltr_blend_weight=args.ltr_blend_weight,
         a5_preset=args.a5_preset,
+        stage2_selection_mode=args.stage2_selection_mode,
+        video_proposal_mode=args.video_proposal_mode,
+        video_proposal_top_n=args.video_proposal_top_n,
+        video_proposal_anchors_per_video=args.video_proposal_anchors_per_video,
+        video_proposal_min_pts_gap=args.video_proposal_min_pts_gap,
+        video_proposal_clip_reserve_ratio=args.video_proposal_clip_reserve_ratio,
+        disable_pure_visual_lexical_bonus=args.disable_pure_visual_lexical_bonus,
     )
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
 

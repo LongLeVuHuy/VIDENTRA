@@ -395,7 +395,13 @@ def _load_video_16_frames(
     return frames, recipe
 
 
-def verify_shard_outputs(output_dir: Path, expected_dim: int | None = None) -> dict[str, Any]:
+def verify_shard_outputs(
+    output_dir: Path,
+    expected_dim: int | None = None,
+    *,
+    expected_video_count: int | None = None,
+    expected_query_count: int | None = None,
+) -> dict[str, Any]:
     """Verify-on-read for video & query vector shards and JSONL row manifests."""
     out = Path(output_dir)
     for fname in SHARD_FILENAMES:
@@ -404,6 +410,14 @@ def verify_shard_outputs(output_dir: Path, expected_dim: int | None = None) -> d
 
     v_rows = _read_jsonl(out / "video_rows.jsonl")
     q_rows = _read_jsonl(out / "query_rows.jsonl")
+    if expected_video_count is not None and len(v_rows) != expected_video_count:
+        raise ValueError(
+            f"Video count mismatch: expected {expected_video_count}, got {len(v_rows)}"
+        )
+    if expected_query_count is not None and len(q_rows) != expected_query_count:
+        raise ValueError(
+            f"Query count mismatch: expected {expected_query_count}, got {len(q_rows)}"
+        )
     v_vecs = np.load(str(out / "video_vectors.npy"), mmap_mode="r")
     q_vecs = np.load(str(out / "query_vectors.npy"), mmap_mode="r")
 
@@ -513,6 +527,7 @@ def run_videoprism_worker(
     allow_cpu: bool = False,
     resume: bool = False,
     embedding_dim: int = VIDEOPRISM_EMBEDDING_DIM,
+    require_zero_errors: bool = True,
 ) -> dict[str, Any]:
     """Encode bundle videos and queries with VideoPrism-LvT-B (or synthetic dry-run)."""
     bundle = Path(bundle_dir)
@@ -658,10 +673,48 @@ def run_videoprism_worker(
     np.save(str(out / "query_vectors.npy"), all_query_vecs)
     _write_jsonl(out / "query_rows.jsonl", query_rows)
 
-    verified = verify_shard_outputs(out, expected_dim=actual_dim)
+    if require_zero_errors and errors:
+        verified_partial = verify_shard_outputs(
+            out,
+            expected_dim=actual_dim,
+            expected_video_count=len(video_rows),
+            expected_query_count=len(query_rows),
+        )
+        receipt = {
+            "status": "FAILED_ERRORS",
+            "dry_run": bool(dry_run),
+            "resumed": False,
+            "input_fingerprint": input_fingerprint,
+            "model": pinned_model_metadata(),
+            "pins": pin_info,
+            "embedding_dim": verified_partial["embedding_dim"],
+            "dtype": "float32",
+            "video_count": verified_partial["video_count"],
+            "query_count": verified_partial["query_count"],
+            "expected_video_count": len(media_entries),
+            "expected_query_count": len(queries),
+            "files": verified_partial["files"],
+            "errors": errors,
+        }
+        (out / "receipt.json").write_text(
+            json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        raise RuntimeError(
+            f"VideoPrism worker failed with {len(errors)} error(s) (require_zero_errors=True): "
+            f"{errors[:3]}"
+        )
+
+    expected_v_cnt = len(media_entries) if require_zero_errors else len(video_rows)
+    expected_q_cnt = len(queries) if require_zero_errors else len(query_rows)
+    verified = verify_shard_outputs(
+        out,
+        expected_dim=actual_dim,
+        expected_video_count=expected_v_cnt,
+        expected_query_count=expected_q_cnt,
+    )
 
     receipt = {
-        "status": "SUCCESS",
+        "status": "PARTIAL" if errors else "SUCCESS",
         "dry_run": bool(dry_run),
         "resumed": False,
         "input_fingerprint": input_fingerprint,
@@ -671,6 +724,8 @@ def run_videoprism_worker(
         "dtype": "float32",
         "video_count": verified["video_count"],
         "query_count": verified["query_count"],
+        "expected_video_count": len(media_entries),
+        "expected_query_count": len(queries),
         "files": verified["files"],
         "errors": errors,
         "runtime": {
@@ -700,6 +755,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Use deterministic synthetic encoder on CPU")
     parser.add_argument("--allow-cpu", action="store_true", help="Allow JAX CPU execution when GPU is absent")
     parser.add_argument("--resume", action="store_true", help="Verify and resume from completed shard receipt")
+    parser.add_argument("--allow-partial-errors", action="store_true", help="Allow partial completion instead of failing on any video/query error")
     parser.add_argument("--embedding-dim", type=int, default=VIDEOPRISM_EMBEDDING_DIM)
     return parser
 
@@ -718,6 +774,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_cpu=args.allow_cpu,
         resume=args.resume,
         embedding_dim=args.embedding_dim,
+        require_zero_errors=not args.allow_partial_errors,
     )
     print(json.dumps(receipt, indent=2, ensure_ascii=False))
     return 0

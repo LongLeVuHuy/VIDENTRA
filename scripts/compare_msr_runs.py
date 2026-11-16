@@ -175,6 +175,13 @@ def _summarize_slice(
     wins = sum(1 for r in rows if r["base_hit"] == 0 and r["new_hit"] == 1)
     losses = sum(1 for r in rows if r["base_hit"] == 1 and r["new_hit"] == 0)
     ties = n - wins - losses
+    both_wrong_swaps = sum(
+        1
+        for r in rows
+        if r["base_hit"] == 0 and r["new_hit"] == 0 and r.get("base_top1") != r.get("new_top1")
+    )
+    top1_changed_count = sum(1 for r in rows if r.get("base_top1") != r.get("new_top1"))
+    flip_precision = round(wins / top1_changed_count, 6) if top1_changed_count > 0 else None
     cand_gains = sum(1 for r in rows if r["base_in_pool_hit"] == 0 and r["in_pool_hit"] == 1)
     cand_losses = sum(1 for r in rows if r["base_in_pool_hit"] == 1 and r["in_pool_hit"] == 0)
 
@@ -186,6 +193,11 @@ def _summarize_slice(
         "challenger": _agg("new"),
         "wins": wins,
         "losses": losses,
+        "rescued_hits": wins,
+        "lost_hits": losses,
+        "both_wrong_swaps": both_wrong_swaps,
+        "top1_changed_count": top1_changed_count,
+        "flip_precision": flip_precision,
         "ties": ties,
         "net_gain": wins - losses,
         "delta_pp": boot["delta_pp"],
@@ -697,12 +709,17 @@ def _write_markdown_report(path: Path, summary: dict[str, Any]) -> None:
             lines.append(_fmt_row(f"dataset={ds_name}", summary["per_dataset"][ds_name]))
     lines.append("\n## Coverage Breakdown\n\n")
     cov_counts = summary.get("coverage_counts") or {}
+    fp_str = f"{ov['flip_precision']*100:.2f}%" if ov.get("flip_precision") is not None else "N/A"
     lines.append(
         f"- Full VP coverage: {cov_counts.get('vp_full_coverage_count', 0)}, "
         f"Partial VP coverage: {cov_counts.get('vp_partial_coverage_count', 0)}, "
         f"Fallback: {cov_counts.get('fallback_count', 0)}, "
         f"Top-1 eligible: {cov_counts.get('top1_eligible_count', 0)}, "
-        f"Top-1 changed: {cov_counts.get('top1_changed_count', 0)}\n\n"
+        f"Top-1 changed: {ov.get('top1_changed_count', cov_counts.get('top1_changed_count', 0))}, "
+        f"Rescued hits: {ov.get('rescued_hits', ov.get('wins', 0))}, "
+        f"Lost hits: {ov.get('lost_hits', ov.get('losses', 0))}, "
+        f"Both-wrong swaps: {ov.get('both_wrong_swaps', 0)}, "
+        f"Flip precision: {fp_str}\n\n"
     )
     lines.append("| Coverage Slice | N (Groups) | Hit@1 (Base -> Chal) | Recall@K (Base -> Chal) | MRR@10 | Wins/Losses | Delta (pp) | 95% Paired Group Bootstrap CI |\n")
     lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
