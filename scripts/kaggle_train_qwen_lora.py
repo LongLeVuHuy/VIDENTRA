@@ -200,6 +200,8 @@ def export_query_plan_cache(
     generate_fn: Callable[[str], str],
     model_revision: str,
     prompt_version: str,
+    batch_generate_fn: Callable[[Sequence[str]], Sequence[str]] | None = None,
+    batch_size: int = 16,
 ) -> dict[str, int]:
     """Run generation + SemanticDecomposerValidator and write AdaptiveQueryDecomposer-compatible JSONL."""
     gate = QueryComplexityGate()
@@ -208,13 +210,33 @@ def export_query_plan_cache(
     valid_count = 0
     rejected_count = 0
 
+    prefetched: dict[str, str] = {}
+    if batch_generate_fn is not None:
+        unique_non_short: list[str] = []
+        seen_nq: set[str] = set()
+        for item in queries:
+            nq = unicodedata.normalize("NFC", item["query_text"].strip())
+            if not nq or nq in seen_nq:
+                continue
+            if gate.classify(nq).tier != "short":
+                seen_nq.add(nq)
+                unique_non_short.append(nq)
+        step = max(1, int(batch_size))
+        for start in range(0, len(unique_non_short), step):
+            chunk = unique_non_short[start : start + step]
+            resps = batch_generate_fn(chunk)
+            for q_text, raw_out in zip(chunk, resps):
+                prefetched[q_text] = raw_out
+
     for item in queries:
         norm_query = unicodedata.normalize("NFC", item["query_text"].strip())
         if not norm_query:
             continue
         decision = gate.classify(norm_query)
+        if batch_generate_fn is not None and decision.tier == "short":
+            continue
         try:
-            raw_resp = generate_fn(norm_query)
+            raw_resp = prefetched[norm_query] if norm_query in prefetched else generate_fn(norm_query)
             json_str = _extract_json_block(raw_resp)
             data = json.loads(json_str)
             for ev in data.get("events") or []:
@@ -274,6 +296,7 @@ def _train_live_lora(
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
     model_kwargs: dict[str, Any] = {
         "revision": args.base_revision,
@@ -310,6 +333,13 @@ def _train_live_lora(
         bias=lora_cfg_dict["bias"],
     )
     model = get_peft_model(model, peft_config)
+    for param in model.parameters():
+        if param.requires_grad:
+            param.data = param.data.to(torch.float32)
+    if hasattr(model, "config") and model.config is not None:
+        model.config.use_cache = False
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
 
     train_features = [format_and_tokenize_chatml(r["messages"], tokenizer, args.max_seq_len) for r in train_rows]
     val_features = [format_and_tokenize_chatml(r["messages"], tokenizer, args.max_seq_len) for r in val_rows]
@@ -334,6 +364,7 @@ def _train_live_lora(
         learning_rate=args.lr,
         fp16=bool(args.fp16 and not args.bf16),
         bf16=bool(args.bf16),
+        gradient_checkpointing=True,
         logging_steps=10,
         eval_strategy="epoch" if val_features else "no",
         save_strategy="epoch",
@@ -419,6 +450,7 @@ def run_training_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             return json.dumps(wire, ensure_ascii=False)
 
         generate_fn: Callable[[str], str] = _mock_generate
+        batch_generate_fn: Callable[[Sequence[str]], Sequence[str]] | None = None
         token_stats = {
             "train_tokenized": len(tokenized_train),
             "val_tokenized": len(tokenized_val),
@@ -428,29 +460,48 @@ def run_training_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         }
     else:
         model, tokenizer = _train_live_lora(train_rows, val_rows, args, lora_cfg_dict)
+        if hasattr(model, "gradient_checkpointing_disable"):
+            model.gradient_checkpointing_disable()
+        if hasattr(model, "config") and model.config is not None:
+            model.config.use_cache = True
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         model.eval()
+        tokenizer.padding_side = "left"
+        for attr_name in ("temperature", "top_p", "top_k"):
+            if hasattr(model.generation_config, attr_name):
+                setattr(model.generation_config, attr_name, None)
         sys_prompt = get_sft_system_prompt(args.prompt_version)
 
-        def _live_generate(query: str) -> str:
-            messages = [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": query},
+        def _live_batch_generate(batch_queries: Sequence[str]) -> list[str]:
+            prompted = [
+                tokenizer.apply_chat_template(
+                    [{"role": "system", "content": sys_prompt}, {"role": "user", "content": q}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for q in batch_queries
             ]
-            prompt_text = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            inputs = tokenizer([prompt_text], return_tensors="pt").to(model.device)
-            with torch.no_grad():
+            inputs = tokenizer(prompted, padding=True, return_tensors="pt").to(model.device)
+            with torch.inference_mode():
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=args.max_new_tokens,
                     do_sample=False,
                     pad_token_id=tokenizer.eos_token_id,
                 )
-            gen_ids = outputs[0][inputs["input_ids"].shape[1] :]
-            return str(tokenizer.decode(gen_ids, skip_special_tokens=True))
+            return [
+                str(txt)
+                for txt in tokenizer.batch_decode(
+                    outputs[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True
+                )
+            ]
+
+        def _live_generate(query: str) -> str:
+            return _live_batch_generate([query])[0]
 
         generate_fn = _live_generate
+        batch_generate_fn = _live_batch_generate
         token_stats = {"train_tokenized": len(train_rows), "val_tokenized": len(val_rows)}
 
     export_queries = _load_export_queries(args.export_cache_queries, dry_run=args.dry_run)
@@ -464,9 +515,13 @@ def run_training_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             generate_fn=generate_fn,
             model_revision=args.model_revision,
             prompt_version=args.prompt_version,
+            batch_generate_fn=batch_generate_fn,
+            batch_size=16,
         )
         cache_sha256 = _sha256_file(cache_path)
 
+    validator_file = _ROOT / "src" / "videntra" / "query" / "llm.py"
+    validator_sha256 = _sha256_file(validator_file) if validator_file.is_file() else None
     receipt = {
         "schema_version": "1.0",
         "dry_run": bool(args.dry_run),
@@ -475,6 +530,8 @@ def run_training_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "model_revision": args.model_revision,
         "prompt_version": args.prompt_version,
         "validator_commit": get_validator_commit(),
+        "validator_sha256": validator_sha256,
+        "cache_sha256": cache_sha256,
         "train_jsonl": str(train_jsonl),
         "val_jsonl": str(val_jsonl) if val_jsonl else None,
         "train_samples": len(train_rows),

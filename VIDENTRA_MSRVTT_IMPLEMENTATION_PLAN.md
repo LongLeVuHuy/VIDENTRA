@@ -84,34 +84,37 @@ $qwenOut = "work/kaggle/qwen_msr_output_$stamp"
 & $kg kernels output $qwenRef -p $qwenOut --file-pattern '^qwen_receipt\.json$|^query_plan_cache\.jsonl$'
 ```
 
-- [ ] **VideoPrism**. Xác minh shard tại `$vpOut/dev` theo mục 2.2. Gán đường dẫn này vào `$vp` trong lệnh benchmark và chấm R01, R11 ở K=10 và K=20. Kiểm receipt của từng replay để xác nhận VP thật đã chấm query.
-- [ ] **Qwen**. Xác minh receipt và cache tại `$qwenOut` theo mục 2.3. Gán `$qwenOut/query_plan_cache.jsonl` vào `$qwen` rồi chấm Q00, Q10 ở K=10 và K=20. Ghi số query thực dùng cache và số fallback.
-- [ ] **Báo kết quả**. Sau mỗi mốc quan trọng, cập nhật bảng trạng thái bên dưới và `docs/PROGRESS.md` với giờ kiểm tra, version, tiến độ và đường dẫn output hoặc lỗi. Sau mỗi benchmark, thêm baseline, challenger, K, Hit@1 dạng số đúng/mẫu số, delta điểm phần trăm, CI 95%, coverage và đường dẫn báo cáo ghép cặp. Ghi `chờ artifact` cho phép so chưa đủ đầu vào.
+- [ ] **VideoPrism**. Xác minh shard tại `$vpOut/dev` theo mục 2.2. Gán đường dẫn này vào `$vp` trong lệnh benchmark và chấm R01, R11 ở K=10 và K=20. Kiểm receipt của từng replay để xác nhận VP thật đã chấm query. *(Hiện tại Kaggle `lvhuylong/videntra-msr-videoprism-dev-20261115` đang `CANCEL_ACKNOWLEDGED` — chờ artifact).*
+- [x] **Qwen**. Đã tải và xác minh receipt/cache cho cả `extractive-v2` (`work/kaggle/qwen_msr_extractive_v2_output_20261116/`) và LoRA SFT `qwen2.5-1.5b-lora-sft-v1` (`work/kaggle/qwen_msr_lora_output_20261116/`). Đã chạy xong R00, R10, Q00, Q10, L00, L10 ở cả K=10 và K=20 kèm so sánh ghép cặp trên `tune`, `confirm` và `dev_full_859`.
+- [x] **Báo kết quả**. Đã cập nhật bảng trạng thái bên dưới, [benchmark/msrvtt_clip_qwen_videoprism_audit.md](benchmark/msrvtt_clip_qwen_videoprism_audit.md) và [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## 1. Mốc kiểm chứng và thứ tự làm
 
-Snapshot audit có 1.324 video trong gallery. `dev_full_859` có 809 query MSR-VTT. A5 dùng LTR theo fold OOF cho 742/859 query toàn dev, trọng số cuối cho phần còn lại theo provenance gate, và temporal rerank `lambda=0`.
+Snapshot audit có 1.324 video trong gallery. `dev_full_859` có 809 query MSR-VTT (khóa partition `tune`/`confirm` 70/30 theo `source_group`, seed `20261115`, SHA-256 `f641d28bc96a66575bc15106422e389088e1228650a7e3135d7062bfbc3b68cd`; `tune=566`, `confirm=243` MSR-VTT). A5 dùng LTR theo fold OOF cho 742/859 query toàn dev, trọng số cuối cho phần còn lại theo provenance gate, và temporal rerank `lambda=0`.
 
-| Đã đo trên MSR-VTT dev | A5 | Clip reserve | Kết luận |
-| --- | ---: | ---: | --- |
-| Hit@1, K=10 và K=20, `alpha=0` | 312/809 | 312/809 | 0 thắng, 0 thua |
-| Recall@10 | 544/809 | 555/809 | 15 ca được, 4 ca mất |
-| Recall@20 | 606/809 | 611/809 | 9 ca được, 4 ca mất |
+Sau khi sửa 2 lỗi truyền `object_requirements` / `sub_clauses` và bổ sung **SigLIP2 Dual-Rank Frame+Clip Consensus Boost (`_apply_clip_consensus_boost`)** ở Stage 6 (`A5`), baseline A5 rules mới đạt **331/809 (40,91%)** (`+2,35 pp`, `21W / 2L` so với mốc cũ `312/809`; trong đó `tune`: `226 → 238/566 [+2,12 pp, 14W/2L]`, `confirm`: `86 → 93/243 [+2,88 pp, 7W/0L]`, QVH giữ `19/22`, AVC giữ `26/28`).
 
-Trạng thái theo lần audit đã ghi trong `docs/PROGRESS.md`.
+| Đã đo trên MSR-VTT (`16/11/2026`) | Rules A5 (`R00`/`R10`) | Qwen `extractive-v2` (`Q00`/`Q10`) | Qwen LoRA SFT (`L00`/`L10`) | Kết luận |
+| --- | ---: | ---: | ---: | --- |
+| Hit@1, `tune` (`n=566`), K=10 & K=20 | **238/566 (42,05%)** | **238/566 (42,05%)** (`0W/0L`, CI `[0.0, 0.0]`) | 237/566 (41,87%) (`0W/1L`, `−0,18 pp`) | `Q00 ≤ R00` → đã kích hoạt LoRA SFT |
+| Hit@1, `confirm` (`n=243`), K=10 & K=20 | **93/243 (38,27%)** | **93/243 (38,27%)** (`0W/0L`, CI `[0.0, 0.0]`) | **93/243 (38,27%)** (`0W/0L`, CI `[0.0, 0.0]`) | Không tụt trên `confirm`, nhưng không vượt `+1 pp` → **giữ `rules` mặc định** |
+| Hit@1, `dev_809` (`n=809`), K=10 & K=20 | **331/809 (40,91%)** | **331/809 (40,91%)** (`0W/0L`) | 330/809 (40,79%) (`0W/1L`, `−0,12 pp`) | Xóa bỏ hoàn toàn sụt giảm `−7,42 pp` của `compact-v1` |
+| Recall@10 (A5 → Clip reserve) | 544 → **555/809** (`+15/−4`) | 543 → **554/809** (`+15/−4`) | 544 → **554/809** (`+14/−4`) | Clip reserve tăng coverage ổn định ở K=10 |
+| Recall@20 (A5 → Clip reserve) | 607 → **611/809** (`+9/−5`) | 606 → **611/809** (`+10/−5`) | 605 → **611/809** (`+10/−4`) | Clip reserve tăng coverage ổn định ở K=20 |
 
-| Notebook | Trạng thái | Kết quả có thể xác minh |
+| Notebook Kaggle | Trạng thái | Kết quả đã xác minh (`16/11/2026`) |
 | --- | --- | --- |
-| VideoPrism v2 | `CANCEL_ACKNOWLEDGED` | Chờ shard thật để chấm R01 và R11. |
-| Qwen2.5-1.5B `compact-v1` | `COMPLETE` | A5 rules 312/809 xuống Qwen 252/809, delta −7,42 điểm phần trăm, 16 thắng và 76 thua. |
-| Qwen2.5-1.5B `extractive-v2` và LoRA | Chờ triển khai theo các bước phía trên | Dùng cache riêng và ghi benchmark ghép cặp sau khi có kết quả. |
+| [VideoPrism v2](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115) | `CANCEL_ACKNOWLEDGED` | Chưa có shard output; `R01`, `R11`, `Q11` đang **`chờ artifact`**. |
+| [Qwen2.5-1.5B `compact-v1`](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) | `COMPLETE` | Mốc lịch sử: A5 rules 312/809 xuống Qwen `compact-v1` 252/809 (`−7,42 pp`, `16W/76L`). |
+| [`extractive-v2`](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-extractive-v2-20261115) v5 | `COMPLETE` | T4×2 `849.412s`, `847` entries (`cache_sha256: e917f744...`); capture `cache_hits=205, fallback=617, rule_tier=37`; Hit@1 ngang `rules` (`331/809`, `0W/0L`). |
+| [LoRA SFT `qwen2.5-1.5b-lora-sft-v1`](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-lora-sft-20261116) v2 | `COMPLETE` | T4 `1209.596s`, SFT chỉ từ `tune` (`626/110`), `train_loss=0.0328`, `eval_loss: 0.0588 → 0.0408`; xuất `812` plans (`valid=821/822`, `cache_sha256: e80b6a05...`); capture `cache_hits=821, fallback=1, rule_tier=37`; Hit@1 `confirm=93/243 (0W/0L)`, `dev_809=330/809 (−0,12 pp, 0W/1L)`. |
 
-Hit@1 của A5 rules và clip reserve ở `alpha=0` là **312/809 (38,57%)**. [Audit đã chạy](benchmark/msrvtt_clip_qwen_videoprism_audit.md) · [Qwen compact-v1 trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-dev-20261115) · [VideoPrism trên Kaggle](https://www.kaggle.com/code/lvhuylong/videntra-msr-videoprism-dev-20261115)
+Báo cáo đầy đủ tại [benchmark/benchmark_report.md](benchmark/benchmark_report.md) (`run_id: 0e7ec648`) và [benchmark/msrvtt_clip_qwen_videoprism_audit.md](benchmark/msrvtt_clip_qwen_videoprism_audit.md).
 
-1. **P0, làm ngay.** Hoàn tất validator, chạy lại bộ hồi quy của bốn lỗi, khóa inputs benchmark và chuẩn bị cache `extractive-v2`.
-2. **P1, làm khi có artifact thật.** Chạy bốn đối chứng clip/VideoPrism và hai đối chứng Qwen. Báo số theo query trước khi tune hoặc đổi công thức.
-3. **P2, làm theo kết quả P1.** Điều chỉnh việc đổi hạng nhất, giữ thông tin query trong phân rã, hoặc tăng coverage của clip. Mỗi thử nghiệm đổi một yếu tố.
-4. **P3, trước khi đề xuất bật mặc định.** Khóa cấu hình, chấm confirm, kiểm tra hồi quy và đo chi phí qua entry point thật.
+1. **P0, ĐÃ HOÀN TẤT.** Hoàn tất validator scope-aware, chạy lại bộ hồi quy, khóa inputs/manifest `tune`/`confirm`, xuất cache `extractive-v2` & LoRA SFT.
+2. **P1, ĐÃ HOÀN TẤT PHẦN CLIP/QWEN/LORA (`R00`, `R10`, `Q00`, `Q10`, `L00`, `L10`).** Riêng `R01`/`R11`/`Q11` đang `chờ artifact` VideoPrism từ Kaggle.
+3. **P2, ĐÃ TRIỂN KHAI NÂNG CẤP (`SigLIP2 Dual-Rank Frame+Clip Consensus Boost`).** Tăng MSR-VTT `confirm` `+2,88 pp` (`7W/0L`, CI dương) và `heldout_test_201` `+0,99 pp` (`38,81% → 39,80%`), giữ mặc định trong A5 (`rules`).
+4. **P3, ĐÃ NGHIỆM THU (`588/588` pytest PASS).** Giữ `rules` + Consensus Boost làm mặc định trên đường chạy trực tiếp.
 
 ## 2. P0 — Việc cần sửa và điều kiện nhận artifact
 
@@ -222,11 +225,11 @@ Nếu chuyển một phương án sang đường chạy trực tiếp, nối và
 
 ## 5. P3 — Tiêu chí nghiệm thu
 
-- [ ] Xác nhận artifact thật, provenance, độ phủ và câu query gốc cho mỗi challenger. Với các so sánh VP, ghi số lần có thể đổi hạng 1 và số lần đã đổi. Với Qwen, ghi số query dùng plan và fallback.
-- [ ] Lưu cấu hình cùng tiêu chí trước khi mở phần confirm. Mốc đề xuất cho hiệu quả thực dụng là Hit@1 tăng ít nhất 1 điểm phần trăm trên confirm và CI ghép cặp 95% nằm trên 0. Nếu CI còn cắt 0, ghi kết quả chưa đủ chắc và tiếp tục đánh giá trên bộ nguồn độc lập khi có.
-- [ ] Kiểm QVHighlights 22 query, AVC 28 query và moment trên 22 query có nhãn ở dev. Nêu số ca và xem từng ca tụt, vì chỉ một ca cũng tạo thay đổi tỷ lệ lớn ở các tập nhỏ. Chạy split hồi quy lịch sử sau khi chốt cấu hình, kèm nguồn/hardware.
-- [ ] Khi sửa code, chạy các test liên quan bên dưới. Chạy full suite trước khi đề xuất đưa vào pipeline chính. Bổ sung regression test cho contract mới như shard sai hash, thiếu shard, cache sai revision hoặc score có coverage một phần.
-- [ ] Lưu output từng run dưới `work/experiments/`, logs/receipts Kaggle, và kết quả bảng trong `benchmark/`. Cập nhật `docs/PROGRESS.md`, `README.md` khi có số mới, `PROJECT.md` khi cấu trúc đổi, và `requirements.txt` khi thay runtime dependencies. Lưu rõ trạng thái của những so sánh chưa chạy.
+- [x] Xác nhận artifact thật, provenance, độ phủ và câu query gốc cho mỗi challenger. Đã ghi số query dùng plan và fallback cho cả `extractive-v2` (`205` cache hits / `617` fallback) và `lora-sft-v1` (`821` cache hits / `1` fallback). Riêng so sánh VP (`R01`/`R11`/`Q11`) đang chờ shard VideoPrism Kaggle.
+- [ ] Lưu cấu hình cùng tiêu chí trước khi mở phần confirm. Mốc đề xuất cho hiệu quả thực dụng là Hit@1 tăng ít nhất 1 điểm phần trăm trên confirm và CI ghép cặp 95% nằm trên 0. *(Đã đạt với **SigLIP2 Dual-Rank Frame+Clip Consensus Boost** trên `rules`: confirm `+2,88 pp`, `7W/0L`; chưa đạt với Qwen `extractive-v2` (`+0,00 pp`) và LoRA SFT (`+0,00 pp confirm`, `−0,18 pp tune`) nên giữ `rules` mặc định).*
+- [x] Kiểm QVHighlights 22 query, AVC 28 query và moment trên 22 query có nhãn ở dev (`dev_150`, `dev_full_859`), đồng thời chạy split hồi quy lịch sử `heldout_test_201` trên CPU (`run_id: 0e7ec648`: `dev_150=62,00%`, `dev_full_859=43,77%`, `heldout_test_201=39,80%`).
+- [x] Chạy các test liên quan và full suite (`.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider` -> **`588 passed, 3 warnings in 90.09s`**), đã bổ sung 3 regression test mới.
+- [x] Lưu output từng run dưới `work/experiments/`, logs/receipts Kaggle (`work/kaggle/qwen_msr_extractive_v2_output_20261116/`, `work/kaggle/qwen_msr_lora_output_20261116/`), và cập nhật kết quả bảng trong `benchmark/`, `docs/PROGRESS.md`, `README.md`, `PROJECT.md`. Trạng thái các so sánh VP (`R01`, `R11`, `Q11`) được ghi rõ là `chờ artifact`.
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/evaluation/test_clip_vp_replay.py tests/evaluation/test_split_lock.py tests/indexing/test_videoprism_kaggle_pipeline.py tests/query/test_llm_decomposer.py tests/retrieval/test_clip_branch.py

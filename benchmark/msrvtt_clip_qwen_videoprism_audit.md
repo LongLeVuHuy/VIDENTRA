@@ -70,3 +70,50 @@ foreach ($k in 10, 20) {
 Với VideoPrism, đo trên cùng một pool trước rồi đổi `a5` sang `clip` ở cả hai phía. Để đo đóng góp của clip khi có VideoPrism, so A5+VideoPrism với Clip+VideoPrism ở cùng K, alpha và coverage policy. Tune `K ∈ {10, 20}`, thử `alpha ∈ {0.25, 0.5, 0.6, 0.75, 1.0}`. Tách dev tune/dev confirm theo `source_group` trước khi chọn và khóa cấu hình. So Hit@1, MRR@10, Recall@K, số thắng/thua và CI ghép cặp theo nhóm nguồn. Held-out 191 query MSR-VTT đã từng được xem, nên dùng làm kiểm tra hồi quy lịch sử sau khi khóa config.
 
 Nếu Qwen thay đổi thứ hạng theo cả hai hướng, xem nhóm caption có nhiều hành động, thứ tự, vai trò, số lượng hoặc phủ định. Thử giữ Qwen trên nhóm đó và giữ tỷ lệ embedding câu gốc. Nếu VideoPrism giúp đẩy đúng video từ hạng 2–5 lên hạng nhất nhưng làm giảm ở nhóm A5 thắng rõ, thử chỉ cho phép đổi top 1 khi VideoPrism có margin đủ lớn trên hai ứng viên đứng đầu, chọn ngưỡng trên dev tune. Gate chỉ dùng điểm ứng viên, metadata và đặc trưng query. Xác nhận riêng trên dev confirm trước khi bật mặc định.
+
+---
+
+## 5. Cập nhật Ngày 16/11/2026: Sửa Lỗi Pipeline, SigLIP2 Dual-Rank Consensus Boost, Qwen `extractive-v2` & LoRA SFT
+
+Ngày 16/11/2026. Khóa phân tách `tune`/`confirm` 70/30 theo `source_group` trên `dev_full_859` (`seed=20261115`, SHA-256 `f641d28bc96a66575bc15106422e389088e1228650a7e3135d7062bfbc3b68cd`; `tune=601 [566 msrvtt, 20 avc, 15 qvhighlights]`, `confirm=258 [243 msrvtt, 8 avc, 7 qvhighlights]`, 0 overlap). Gallery 1.324 video, LTR OOF 742/859, `temporal_rerank_lambda=0.0`.
+
+### 5.1. Sửa lỗi và nâng cấp `SigLIP2 Dual-Rank Frame+Clip Consensus Boost` (`A5`)
+
+1. **Lọc `object_requirements` đúng tập COCO-80 (`llm.py`, `unified_pipeline.py`)**: loại nhãn ngoài COCO-80 (như `"comedy show"`, `"sony channel"`) tránh phạt oan `no_object_penalty = -0.10`.
+2. **Loại trừ `sub_clauses` trùng nghĩa câu gốc & đồng bộ 768d+864d ở Stage 2 (`unified_pipeline.py`)**: khi `visual_clauses` đơn chỉ khác mạo từ hoặc `not ocr_phrases and not asr_phrases`, giữ luồng chuẩn và pha trộn 768d+864d đồng nhất (`0.70/0.30`).
+3. **SigLIP2 Dual-Rank Frame+Clip Consensus Boost (`_apply_clip_consensus_boost`)**: tại Stage 6 (`A5`), nếu ứng viên đứng đầu nhánh `ClipBranchIndex` đồng thuận `rank_frame == 1 && rank_clip == 1` (chênh lệch frame $\ge 0.008$, `a5_gap` $\le 0.045$) hoặc `rank_frame <= 2 && rank_clip == 1` (`f_diff >= 0.005`, `c_diff >= 0.015`, `a5_gap <= 0.030`), cộng `a5_gap + 0.002` để thăng hạng lên Top-1.
+
+| Tập đánh giá MSR-VTT (`dev_full_859`) | Baseline cũ (`15/11`) | A5 mới (`R00`, `16/11`) | Chênh lệch (`pp`) | Thắng / Thua | Guardrails (QVH / AVC) |
+| --- | ---: | ---: | ---: | :---: | :--- |
+| **`tune`** (`n=566`) | 226/566 (`39.93%`) | **238/566 (`42.05%`)** | **`+2.12 pp`** | `14W / 2L` | — |
+| **`confirm`** (`n=243`) | 86/243 (`35.39%`) | **93/243 (`38.27%`)** | **`+2.88 pp`** | `7W / 0L` | — |
+| **`dev_809` đầy đủ** (`n=809`) | 312/809 (`38.57%`) | **331/809 (`40.91%`)** | **`+2.35 pp`** | `21W / 2L` | QVH `19/22 (0W/0L)`, AVC `26/28 (0W/0L)` |
+
+### 5.2. Ma trận P1 cho Qwen2.5-1.5B `extractive-v2`, LoRA SFT & Clip Reserve
+
+- **Base Qwen `extractive-v2`** ([`lvhuylong/videntra-msr-qwen15b-extractive-v2-20261115`](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-extractive-v2-20261115) v5 `COMPLETE`, Tesla T4 × 2, `runtime=849.412s`): `847` unique entries trong cache, `cache_sha256 = e917f74497a0d4728af1347d2bb571b02c5eff82a85db4d12a2054b6660dc527`. Khi capture thực tế: `cache_hits=205`, `fallback=617`, `rule_tier=37`, `llm_live_calls=0`.
+- **LoRA SFT `qwen2.5-1.5b-lora-sft-v1`** ([`lvhuylong/videntra-msr-qwen15b-lora-sft-20261116`](https://www.kaggle.com/code/lvhuylong/videntra-msr-qwen15b-lora-sft-20261116) v2 `COMPLETE`, Tesla T4, `runtime=1209.596s`): train chỉ trên `tune` (`626` train / `110` val, 0 overlap nguồn/query chuẩn hóa, `train_loss=0.0328`, `eval_loss: 0.0588 -> 0.0408`). Cache `cache_sha256 = e80b6a05cba5d4c4321a42eb7820d372520f63f6937e8609af60d704575ca9ac`: xuất `812` plan duy nhất (`valid_plan_count=821`, `rejected_count=1`, tỷ lệ qua validator `99.88%`); khi capture thực tế: `cache_hits=821`, `fallback=1`, `rule_tier=37`, `llm_live_calls=0`.
+
+| Cặp so sánh | K | Split | MSR-VTT Hit@1 | Delta (`pp`) & CI 95% | W / L | Recall@K | MRR@10 | QVH / AVC / Moment@0.5 |
+| :--- | :-: | :--- | :---: | :---: | :-: | :---: | :---: | :--- |
+| **`R00` vs `R10`** (Rules: A5 vs Clip) | 10 | `dev_809` | 331 → **331/809** (`40.91%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `544 → 555` (`+15/-4`) | `0.4897 → 0.4911` | `19/22`, `26/28`, `72.73%` |
+| **`R00` vs `R10`** (Rules: A5 vs Clip) | 20 | `dev_809` | 331 → **331/809** (`40.91%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `607 → 611` (`+9/-5`) | `0.4897 → 0.4897` | `19/22`, `26/28`, `72.73%` |
+| **`R00` vs `Q00`** (`extractive-v2`) | 10 | `tune` | 238 → **238/566** (`42.05%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `380 → 379` (`+0/-1`) | `0.4977 → 0.4975` | `14/15`, `19/20`, `80.00%` |
+| **`R00` vs `Q00`** (`extractive-v2`) | 20 | `tune` | 238 → **238/566** (`42.05%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `424 → 423` (`+0/-1`) | `0.4977 → 0.4975` | `14/15`, `19/20`, `80.00%` |
+| **`R00` vs `Q00`** (`extractive-v2`) | 20 | `confirm` | 93 → **93/243** (`38.27%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `183 → 183` (`+0/-0`) | `0.4711 → 0.4711` | `5/7`, `7/8`, `57.14%` |
+| **`R00` vs `Q00`** (`extractive-v2`) | 20 | `dev_809` | 331 → **331/809** (`40.91%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `607 → 606` (`+0/-1`) | `0.4897 → 0.4896` | `19/22`, `26/28`, `72.73%` |
+| **`Q00` vs `Q10`** (Qwen: A5 vs Clip) | 10 | `dev_809` | 331 → **331/809** (`40.91%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `543 → 554` (`+15/-4`) | `0.4896 → 0.4909` | `19/22`, `26/28`, `72.73%` |
+| **`Q00` vs `Q10`** (Qwen: A5 vs Clip) | 20 | `dev_809` | 331 → **331/809** (`40.91%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `606 → 611` (`+10/-5`) | `0.4896 → 0.4896` | `19/22`, `26/28`, `72.73%` |
+| **`R00` vs `L00`** (`lora-sft-v1`) | 10 | `tune` | 238 → 237/566 (`41.87%`) | `-0.18 pp` `[-0.53, 0.0]` | `0/1` | `380 → 380` (`+1/-1`) | `0.4977 → 0.4966` | `14/15`, `19/20`, `80.00% → 73.33%` |
+| **`R00` vs `L00`** (`lora-sft-v1`) | 20 | `tune` | 238 → 237/566 (`41.87%`) | `-0.18 pp` `[-0.53, 0.0]` | `0/1` | `424 → 422` (`+0/-2`) | `0.4977 → 0.4966` | `14/15`, `19/20`, `80.00% → 73.33%` |
+| **`R00` vs `L00`** (`lora-sft-v1`) | 10 | `confirm` | 93 → **93/243** (`38.27%`) | **`+0.00 pp`** `[0.0, 0.0]` | `0/0` | `164 → 164` (`+0/-0`) | `0.4711 → 0.4711` | `5/7`, `7/8`, `57.14%` |
+| **`R00` vs `L00`** (`lora-sft-v1`) | 20 | `confirm` | 93 → **93/243** (`38.27%`) | **`+0.00 pp`** `[0.0, 0.0]` | `0/0` | `183 → 183` (`+0/-0`) | `0.4711 → 0.4711` | `5/7`, `7/8`, `57.14%` |
+| **`R00` vs `L00`** (`lora-sft-v1`) | 20 | `dev_809` | 331 → 330/809 (`40.79%`) | `-0.12 pp` `[-0.37, 0.0]` | `0/1` | `607 → 605` (`+0/-2`) | `0.4897 → 0.4889` | `19/22`, `26/28`, `72.73% → 68.18%` |
+| **`Q00` vs `L00`** (`v2` vs `lora-sft-v1`) | 20 | `confirm` | 93 → **93/243** (`38.27%`) | **`+0.00 pp`** `[0.0, 0.0]` | `0/0` | `183 → 183` (`+0/-0`) | `0.4711 → 0.4711` | `5/7`, `7/8`, `57.14%` |
+| **`Q00` vs `L00`** (`v2` vs `lora-sft-v1`) | 20 | `dev_809` | 331 → 330/809 (`40.79%`) | `-0.12 pp` `[-0.37, 0.0]` | `0/1` | `606 → 605` (`+1/-2`) | `0.4896 → 0.4889` | `19/22`, `26/28`, `72.73% → 68.18%` |
+| **`L00` vs `L10`** (LoRA: A5 vs Clip) | 10 | `dev_809` | 330 → **330/809** (`40.79%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `544 → 554` (`+14/-4`) | `0.4889 → 0.4902` | `19/22`, `26/28`, `68.18%` |
+| **`L00` vs `L10`** (LoRA: A5 vs Clip) | 20 | `dev_809` | 330 → **330/809** (`40.79%`) | `+0.00 pp` `[0.0, 0.0]` | `0/0` | `605 → 611` (`+10/-4`) | `0.4889 → 0.4889` | `19/22`, `26/28`, `68.18%` |
+
+- **VideoPrism (`R01`, `R11`, `Q11`):** Kaggle `lvhuylong/videntra-msr-videoprism-dev-20261115` đang ở trạng thái `KernelWorkerStatus.CANCEL_ACKNOWLEDGED`; **chờ artifact**.
+- **Kết luận nghiệm thu P1/P3:** Việc kết hợp lọc COCO-80, loại bỏ sub-clause trùng, validator `extractive-v2` và LoRA SFT đã xóa bỏ hoàn toàn sụt giảm `-7.42 pp` (`compact-v1`) xuống còn tương đương thống kê trên `confirm` (`+0.00 pp`, `0W/0L`) với độ tuân thủ schema `821/822 (99.88%)`; tuy nhiên theo tiêu chí P3 (Hit@1 trên `confirm` phải $\ge +1.0\text{ pp}$ với CI $> 0$), **giữ `rules` làm cấu hình mặc định**.
+

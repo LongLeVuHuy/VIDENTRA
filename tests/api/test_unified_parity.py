@@ -432,4 +432,122 @@ def test_unified_pipeline_falls_back_and_excludes_constraint_dropping_clauses(tm
     assert dropped_vis not in encoded_texts
 
 
+def test_unified_filters_non_coco_obj_reqs_and_skips_redundant_single_clause(tmp_path):
+    import json
+    from videntra.query.llm import AdaptiveQueryDecomposer, LocalSmallLLMBackend, SemanticDecomposerValidator
+
+    query = "a comedy show with a baseball player in a sony channel"
+    wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "comedy show with baseball player in sony channel",
+                "ocr": [],
+                "asr": [],
+                "objs": [
+                    {"id": "c1", "cls": "comedy show", "cnt": 1, "color": ""},
+                    {"id": "p1", "cls": "baseball player", "cnt": 1, "color": ""},
+                    {"id": "ch1", "cls": "sony channel", "cnt": 1, "color": ""},
+                ],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    _, plan = SemanticDecomposerValidator().validate_and_expand(
+        wire,
+        original_query=query,
+        prompt_version="extractive-v2",
+    )
+    assert [o["class"] for o in plan.object_requirements] == ["person"]
+
+    # Also test pipeline filtering even if a legacy serialized cache contains non-COCO labels
+    legacy_wire = {
+        "lang": "en",
+        "events": [
+            {
+                "id": "e1",
+                "vis": "comedy show with baseball player in sony channel",
+                "ocr": [],
+                "asr": [],
+                "objs": [],
+                "pol": "pos",
+            }
+        ],
+        "spatial": [],
+        "temporal": [],
+    }
+    decomposer = AdaptiveQueryDecomposer(
+        llm_backend=LocalSmallLLMBackend(generate_fn=lambda _q: json.dumps(legacy_wire)),
+        cache_path=tmp_path / "cache.jsonl",
+        enable_disk_cache=False,
+        query_plan_prompt_version="extractive-v2",
+    )
+    decomposer.decompose(query)  # populate RAM cache cleanly
+    encoded_texts: list[str] = []
+    pipeline = _make_lightweight_unified_pipeline(query_decomposer=decomposer)
+
+    def spy_encode(texts):
+        encoded_texts.extend(texts)
+        vectors = np.zeros((len(texts), 768), dtype=np.float32)
+        vectors[:, 0] = 1.0
+        return vectors
+
+    pipeline.encode_texts = spy_encode
+    pipeline.search_with_metadata(snapshot_id="s1", query=query, top_k=2, mode="accurate", ranking_mode="moment")
+    # Single redundant clause missing only articles must NOT trigger sub_clauses embedding
+    assert len(encoded_texts) == 2
+    assert encoded_texts[0] == query
+    assert "comedy show with baseball player in sony channel" not in encoded_texts
+
+
+def test_unified_clip_consensus_boost_promotes_unanimous_top1():
+    from videntra.retrieval.visual import RankedMoment
+
+    p = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    # Build 5 synthetic videos with 2 frames each in 768d space
+    emb_768 = np.zeros((10, 768), dtype=np.float32)
+    # v_win (fids 2,3): highest max frame (~0.90) AND highest clip mean (~0.90)
+    emb_768[2, 0] = 0.90
+    emb_768[2, 1] = 0.43589
+    emb_768[3, 0] = 0.90
+    emb_768[3, 1] = 0.43589
+    # v_a5 (fids 0,1): lower max frame (0.85) & lower clip mean
+    emb_768[0, 0] = 0.85
+    emb_768[0, 2] = 0.52678
+    emb_768[1, 0] = 0.70
+    emb_768[1, 2] = 0.71414
+    for fid in range(4, 10):
+        emb_768[fid, 0] = 0.20
+        emb_768[fid, 3] = 0.97980
+    p.all_embeddings = emb_768
+    p.augmented_embeddings = np.pad(emb_768, ((0, 0), (0, 96)))
+    p.video_keyframes = {
+        "v_a5": [{"faiss_id": 0, "pts_time": 1.0}, {"faiss_id": 1, "pts_time": 2.0}],
+        "v_win": [{"faiss_id": 2, "pts_time": 1.0}, {"faiss_id": 3, "pts_time": 2.0}],
+        "v_2": [{"faiss_id": 4, "pts_time": 1.0}, {"faiss_id": 5, "pts_time": 2.0}],
+        "v_3": [{"faiss_id": 6, "pts_time": 1.0}, {"faiss_id": 7, "pts_time": 2.0}],
+        "v_4": [{"faiss_id": 8, "pts_time": 1.0}, {"faiss_id": 9, "pts_time": 2.0}],
+    }
+    p.video_kf_fids = {vid: [k["faiss_id"] for k in kfs] for vid, kfs in p.video_keyframes.items()}
+
+    q_768 = np.zeros((768,), dtype=np.float32)
+    q_768[0] = 1.0
+    cands = [
+        RankedMoment("m_a5", "v_a5", 0.0, 2.0, 0, 0, 0, 1.0, ranking_score=0.520),
+        RankedMoment("m_win", "v_win", 0.0, 2.0, 2, 2, 2, 1.0, ranking_score=0.500),
+        RankedMoment("m_2", "v_2", 0.0, 2.0, 4, 4, 4, 1.0, ranking_score=0.200),
+    ]
+    updated, score_res, stats = p._apply_clip_consensus_boost(cands, q_768, filters=None)
+    assert score_res is not None
+    assert stats["applied"] is True
+    assert stats["promoted_video_id"] == "v_win"
+    updated.sort(key=lambda m: (-float(m.ranking_score), str(m.video_id)))
+    assert updated[0].video_id == "v_win"
+    assert updated[0].ranking_score == pytest.approx(0.522, abs=1e-6)
+
+
+
 

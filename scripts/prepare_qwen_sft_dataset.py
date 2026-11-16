@@ -34,8 +34,10 @@ if str(_ROOT / "src") not in sys.path:
 from videntra.evidence.normalize import fold_diacritics, has_vietnamese_diacritics  # noqa: E402
 import videntra.query.llm as llm_mod  # noqa: E402
 from videntra.query.llm import SemanticDecomposerValidator  # noqa: E402
-from videntra.query.rules import COCO_SYNONYM_MAP, RuleBasedQueryParser  # noqa: E402
+from videntra.query.rules import COCO_SYNONYM_MAP, RuleBasedQueryParser, decompose_query_clauses  # noqa: E402
 from videntra.query.schemas import CompactDecomposedQuery  # noqa: E402
+
+_VALID_COCO_CLASSES: frozenset[str] = frozenset(COCO_SYNONYM_MAP.values())
 
 BASE_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 BASE_MODEL_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
@@ -634,8 +636,12 @@ def _extract_wire_from_rule_parser(query: str, parser: RuleBasedQueryParser) -> 
 
     objs: list[dict[str, Any]] = []
     for ent in graph.entities:
-        raw_cls = ent.mention.strip().lower() if ent.mention else ent.type
-        cls_name = COCO_SYNONYM_MAP.get(raw_cls, ent.type or "object")
+        raw_cls = ent.mention.strip().lower() if ent.mention else ""
+        cls_name = COCO_SYNONYM_MAP.get(raw_cls, "")
+        if not cls_name and ent.type == "person":
+            cls_name = "person"
+        if cls_name not in _VALID_COCO_CLASSES:
+            continue
         cnt = 1
         color = ""
         for attr in ent.attributes:
@@ -645,8 +651,8 @@ def _extract_wire_from_rule_parser(query: str, parser: RuleBasedQueryParser) -> 
                 color = str(attr.value)
         objs.append({"id": ent.id, "cls": cls_name, "cnt": cnt, "color": color})
 
-    ocr_list = [p.value for p in graph.predicates if p.kind == "ocr" and p.value]
-    asr_list = [p.value for p in graph.predicates if p.kind == "asr" and p.value]
+    ocr_list = list(dict.fromkeys(p.value for p in graph.predicates if p.kind == "ocr" and p.value))
+    asr_list = list(dict.fromkeys(p.value for p in graph.predicates if p.kind == "asr" and p.value))
     has_neg = any(p.polarity == "negative" for p in graph.predicates)
     spatial_list = [
         {
@@ -659,14 +665,52 @@ def _extract_wire_from_rule_parser(query: str, parser: RuleBasedQueryParser) -> 
         if p.kind == "spatial" and p.roles.get("subject") and p.roles.get("object")
     ]
 
+    clauses = decompose_query_clauses(query)
+    if len(clauses) > 1:
+        sub_clauses = [c for c in clauses[1:] if c.strip()]
+        if len(sub_clauses) >= 2:
+            multi_events: list[dict[str, Any]] = []
+            for idx, clause_vis in enumerate(sub_clauses, start=1):
+                c_low = clause_vis.lower()
+                ev_ocr = [p for p in ocr_list if p.lower() in c_low]
+                ev_asr = [p for p in asr_list if p.lower() in c_low]
+                multi_events.append(
+                    {
+                        "id": f"e{idx}",
+                        "vis": clause_vis,
+                        "ocr": ev_ocr if idx > 1 else (ev_ocr or ocr_list),
+                        "asr": ev_asr if idx > 1 else (ev_asr or asr_list),
+                        "objs": objs if idx == 1 else [],
+                        "pol": "neg" if has_neg and idx == 1 else "pos",
+                    }
+                )
+            temporal_edges = [
+                {"first": f"e{i}", "op": "before", "second": f"e{i + 1}"}
+                for i in range(1, len(multi_events))
+            ]
+            multi_wire = _make_wire(
+                lang=lang,
+                events=multi_events,
+                spatial=spatial_list,
+                temporal=temporal_edges,
+            )
+            try:
+                SemanticDecomposerValidator().validate_extractive_events(
+                    CompactDecomposedQuery.from_dict(multi_wire),
+                    query,
+                )
+                return multi_wire
+            except Exception:
+                pass
+
     return _make_wire(
         lang=lang,
         events=[
             {
                 "id": "e1",
                 "vis": query,
-                "ocr": list(dict.fromkeys(ocr_list)),
-                "asr": list(dict.fromkeys(asr_list)),
+                "ocr": ocr_list,
+                "asr": asr_list,
                 "objs": objs,
                 "pol": "neg" if has_neg else "pos",
             }

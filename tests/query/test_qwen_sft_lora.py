@@ -730,3 +730,27 @@ def test_sft_and_lora_export_enforce_extractive_v2_constraint_validator(
     assert stats["valid_plan_count"] == 0
     assert stats["rejected_count"] == 1
     assert _read_jsonl(cache_path) == []
+
+
+def test_prepare_qwen_sft_extract_wire_splits_multi_clause_and_filters_coco() -> None:
+    from scripts.prepare_qwen_sft_dataset import _VALID_COCO_CLASSES, _extract_wire_from_rule_parser
+    from videntra.query.rules import RuleBasedQueryParser
+
+    parser = RuleBasedQueryParser()
+    wire = _extract_wire_from_rule_parser(
+        "A man opens a wooden door and then sits on a blue chair",
+        parser,
+    )
+    assert len(wire["events"]) == 2
+    assert wire["events"][0]["vis"] == "A man opens a wooden door"
+    assert wire["events"][1]["vis"] == "sits on a blue chair"
+    assert wire["temporal"] == [{"first": "e1", "op": "before", "second": "e2"}]
+    for ev in wire["events"]:
+        for obj in ev["objs"]:
+            assert obj["cls"] in _VALID_COCO_CLASSES
+    SemanticDecomposerValidator().validate_and_expand(
+        wire,
+        original_query="A man opens a wooden door and then sits on a blue chair",
+        prompt_version="extractive-v2",
+    )
+

@@ -755,6 +755,32 @@ def _topological_event_order(
     return sorted_ids
 
 
+_VALID_COCO_CLASSES: frozenset[str] = frozenset(COCO_SYNONYM_MAP.values())
+
+
+def _resolve_coco_class(raw_cls: str) -> str | None:
+    """Resolve a raw object class label to a canonical COCO-80 class name, or None if non-COCO."""
+    cleaned = str(raw_cls or "").strip().lower().replace("_", " ")
+    if not cleaned:
+        return None
+    if cleaned in COCO_SYNONYM_MAP:
+        return COCO_SYNONYM_MAP[cleaned]
+    if cleaned in _VALID_COCO_CLASSES:
+        return cleaned
+    words = cleaned.split()
+    if len(words) >= 2:
+        bigram = f"{words[-2]} {words[-1]}"
+        if bigram in COCO_SYNONYM_MAP:
+            return COCO_SYNONYM_MAP[bigram]
+    head = words[-1] if words else ""
+    if head in COCO_SYNONYM_MAP:
+        mapped = COCO_SYNONYM_MAP[head]
+        # Avoid mapping generic 'screen' modifier like 'phone screen' to 'tv'
+        if mapped != "tv" or head in ("tv", "television"):
+            return mapped
+    return None
+
+
 def expand_compact_wire_to_query_graph(
     compact: CompactDecomposedQuery | dict[str, Any],
     original_query: str,
@@ -797,9 +823,10 @@ def expand_compact_wire_to_query_graph(
                 continue
             ent_id = _sanitize_id(obj.get("id") or f"obj_{ev_idx}_{obj_idx}", prefix="o")
             raw_cls = str(obj.get("cls", "object")).strip().lower()
-            coco_cls = COCO_SYNONYM_MAP.get(raw_cls, raw_cls)
+            coco_cls = _resolve_coco_class(raw_cls)
+            display_cls = coco_cls or COCO_SYNONYM_MAP.get(raw_cls, raw_cls)
             ent_type = "person" if coco_cls == "person" else "object"
-            span = _ground_span(str(obj.get("span") or coco_cls), original_query)
+            span = _ground_span(str(obj.get("span") or display_cls), original_query)
             cnt = int(obj.get("cnt", 1) or 1)
             color_raw = str(obj.get("color") or "").strip()
 
@@ -827,14 +854,15 @@ def expand_compact_wire_to_query_graph(
                         uncertainty=uncertainty,
                     )
                 )
-                object_requirements.append(
-                    {
-                        "id": ent_id,
-                        "class": coco_cls,
-                        "count": cnt,
-                        "color": canonicalize_color(color_raw) if color_raw else None,
-                    }
-                )
+                if coco_cls is not None and coco_cls in _VALID_COCO_CLASSES:
+                    object_requirements.append(
+                        {
+                            "id": ent_id,
+                            "class": coco_cls,
+                            "count": cnt,
+                            "color": canonicalize_color(color_raw) if color_raw else None,
+                        }
+                    )
             ev_entity_ids.append(ent_id)
 
         vis_text = str(ev.get("vis") or "").strip()
