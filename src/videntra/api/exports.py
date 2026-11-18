@@ -29,7 +29,8 @@ def _safe_escape_csv_cell(value: Any) -> str:
 @router.post("/exports")
 def export_results(req: ExportRequest):
     """Export ranked moment results to generic CSV or full-fidelity JSON."""
-    if req.format.lower() == "json":
+    fmt = req.format.lower().strip()
+    if fmt == "json":
         data = {
             "snapshot_id": req.snapshot_id,
             "count": len(req.results),
@@ -37,10 +38,53 @@ def export_results(req: ExportRequest):
         }
         return JSONResponse(content=data)
 
-    if req.format.lower() != "csv":
+    if fmt not in ("csv", "aic_kis", "vbs_csv"):
         raise HTTPException(status_code=400, detail=f"Unsupported export format: {req.format}")
 
-    # CSV headers
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+
+    if fmt == "aic_kis":
+        for item in req.results:
+            frame_idx = item.get("representative_original_frame_index")
+            if frame_idx is None:
+                frame_idx = item.get("start_original_frame_index", 0)
+            writer.writerow([
+                _safe_escape_csv_cell(item.get("video_id")),
+                _safe_escape_csv_cell(frame_idx),
+            ])
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="videntra_aic_kis.csv"'},
+        )
+
+    if fmt == "vbs_csv":
+        writer.writerow(["video_id", "start_ms", "end_ms", "frame_index", "score"])
+        for item in req.results:
+            st_ms = item.get("start_ms")
+            if st_ms is None:
+                st_ms = int(round(float(item.get("moment_start_seconds", 0.0) or 0.0) * 1000.0))
+            et_ms = item.get("end_ms")
+            if et_ms is None:
+                et_ms = int(round(float(item.get("moment_end_seconds", 0.0) or 0.0) * 1000.0))
+            frame_idx = item.get("representative_original_frame_index")
+            if frame_idx is None:
+                frame_idx = item.get("start_original_frame_index", 0)
+            writer.writerow([
+                _safe_escape_csv_cell(item.get("video_id")),
+                _safe_escape_csv_cell(st_ms),
+                _safe_escape_csv_cell(et_ms),
+                _safe_escape_csv_cell(frame_idx),
+                _safe_escape_csv_cell(item.get("ranking_score")),
+            ])
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="videntra_vbs.csv"'},
+        )
+
+    # Generic full CSV headers
     headers = [
         "rank",
         "video_id",

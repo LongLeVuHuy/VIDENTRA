@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Sequence
 import numpy as np
 
@@ -485,5 +486,210 @@ def snap_boundaries_to_shot_cuts(
             new_end = cand_e
 
     return round(float(new_start), 2), round(float(new_end), 2)
+
+
+def _optimal_contrast_segment(
+    ts_arr: np.ndarray,
+    fused_curve: np.ndarray,
+    v_dur: float,
+    max_dur_ratio: float = 0.48,
+) -> tuple[float, float] | None:
+    """Find contiguous high-contrast segment via vectorized O(T^2) DP on normalized excess scores."""
+    n = int(len(ts_arr))
+    if n < 3:
+        return None
+    med = float(np.median(fused_curve))
+    mad = float(np.median(np.abs(fused_curve - med)))
+    scale = max(1e-4, 1.4826 * mad, float(np.std(fused_curve)))
+    excess = ((fused_curve - med) / scale).astype(np.float64) - 0.55
+    max_dur = max(4.0, float(max_dur_ratio) * float(v_dur))
+
+    prefix = np.concatenate([np.zeros(1, dtype=np.float64), np.cumsum(excess, dtype=np.float64)])
+    seg_sums = prefix[1:][None, :] - prefix[:-1][:, None]
+    spans_t = ts_arr[None, :] - ts_arr[:, None]
+    idx = np.arange(n, dtype=np.float64)
+    lens = idx[None, :] - idx[:, None] + 1.0
+    valid = (spans_t >= 0.0) & (spans_t <= max_dur)
+    objs = np.where(valid, seg_sums - 0.12 * lens + 0.08 * np.sqrt(np.maximum(1.0, lens)), -1e12)
+
+    best_i, best_j = divmod(int(np.argmax(objs)), n)
+    if float(objs[best_i, best_j]) <= 0.0:
+        return None
+    dl = (float(ts_arr[best_i + 1] - ts_arr[best_i])) if best_i + 1 < n else 2.0
+    dr = (float(ts_arr[best_j] - ts_arr[best_j - 1])) if best_j > 0 else 2.0
+    st = max(0.0, float(ts_arr[best_i]) - 0.5 * min(4.0, max(0.5, dl)))
+    et = min(float(v_dur), float(ts_arr[best_j]) + 0.5 * min(4.0, max(0.5, dr)))
+    if et - st < 2.0:
+        mid = 0.5 * (st + et)
+        st = max(0.0, mid - 1.5)
+        et = min(float(v_dur), mid + 1.5)
+    return round(st, 2), round(et, 2)
+
+
+def localize_moments_multimodal_dp(
+    timestamps: Sequence[float] | np.ndarray,
+    visual_scores: Sequence[float] | np.ndarray,
+    v_dur: float,
+    *,
+    frame_vectors_768: np.ndarray | None = None,
+    subclip_curve: tuple[np.ndarray, np.ndarray, Any] | None = None,
+    clause_curves: np.ndarray | None = None,
+    lexical_timestamps: Sequence[float] = (),
+    rep_timestamp: float | None = None,
+    anchor_window: tuple[float, float] | None = None,
+    decay_lambda: float = 0.015,
+    c_thresh: float = 0.42,
+    max_gap_sec: float = 4.5,
+    max_dur_ratio: float = 0.48,
+) -> tuple[float, float, list[float]]:
+    """P5 Temporal Localization preserving sharp frame transitions with bounded Viterbi and DP tightening."""
+    ts_list = [float(t) for t in timestamps]
+    vis_list = [float(s) for s in visual_scores]
+    n = len(ts_list)
+    if n == 0 or len(vis_list) != n:
+        r = float(rep_timestamp or 0.0)
+        d = min(5.0, 0.45 * float(v_dur))
+        return round(max(0.0, r - 0.5 * d), 2), round(min(float(v_dur), r + 0.5 * d), 2), []
+
+    if n == 1:
+        r = ts_list[0]
+        d = min(5.0, max(2.5, 0.25 * float(v_dur)))
+        return round(max(0.0, r - 0.5 * d), 2), round(min(float(v_dur), r + 0.5 * d), 2), vis_list
+
+    # Preserve unblurred float64 curve for sharp shot-boundary transitions
+    ts_arr = np.asarray(ts_list, dtype=np.float64)
+    vis_arr = np.asarray(vis_list, dtype=np.float64)
+
+    eff_win = anchor_window
+    if eff_win is not None:
+        t_mid = 0.5 * (float(eff_win[0]) + float(eff_win[1]))
+        anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - t_mid))
+    elif rep_timestamp is not None:
+        eff_win = None
+        anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - float(rep_timestamp)))
+    else:
+        eff_win = None
+        if clause_curves is not None and clause_curves.ndim == 2 and clause_curves.shape[0] >= 2 and clause_curves.shape[1] == n and n >= 3:
+            from videntra.retrieval.alignment import viterbi_subevent_localization
+            v_res = viterbi_subevent_localization(ts_list, clause_curves)
+            if v_res is not None and 2.0 <= float(v_res.end_sec - v_res.start_sec) <= 0.35 * float(v_dur):
+                t_peak = ts_list[int(np.argmax(vis_arr))]
+                if (float(v_res.start_sec) - 4.0) <= t_peak <= (float(v_res.end_sec) + 4.0):
+                    eff_win = (float(v_res.start_sec), float(v_res.end_sec))
+        if eff_win is not None:
+            t_mid = 0.5 * (float(eff_win[0]) + float(eff_win[1]))
+            anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - t_mid))
+        else:
+            anchor_idx = int(np.argmax(vis_arr))
+
+    st_c, et_c = expand_boundary_contrast(
+        ts=ts_list,
+        curve=vis_list,
+        v_dur=float(v_dur),
+        anchor_idx=anchor_idx,
+        anchor_window=eff_win,
+        decay_lambda=decay_lambda,
+        c_thresh=c_thresh,
+        max_gap_sec=max_gap_sec,
+        max_dur_ratio=max_dur_ratio,
+    )
+
+    # Selective wide-plateau refinement only when contrast expansion stays overly broad
+    if eff_win is None and (et_c - st_c) >= 60.0 and n >= 10:
+        dp_seg = _optimal_contrast_segment(ts_arr, vis_arr, float(v_dur), max_dur_ratio=max_dur_ratio)
+        if dp_seg is not None:
+            dp_st, dp_et = dp_seg
+            inter = max(0.0, min(et_c, dp_et) - max(st_c, dp_st))
+            union = max(1e-6, max(et_c, dp_et) - min(st_c, dp_st))
+            if (inter / union) >= 0.30 and 14.0 <= (dp_et - dp_st) <= 0.85 * (et_c - st_c):
+                st_c = round(0.55 * st_c + 0.45 * dp_st, 2)
+                et_c = round(0.55 * et_c + 0.45 * dp_et, 2)
+
+    st_c = max(0.0, round(float(st_c), 2))
+    et_c = min(float(v_dur), round(float(et_c), 2))
+    if et_c <= st_c:
+        et_c = min(float(v_dur), round(st_c + 2.0, 2))
+    return st_c, et_c, vis_list
+
+
+def propose_soft_nms_secondary_windows(
+    ts: Sequence[float],
+    curve: Sequence[float],
+    v_dur: float,
+    primary_start: float,
+    primary_end: float,
+    base_ranking_score: float,
+    *,
+    iou_thresh: float = 0.35,
+    decay_lambda: float = 0.015,
+    c_thresh: float = 0.45,
+    max_gap_sec: float = 4.0,
+    max_dur_ratio: float = 0.45,
+) -> list[tuple[float, float, float, float]]:
+    """Extract secondary peak windows via percentile-floored valley-gated Soft-NMS."""
+    if len(ts) <= 3 or len(curve) != len(ts):
+        return []
+    c_arr = np.asarray(curve, dtype=np.float64)
+    bg_floor = float(np.percentile(c_arr, 15.0)) if len(ts) >= 15 else float(np.min(c_arr))
+    work_base = np.maximum(c_arr, bg_floor).tolist()
+    win1_scores = [work_base[i] for i, t in enumerate(ts) if primary_start <= t <= primary_end]
+    s_max1 = max(win1_scores) if win1_scores else max(work_base)
+    existing: list[tuple[float, float]] = [(primary_start, primary_end)]
+    max_extra = 3 if len(ts) >= 25 else (2 if len(ts) >= 15 else 1)
+    prev_score = float(base_ranking_score)
+    min_peak_ratio = 0.80 if len(ts) >= 20 else 0.88
+    sec_c_thresh = 0.50 if len(ts) >= 20 else c_thresh
+    proposals: list[tuple[float, float, float, float]] = []
+
+    for p_offset in range(max_extra):
+        masked = [
+            (bg_floor if any((ws - 3.0) <= ts[i] <= (we + 3.0) for ws, we in existing) else s)
+            for i, s in enumerate(work_base)
+        ]
+        peak_p_idx = max(range(len(masked)), key=lambda i: masked[i])
+        s_max_p = masked[peak_p_idx]
+        if s_max_p <= bg_floor + 1e-5 or s_max_p < min_peak_ratio * s_max1:
+            break
+        t_peak_p = ts[peak_p_idx]
+        valley_scores = [
+            work_base[i] for i, t in enumerate(ts)
+            if any((we < t < t_peak_p) or (t_peak_p < t < ws) for ws, we in existing)
+        ]
+        if not (bool(valley_scores) and min(valley_scores) <= bg_floor + 0.70 * (s_max_p - bg_floor)):
+            break
+
+        st_p, et_p = expand_boundary_contrast(
+            ts=ts,
+            curve=masked,
+            v_dur=v_dur,
+            anchor_idx=peak_p_idx,
+            decay_lambda=decay_lambda,
+            c_thresh=sec_c_thresh,
+            max_gap_sec=max_gap_sec,
+            max_dur_ratio=max_dur_ratio,
+        )
+        if et_p <= st_p or (et_p - st_p) < 1.0:
+            break
+
+        max_iou = max(
+            max(0.0, min(et_p, we) - max(st_p, ws)) / max(1e-8, max(et_p, we) - min(st_p, ws))
+            for ws, we in existing
+        )
+        if max_iou >= iou_thresh:
+            break
+
+        rep_t_p = 0.5 * (st_p + et_p)
+        peak_ratio = min(1.0, float(s_max_p) / max(float(s_max1), 1e-8))
+        p_num = p_offset + 2
+        if len(ts) >= 20:
+            win_score = float(base_ranking_score) - 0.015 * (1.0 - peak_ratio) - 0.004 * (p_num - 2)
+        else:
+            win_score = float(base_ranking_score) * 0.85 * (peak_ratio ** 2)
+        win_score = min(win_score, prev_score - 1e-4)
+        prev_score = win_score
+        existing.append((st_p, et_p))
+        proposals.append((round(st_p, 2), round(et_p, 2), round(rep_t_p, 2), round(win_score, 5)))
+    return proposals
+
 
 

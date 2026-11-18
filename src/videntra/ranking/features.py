@@ -45,6 +45,17 @@ LTR_FEATURE_NAMES: tuple[str, ...] = LTR_FEATURE_NAMES_22D + (
     "rrf_vis_caption",
 )
 
+LTR_FEATURE_NAMES_V2: tuple[str, ...] = LTR_FEATURE_NAMES + (
+    "vp_whole_cos",
+    "vp_subclip_max",
+    "vp_z",
+    "vp_csls",
+    "rrf_vp",
+    "lex_reliability_score",
+    "spatial_predicate_score",
+    "action_order_score",
+)
+
 
 @dataclass(frozen=True)
 class QueryZScoreResult:
@@ -256,6 +267,28 @@ def extract_ltr_features_24d(
     return np.array([values[name] for name in LTR_FEATURE_NAMES], dtype=np.float32)
 
 
+def extract_ltr_features_32d(
+    candidate: Mapping[str, Any],
+    z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+    *,
+    return_dict: bool = False,
+) -> np.ndarray | dict[str, float]:
+    """Extract the 32 V2 LTR features (24D + VideoPrism, lexical reliability, P4 spatial/action)."""
+    values = dict(extract_ltr_features_24d(candidate, z_stats=z_stats, return_dict=True))
+    values["vp_whole_cos"] = _safe_float(candidate.get("vp_whole_cos"))
+    values["vp_subclip_max"] = _safe_float(candidate.get("vp_subclip_max"))
+    values["vp_z"] = _safe_float(candidate.get("vp_z"))
+    values["vp_csls"] = _safe_float(candidate.get("vp_csls"))
+    values["rrf_vp"] = _safe_float(candidate.get("rrf_vp"))
+    values["lex_reliability_score"] = _safe_float(candidate.get("lex_reliability_score"))
+    values["spatial_predicate_score"] = _safe_float(candidate.get("spatial_predicate_score"))
+    values["action_order_score"] = _safe_float(candidate.get("action_order_score"))
+
+    if return_dict:
+        return values
+    return np.array([values[name] for name in LTR_FEATURE_NAMES_V2], dtype=np.float32)
+
+
 def extract_ltr_features_batch(
     candidates: Sequence[Mapping[str, Any]],
     z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
@@ -264,6 +297,17 @@ def extract_ltr_features_batch(
     if not candidates:
         return np.zeros((0, len(LTR_FEATURE_NAMES)), dtype=np.float32)
     rows = [extract_ltr_features_24d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
+    return np.vstack(rows).astype(np.float32, copy=False)
+
+
+def extract_ltr_features_batch_32d(
+    candidates: Sequence[Mapping[str, Any]],
+    z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
+) -> np.ndarray:
+    """Extract an (N, 32) float32 V2 feature matrix for a batch of candidates."""
+    if not candidates:
+        return np.zeros((0, len(LTR_FEATURE_NAMES_V2)), dtype=np.float32)
+    rows = [extract_ltr_features_32d(cand, z_stats=z_stats, return_dict=False) for cand in candidates]
     return np.vstack(rows).astype(np.float32, copy=False)
 
 

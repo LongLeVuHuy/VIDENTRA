@@ -78,6 +78,20 @@ GENERIC_VISUAL_WORDS: frozenset[str] = frozenset({
 VI_LOWER: str = "a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ"
 VI_UPPER: str = "A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ"
 
+_RE_HAS_DIGIT = re.compile(r"\d")
+_RE_HAS_UPPER = re.compile(rf"[{VI_UPPER}]")
+_RE_THOUSAND_COMMA = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_RE_COLON_DIGIT = re.compile(r":(?=\d)")
+_RE_DIGIT_WORD = re.compile(rf"(\b\d+)([{VI_LOWER}{VI_UPPER}]+)")
+_RE_WORD_DIGIT = re.compile(rf"([{VI_LOWER}{VI_UPPER}]{{3,}})(\d+\b)")
+_RE_CAMEL_CASE = re.compile(rf"([{VI_LOWER}])([{VI_UPPER}])")
+_RE_ALLCAPS_LOWER = re.compile(rf"([{VI_UPPER}]{{2,}})([{VI_LOWER}]{{2,}})")
+_RE_MULTI_SPACE = re.compile(r"[ \t]+")
+_RE_NON_ALNUM_SPACE = re.compile(r"[^\w\s]")
+_RE_QUOTED = re.compile(r'["\']([^"\']+)["\']')
+_RE_PROPER_NOUN = re.compile(rf"\b[{VI_UPPER}][{VI_LOWER}0-9]+(?:\s+[{VI_UPPER}][{VI_LOWER}0-9]+)*\b")
+_RE_WORD_ALL = re.compile(r"\w+")
+
 
 def split_compound_tokens(text: str) -> str:
     """Split compound tokens from OCR/ASR:
@@ -92,34 +106,29 @@ def split_compound_tokens(text: str) -> str:
 
     result = str(text)
 
-    # 1. Remove thousand-separator commas in numbers (e.g. 1,558 -> 1558)
-    result = re.sub(r'(?<=\d),(?=\d{3}(?!\d))', '', result)
+    if _RE_HAS_DIGIT.search(result):
+        # 1. Remove thousand-separator commas in numbers (e.g. 1,558 -> 1558)
+        result = _RE_THOUSAND_COMMA.sub("", result)
+        # 2. Add space after colon before digits (e.g. 2019-20:1558 -> 2019-20: 1558)
+        result = _RE_COLON_DIGIT.sub(": ", result)
+        # 3. Numbers attached to words at word boundaries (e.g. 1558Positions -> 1558 Positions)
+        result = _RE_DIGIT_WORD.sub(r"\1 \2", result)
+        # Words of length >= 3 followed by numbers at end of word (e.g. Positions1558 -> Positions 1558)
+        result = _RE_WORD_DIGIT.sub(r"\1 \2", result)
 
-    # 2. Add space after colon before digits (e.g. 2019-20:1558 -> 2019-20: 1558)
-    result = re.sub(r':(?=\d)', ': ', result)
-
-    # 3. Numbers attached to words at word boundaries (e.g. 1558Positions -> 1558 Positions)
-    # Uses \b\d+ to preserve short notations like B2, F1, H2O2 where digits are preceded by letters
-    result = re.sub(rf'(\b\d+)([{VI_LOWER}{VI_UPPER}]+)', r'\1 \2', result)
-
-    # Words of length >= 3 followed by numbers at end of word (e.g. Positions1558 -> Positions 1558)
-    # Preserves short notations with 1-2 letters like B2, F1, IO3, H2O2
-    result = re.sub(rf'([{VI_LOWER}{VI_UPPER}]{{3,}})(\d+\b)', r'\1 \2', result)
-
-    # 4. Split CamelCase: lowercase followed by uppercase (e.g. cuteCupcakes -> cute Cupcakes, forBEAUTY -> for BEAUTY)
-    result = re.sub(rf'([{VI_LOWER}])([{VI_UPPER}])', r'\1 \2', result)
-
-    # 5. Split ALLCAPS followed by lowercase (e.g. PRODUCTSfor -> PRODUCTS for)
-    result = re.sub(rf'([{VI_UPPER}]{{2,}})([{VI_LOWER}]{{2,}})', r'\1 \2', result)
+    if _RE_HAS_UPPER.search(result):
+        # 4. Split CamelCase: lowercase followed by uppercase (e.g. cuteCupcakes -> cute Cupcakes, forBEAUTY -> for BEAUTY)
+        result = _RE_CAMEL_CASE.sub(r"\1 \2", result)
+        # 5. Split ALLCAPS followed by lowercase (e.g. PRODUCTSfor -> PRODUCTS for)
+        result = _RE_ALLCAPS_LOWER.sub(r"\1 \2", result)
 
     # Normalize multiple whitespace
-    result = re.sub(r'[ \t]+', ' ', result).strip()
-    return result
+    return _RE_MULTI_SPACE.sub(" ", result).strip()
 
 
 def sanitize_fts5_token(token: str) -> str:
     """Strip FTS5 special characters and punctuation."""
-    return re.sub(r'[^\w\s]', '', token).strip()
+    return _RE_NON_ALNUM_SPACE.sub("", token).strip()
 
 
 def extract_fts5_keywords(raw_query: str, max_keywords: int = 12) -> list[str]:
@@ -140,7 +149,7 @@ def extract_fts5_keywords(raw_query: str, max_keywords: int = 12) -> list[str]:
     seen: set[str] = set()
 
     # Priority 1: Quoted phrases
-    quoted_matches = re.findall(r'["\']([^"\']+)["\']', clean_q)
+    quoted_matches = _RE_QUOTED.findall(clean_q)
     for qm in quoted_matches:
         sanitized = sanitize_fts5_token(qm)
         if sanitized and sanitized.lower() not in seen:
@@ -150,10 +159,10 @@ def extract_fts5_keywords(raw_query: str, max_keywords: int = 12) -> list[str]:
                 seen.add(sub_tok.lower())
 
     # Remove quoted parts from remaining text to avoid duplicate extraction
-    unquoted = re.sub(r'["\']([^"\']+)["\']', ' ', clean_q)
+    unquoted = _RE_QUOTED.sub(" ", clean_q) if quoted_matches else clean_q
 
     # Priority 2: Consecutive Capitalized Words / Proper Nouns (e.g. Toxic Invaders, Ha Noi)
-    proper_nouns = re.findall(rf'\b[{VI_UPPER}][{VI_LOWER}0-9]+(?:\s+[{VI_UPPER}][{VI_LOWER}0-9]+)*\b', unquoted)
+    proper_nouns = _RE_PROPER_NOUN.findall(unquoted)
     for pn in proper_nouns:
         sanitized = sanitize_fts5_token(pn)
         if not sanitized:
@@ -184,7 +193,7 @@ def extract_fts5_keywords(raw_query: str, max_keywords: int = 12) -> list[str]:
                 seen.add(trailing_phrase.lower())
 
     # Priority 3: Remaining individual tokens filtered by stopwords
-    tokens = re.findall(r'\w+', unquoted)
+    tokens = _RE_WORD_ALL.findall(unquoted)
     for tok in tokens:
         sanitized = sanitize_fts5_token(tok)
         tok_lower = sanitized.lower()

@@ -5,7 +5,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
+import unicodedata
 
 VL_CACHE_REQUIRED_FIELDS: tuple[str, ...] = (
     "query_text_sha256",
@@ -43,7 +44,13 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _validate_vl_row_contract(row: dict[str, Any], *, row_idx: int, strict_contract: bool) -> None:
+def _validate_vl_row_contract(
+    row: dict[str, Any],
+    *,
+    row_idx: int,
+    strict_contract: bool,
+    expected_provenance: Mapping[str, Any] | None = None,
+) -> None:
     forbidden = FORBIDDEN_VL_FIELDS.intersection(row.keys())
     if forbidden:
         raise ValueError(
@@ -65,24 +72,80 @@ def _validate_vl_row_contract(row: dict[str, Any], *, row_idx: int, strict_contr
         raise ValueError(
             f"VL reranker cache row {row_idx} missing code_sha256 or prompt_sha256"
         )
-    if len(row["frame_ordinals"]) != len(row["frame_pts_time"]):
+
+    ordinals_raw = row.get("frame_ordinals")
+    pts_raw = row.get("frame_pts_time")
+    if not isinstance(ordinals_raw, list) or not isinstance(pts_raw, list) or not ordinals_raw:
+        raise ValueError(
+            f"VL reranker cache row {row_idx} frame_ordinals and frame_pts_time must be non-empty lists"
+        )
+    if len(ordinals_raw) != len(pts_raw):
         raise ValueError(
             f"VL reranker cache row {row_idx} frame_ordinals/frame_pts_time length mismatch"
         )
+    prev_ord = -1
+    prev_pts = -math.inf
+    for o_raw, p_raw in zip(ordinals_raw, pts_raw):
+        if isinstance(o_raw, bool) or not isinstance(o_raw, int) or o_raw < 0:
+            raise ValueError(f"VL reranker cache row {row_idx} has invalid frame_ordinal: {o_raw!r}")
+        if o_raw <= prev_ord:
+            raise ValueError(
+                f"VL reranker cache row {row_idx} frame_ordinals must be strictly increasing: {ordinals_raw}"
+            )
+        prev_ord = o_raw
+        p_val = float(p_raw)
+        if not math.isfinite(p_val) or p_val < 0.0 or p_val < prev_pts:
+            raise ValueError(
+                f"VL reranker cache row {row_idx} frame_pts_time must be finite and non-decreasing: {pts_raw}"
+            )
+        prev_pts = p_val
+
+    if "query_text" in row and row["query_text"] is not None:
+        raw_q = str(row["query_text"])
+        q_sha = str(row.get("query_text_sha256") or "")
+        sha_utf8 = hashlib.sha256(raw_q.encode("utf-8")).hexdigest()
+        sha_nfc = hashlib.sha256(unicodedata.normalize("NFC", raw_q.strip()).encode("utf-8")).hexdigest()
+        if q_sha not in (sha_utf8, sha_nfc):
+            raise ValueError(
+                f"VL reranker cache row {row_idx} query_text_sha256 does not match query_text"
+            )
+
+    if expected_provenance is not None:
+        for key in ("snapshot_sha256", "model_revision", "sampling_recipe", "prompt_sha256", "code_sha256"):
+            expected_val = expected_provenance.get(key)
+            if expected_val is not None and str(expected_val).strip():
+                actual_val = str(row.get(key) or "")
+                if actual_val != str(expected_val).strip():
+                    raise ValueError(
+                        f"VL reranker cache row {row_idx} {key} mismatch: "
+                        f"expected {expected_val!r}, got {actual_val!r}"
+                    )
+        media_map = expected_provenance.get("media_sha256_by_video")
+        if isinstance(media_map, Mapping):
+            vid = str(row.get("video_id") or "")
+            if vid in media_map and str(media_map[vid]).strip():
+                actual_msha = str(row.get("media_sha256") or "")
+                if actual_msha != str(media_map[vid]).strip():
+                    raise ValueError(
+                        f"VL reranker cache row {row_idx} media_sha256 mismatch for video_id={vid}: "
+                        f"expected {media_map[vid]!r}, got {actual_msha!r}"
+                    )
 
 
 def load_vl_reranker_cache(
     cache_path: Path,
     *,
     strict_contract: bool = True,
+    strict: bool | None = None,
+    expected_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Load and validate offline VL reranker JSONL cache keyed by query_text_sha256 and video_id."""
+    """Load and validate offline VL reranker JSONL cache keyed strictly by query_text_sha256 and video_id."""
     path = Path(cache_path)
     if not path.is_file():
         raise FileNotFoundError(f"VL reranker cache not found: {path}")
 
+    effective_strict = strict_contract if strict is None else bool(strict)
     by_qsha: dict[str, dict[str, dict[str, Any]]] = {}
-    by_qid: dict[str, dict[str, dict[str, Any]]] = {}
     raw_rows: list[dict[str, Any]] = []
 
     with path.open("r", encoding="utf-8") as stream:
@@ -93,11 +156,21 @@ def load_vl_reranker_cache(
             obj = json.loads(stripped)
             if not isinstance(obj, dict):
                 raise ValueError(f"VL reranker cache line {line_no} must be a JSON object")
-            _validate_vl_row_contract(obj, row_idx=line_no, strict_contract=strict_contract)
+            _validate_vl_row_contract(
+                obj,
+                row_idx=line_no,
+                strict_contract=effective_strict,
+                expected_provenance=expected_provenance,
+            )
             q_sha = str(obj.get("query_text_sha256") or "")
             vid = str(obj.get("video_id") or "")
             if not q_sha or not vid:
                 raise ValueError(f"VL reranker cache line {line_no} requires non-empty query_text_sha256 and video_id")
+            q_bucket = by_qsha.setdefault(q_sha, {})
+            if effective_strict and vid in q_bucket:
+                raise ValueError(
+                    f"Duplicate VL reranker cache pair (query_text_sha256={q_sha}, video_id={vid}) at line {line_no}"
+                )
             raw_score = obj.get("score")
             parsed_score = float(raw_score) if raw_score is not None and math.isfinite(float(raw_score)) else None
             entry = {
@@ -105,9 +178,7 @@ def load_vl_reranker_cache(
                 "score": parsed_score,
                 "status": str(obj.get("status") or ""),
             }
-            by_qsha.setdefault(q_sha, {})[vid] = entry
-            if obj.get("query_id"):
-                by_qid.setdefault(str(obj["query_id"]), {})[vid] = entry
+            q_bucket[vid] = entry
             raw_rows.append(entry)
 
     return {
@@ -115,7 +186,6 @@ def load_vl_reranker_cache(
         "cache_sha256": sha256_file(path),
         "row_count": len(raw_rows),
         "by_qsha": by_qsha,
-        "by_qid": by_qid,
         "raw_rows": raw_rows,
     }
 

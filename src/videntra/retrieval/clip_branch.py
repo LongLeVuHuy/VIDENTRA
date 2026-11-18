@@ -165,6 +165,9 @@ class ClipBranchIndex:
     fids_signature: str = ""
     mapping_signature: str = ""
     schema_version: str = CLIP_BRANCH_SCHEMA_VERSION
+    video_starts: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    video_lengths: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    video_ids_sorted: bool = False
 
     def validate_snapshot(
         self,
@@ -333,6 +336,8 @@ def build_clip_branch_index(
     frame_fids_list: list[int] = []
     frame_pts_list: list[float] = []
     video_frame_ranges: dict[str, tuple[int, int]] = {}
+    video_starts_list: list[int] = []
+    video_lengths_list: list[int] = []
     invalid_videos: dict[str, str] = {}
 
     frame_offset = 0
@@ -383,6 +388,8 @@ def build_clip_branch_index(
         frame_fids_list.extend(valid_fids)
         frame_pts_list.extend(valid_pts)
         video_frame_ranges[vid] = (frame_offset, frame_offset + n_v)
+        video_starts_list.append(frame_offset)
+        video_lengths_list.append(n_v)
         frame_offset += n_v
 
     if clip_means:
@@ -412,6 +419,9 @@ def build_clip_branch_index(
         fids_signature=fids_sig,
         mapping_signature=map_sig,
         schema_version=CLIP_BRANCH_SCHEMA_VERSION,
+        video_starts=np.asarray(video_starts_list, dtype=np.int64),
+        video_lengths=np.asarray(video_lengths_list, dtype=np.int64),
+        video_ids_sorted=True,
     )
 
 
@@ -481,6 +491,8 @@ def score_clip_branch(
     window_size: int | None = None,
     rrf_k: float = DEFAULT_RRF_K,
     min_norm: float = DEFAULT_MIN_NORM,
+    precomputed_frame_dots: np.ndarray | None = None,
+    consensus_only_a5_vid: str | None = None,
 ) -> ClipBranchScoreResult:
     """Score the filtered valid gallery using frame max, clip mean, and RRF fusion."""
     if rrf_k <= 0.0:
@@ -515,9 +527,98 @@ def score_clip_branch(
             invalid_videos_skipped=dict(index.invalid_videos),
         )
 
-    # Compute dot products once across the normalized frame bank and clip mean matrix.
-    all_frame_dots = (index.frame_vectors_norm @ q).astype(np.float64, copy=False)
+    # Compute (or reuse) dot products across the normalized frame bank and clip mean matrix.
+    if (
+        precomputed_frame_dots is not None
+        and len(precomputed_frame_dots) >= index.num_source_rows
+    ):
+        all_frame_dots = np.asarray(precomputed_frame_dots, dtype=np.float64)[index.frame_fids]
+        if not np.isfinite(all_frame_dots).all():
+            all_frame_dots = (index.frame_vectors_norm @ q).astype(np.float64, copy=False)
+    else:
+        all_frame_dots = (index.frame_vectors_norm @ q).astype(np.float64, copy=False)
     all_clip_dots = (index.clip_mean_matrix @ q).astype(np.float64, copy=False)
+
+    n_all_videos = len(index.video_ids)
+    can_vectorize = (
+        window_size is None
+        and index.video_ids_sorted
+        and len(index.video_starts) == n_all_videos
+        and len(index.video_lengths) == n_all_videos
+        and n_all_videos > 0
+        and np.all(np.isfinite(all_frame_dots))
+    )
+
+    if can_vectorize:
+        max_all = np.maximum.reduceat(all_frame_dots, index.video_starts)
+        max_expanded = np.repeat(max_all, index.video_lengths)
+        eq_mask = all_frame_dots >= max_expanded
+        eq_idx = np.flatnonzero(eq_mask)
+        eq_vpos = index.frame_video_pos[eq_idx]
+        first_mask = np.empty(eq_vpos.size, dtype=bool)
+        first_mask[0] = True
+        if eq_vpos.size > 1:
+            first_mask[1:] = eq_vpos[1:] != eq_vpos[:-1]
+        best_globals_all = eq_idx[first_mask]
+        if len(best_globals_all) == n_all_videos:
+            if valid_video_ids is None or len(active_positions) == n_all_videos:
+                active_pos_arr = np.arange(n_all_videos, dtype=np.int64)
+                active_vids = index.video_ids
+            else:
+                active_pos_arr = np.asarray(active_positions, dtype=np.int64)
+                active_vids = [index.video_ids[i] for i in active_positions]
+
+            f_arr = max_all[active_pos_arr]
+            c_arr = all_clip_dots[active_pos_arr]
+            g_arr = best_globals_all[active_pos_arr]
+
+            n_act = len(active_vids)
+            order_f = np.argsort(-f_arr, kind="stable")
+            ranks_f = np.empty(n_act, dtype=np.int64)
+            ranks_f[order_f] = np.arange(1, n_act + 1, dtype=np.int64)
+
+            order_c = np.argsort(-c_arr, kind="stable")
+            ranks_c = np.empty(n_act, dtype=np.int64)
+            ranks_c[order_c] = np.arange(1, n_act + 1, dtype=np.int64)
+
+            rrf_k_f = float(rrf_k)
+            b_arr = (1.0 / (rrf_k_f + ranks_f)) + (1.0 / (rrf_k_f + ranks_c))
+            if consensus_only_a5_vid is not None and valid_video_ids is None:
+                b_pos = int(np.argmax(b_arr))
+                b_v1 = active_vids[b_pos]
+                keep_positions = [b_pos]
+                a5_pos = index.video_to_pos.get(consensus_only_a5_vid)
+                if a5_pos is not None and a5_pos != b_pos:
+                    keep_positions.append(a5_pos)
+                return ClipBranchScoreResult(
+                    branch_order=[b_v1],
+                    branch_scores={active_vids[p]: float(b_arr[p]) for p in keep_positions},
+                    frame_scores={active_vids[p]: float(f_arr[p]) for p in keep_positions},
+                    clip_scores={active_vids[p]: float(c_arr[p]) for p in keep_positions},
+                    rank_frame={active_vids[p]: int(ranks_f[p]) for p in keep_positions},
+                    rank_clip={active_vids[p]: int(ranks_c[p]) for p in keep_positions},
+                    best_frame_fid={},
+                    best_frame_pts={},
+                    window_scores={},
+                    valid_gallery_count=n_act,
+                    invalid_videos_skipped={},
+                )
+
+            order_b = np.argsort(-b_arr, kind="stable")
+
+            return ClipBranchScoreResult(
+                branch_order=[active_vids[i] for i in order_b.tolist()],
+                branch_scores=dict(zip(active_vids, b_arr.tolist())),
+                frame_scores=dict(zip(active_vids, f_arr.tolist())),
+                clip_scores=dict(zip(active_vids, c_arr.tolist())),
+                rank_frame=dict(zip(active_vids, ranks_f.tolist())),
+                rank_clip=dict(zip(active_vids, ranks_c.tolist())),
+                best_frame_fid=dict(zip(active_vids, index.frame_fids[g_arr].tolist())),
+                best_frame_pts=dict(zip(active_vids, index.frame_pts[g_arr].tolist())),
+                window_scores={},
+                valid_gallery_count=n_act,
+                invalid_videos_skipped=dict(index.invalid_videos),
+            )
 
     frame_scores: dict[str, float] = {}
     clip_scores: dict[str, float] = {}

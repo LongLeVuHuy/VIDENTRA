@@ -167,8 +167,17 @@ def get_process_memory_mb() -> tuple[float | None, float | None]:
 
             pmc = PROCESS_MEMORY_COUNTERS()
             pmc.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
-            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+            handle = kernel32.GetCurrentProcess()
+            if psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
                 rss_mb = round(pmc.WorkingSetSize / (1024.0 * 1024.0), 1)
                 peak_mb = round(pmc.PeakWorkingSetSize / (1024.0 * 1024.0), 1)
                 return rss_mb, peak_mb
@@ -202,8 +211,8 @@ class MultimodalBenchmarkRunner:
         use_disk_cache: bool = False,
         ltr_model_path: Path | str | None = Path("models/ranking/videntra_ltr_v1.json"),
         enable_spatial_patches: bool = True,
-        enable_vlm_caption_lexical: bool = True,
-        enable_vlm_caption_dense: bool = True,
+        enable_vlm_caption_lexical: bool = False,
+        enable_vlm_caption_dense: bool = False,
         enable_temporal_rerank: bool | None = None,
         temporal_rerank_mode: str = "attention",
         temporal_rerank_lambda: float = 0.0,
@@ -1215,8 +1224,42 @@ def evaluate_query_set(
 
 
 def measure_cold_query_latency(runner: MultimodalBenchmarkRunner, sample_queries: list[dict[str, Any]]) -> dict[str, float | None]:
-    """Legacy synthetic cold measurement is invalid; no cold profile has been measured."""
-    return {"cold_mean_ms": None, "cold_p50_ms": None, "cold_p95_ms": None}
+    """Measure real cold-cache query latency by clearing in-memory query caches before each timed query."""
+    if not sample_queries:
+        return {"cold_mean_ms": None, "cold_p50_ms": None, "cold_p95_ms": None}
+
+    pipeline = getattr(runner, "pipeline", None)
+    if pipeline is None:
+        return {"cold_mean_ms": None, "cold_p50_ms": None, "cold_p95_ms": None}
+
+    latencies: list[float] = []
+    for q in sample_queries[:15]:
+        q_text = str(q.get("query_text") or "").strip()
+        if not q_text:
+            continue
+        if hasattr(pipeline, "_text_memory_cache"):
+            pipeline._text_memory_cache.clear()
+        if hasattr(pipeline, "_e5_memory_cache"):
+            pipeline._e5_memory_cache.clear()
+        vp_ret = getattr(pipeline, "videoprism_retriever", None)
+        if vp_ret is not None and hasattr(vp_ret, "clear_runtime_cache"):
+            vp_ret.clear_runtime_cache()
+        decomposer = getattr(pipeline, "query_decomposer", None)
+        if decomposer is not None and hasattr(decomposer, "_memory_cache"):
+            decomposer._memory_cache.clear()
+        t0 = time.perf_counter()
+        runner.search_multimodal(q_text, top_k=10, ablation_config="A5")
+        latencies.append((time.perf_counter() - t0) * 1000.0)
+
+    if not latencies:
+        return {"cold_mean_ms": None, "cold_p50_ms": None, "cold_p95_ms": None}
+
+    arr = np.asarray(latencies, dtype=np.float64)
+    return {
+        "cold_mean_ms": round(float(np.mean(arr)), 2),
+        "cold_p50_ms": round(float(np.median(arr)), 2),
+        "cold_p95_ms": round(float(np.percentile(arr, 95)), 2),
+    }
 
 
 def acceptance_metric(metric: str, value: float | None, threshold: float, direction: str, source: str, n: int | None) -> dict[str, Any]:
@@ -1260,8 +1303,8 @@ def run_benchmark(
     temporal_rerank_lambda: float = 0.0,
     temporal_rerank_top_k: int = 10,
     enable_spatial_patches: bool = True,
-    enable_vlm_caption_lexical: bool = True,
-    enable_vlm_caption_dense: bool = True,
+    enable_vlm_caption_lexical: bool = False,
+    enable_vlm_caption_dense: bool = False,
     enable_clip_consensus_boost: bool | None = None,
     ltr_blend_weight: float | None = None,
     a5_preset: str | None = None,
@@ -1638,6 +1681,7 @@ def run_benchmark(
         "faiss_",
         "manifest",
         "spatial_patches",
+        "videoprism",
         "p85_receipt",
         "videntra_ltr",
         "siglip2",
@@ -2109,6 +2153,8 @@ if __name__ == "__main__":
     parser.add_argument("--temporal-rerank-lambda", type=float, default=0.0)
     parser.add_argument("--temporal-rerank-top-k", type=int, default=10)
     parser.add_argument("--disable-spatial-patches", action="store_true")
+    parser.add_argument("--enable-vlm-caption-lexical", action="store_true")
+    parser.add_argument("--enable-vlm-caption-dense", action="store_true")
     parser.add_argument("--disable-vlm-caption-lexical", action="store_true")
     parser.add_argument("--disable-vlm-caption-dense", action="store_true")
     parser.add_argument("--stage2-selection-mode", choices=("exact", "legacy_union"), default="exact")
@@ -2136,8 +2182,8 @@ if __name__ == "__main__":
         temporal_rerank_lambda=args.temporal_rerank_lambda,
         temporal_rerank_top_k=args.temporal_rerank_top_k,
         enable_spatial_patches=not args.disable_spatial_patches,
-        enable_vlm_caption_lexical=not args.disable_vlm_caption_lexical,
-        enable_vlm_caption_dense=not args.disable_vlm_caption_dense,
+        enable_vlm_caption_lexical=bool(args.enable_vlm_caption_lexical and not args.disable_vlm_caption_lexical),
+        enable_vlm_caption_dense=bool(args.enable_vlm_caption_dense and not args.disable_vlm_caption_dense),
         enable_clip_consensus_boost=args.enable_clip_consensus_boost,
         ltr_blend_weight=args.ltr_blend_weight,
         a5_preset=args.a5_preset,

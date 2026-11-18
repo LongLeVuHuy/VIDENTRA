@@ -50,7 +50,7 @@ class OfflineMetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _get_connection(self, *, isolation_level: str | None = "") -> sqlite3.Connection:
+    def _open_raw_connection(self, *, isolation_level: str | None = "") -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=isolation_level)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -59,9 +59,18 @@ class OfflineMetadataStore:
         return conn
 
     @contextmanager
+    def _get_connection(self, *, isolation_level: str | None = "") -> Iterator[sqlite3.Connection]:
+        conn = self._open_raw_connection(isolation_level=isolation_level)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Run multi-step writes + FTS rebuild in a single atomic transaction with FK enforcement."""
-        conn = self._get_connection(isolation_level=None)
+        conn = self._open_raw_connection(isolation_level=None)
         try:
             conn.execute("BEGIN IMMEDIATE;")
             yield conn

@@ -10,7 +10,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from videntra.evaluation.split_lock import qvh_source_id
-from videntra.ranking.features import LTR_FEATURE_NAMES
+from videntra.ranking.features import LTR_FEATURE_NAMES, LTR_FEATURE_NAMES_V2
 
 _AVC_WINDOW_RE = re.compile(r"^(.+?)__s\d+__e\d+$")
 _MSRVTT_ID_RE = re.compile(r"^video\d+$")
@@ -366,8 +366,15 @@ def load_ltr_model_info(ltr_model_path: Path | str | None) -> dict[str, Any]:
     raw_feature_names = payload.get("feature_names")
     feature_names = [str(f) for f in raw_feature_names] if isinstance(raw_feature_names, list) else list(LTR_FEATURE_NAMES)
     schema_error = None
-    if len(feature_names) not in (18, 22, len(LTR_FEATURE_NAMES)) or tuple(feature_names) != LTR_FEATURE_NAMES[:len(feature_names)]:
-        schema_error = f"invalid_feature_schema:expected_prefix_of_{len(LTR_FEATURE_NAMES)}_got_{len(feature_names)}"
+    tup_names = tuple(feature_names)
+    valid_prefixes = (
+        LTR_FEATURE_NAMES[:18],
+        LTR_FEATURE_NAMES[:22],
+        LTR_FEATURE_NAMES,
+        LTR_FEATURE_NAMES_V2,
+    )
+    if tup_names not in valid_prefixes:
+        schema_error = f"invalid_feature_schema:expected_24d_or_32d_got_{len(feature_names)}"
 
     fold_weights = payload.get("fold_weights")
     fold_query_map = _extract_fold_query_map(fold_weights)

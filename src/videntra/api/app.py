@@ -56,17 +56,40 @@ def create_app(
 
     @app.get("/health", tags=["system"])
     def health_check():
-        has_engine = getattr(app.state, "engine", None) is not None
+        engine_obj = getattr(app.state, "engine", None)
+        pipeline_obj = getattr(app.state, "pipeline", None)
+        has_engine = engine_obj is not None
+        has_pipeline = pipeline_obj is not None
         has_resolver = getattr(app.state, "resolver", None) is not None
-        indexed_count = len(app.state.engine.index_store) if has_engine else 0
+        if has_pipeline:
+            aug_emb = getattr(pipeline_obj, "augmented_embeddings", None)
+            vec_count = int(len(aug_emb)) if aug_emb is not None else 0
+            kf_map = getattr(pipeline_obj, "keyframe_map", None) or {}
+            vid_durs = getattr(pipeline_obj, "video_durations", None) or {}
+            vid_count = len(vid_durs) if vid_durs else len({k.get("video_id") for k in kf_map.values() if isinstance(k, dict) and k.get("video_id")})
+            vp_ret = getattr(pipeline_obj, "videoprism_retriever", None)
+            vp_status = getattr(vp_ret, "status", "disabled") if getattr(pipeline_obj, "enable_videoprism", False) else "disabled"
+            ltr_loaded = bool(getattr(getattr(pipeline_obj, "ltr_ranker", None), "is_loaded", False))
+            backend = "unified"
+        else:
+            vec_count = len(engine_obj.index_store) if has_engine else 0
+            vid_count = vec_count
+            vp_status = "unavailable"
+            ltr_loaded = False
+            backend = "visual" if has_engine else "none"
         return {
             "status": "ok",
             "service": "videntra",
             "version": "0.1.0",
             "snapshot_id": app.state.snapshot_id,
-            "engine_active": has_engine,
-            "indexed_samples": indexed_count,
-            "indexed_vectors": indexed_count,
+            "backend": backend,
+            "engine_active": bool(has_engine or has_pipeline),
+            "pipeline_active": has_pipeline,
+            "indexed_samples": vec_count,
+            "indexed_vectors": vec_count,
+            "indexed_videos": vid_count,
+            "videoprism_status": vp_status,
+            "ltr_loaded": ltr_loaded,
             "resolver_active": has_resolver,
         }
 

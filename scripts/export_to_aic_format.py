@@ -1,4 +1,5 @@
 """Export VIDENTRA indexes and evidence into AIC-standard layout (faiss_index.bin + metadata.db)."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -6,18 +7,34 @@ import sqlite3
 import numpy as np
 import faiss
 
+
 def export_to_aic_layout(
-    output_base: str = "data",
+    output_base: str = "work/aic_export",
     embeddings_dir: str = "work/benchmark/smoke/embeddings",
     inputs_dir: str = "work/kaggle/inputs",
     evidence_dir: str = "work/benchmark/smoke/evidence",
     media_dir: str | None = None,
+    allow_overwrite: bool = False,
 ):
     if media_dir is None:
         media_dir = os.environ.get("VIDENTRA_QVH_MEDIA_DIR", "data/raw/qvhighlights/media")
     base_p = Path(output_base)
     raw_p = base_p / "raw"
     processed_p = base_p / "processed"
+    protected_processed = Path("data/processed").resolve()
+    if processed_p.resolve() == protected_processed and not allow_overwrite:
+        raise FileExistsError(
+            f"Refusing to overwrite protected corpus directory {processed_p.resolve()} "
+            "without allow_overwrite=True (--i-understand-overwrite)."
+        )
+    faiss_out = processed_p / "faiss_index.bin"
+    db_out = processed_p / "metadata.db"
+    if not allow_overwrite and (faiss_out.exists() or db_out.exists()):
+        raise FileExistsError(
+            f"Export target already exists under {processed_p.resolve()}; "
+            "pass allow_overwrite=True (--i-understand-overwrite) to overwrite."
+        )
+
     raw_p.mkdir(parents=True, exist_ok=True)
     processed_p.mkdir(parents=True, exist_ok=True)
 
@@ -153,7 +170,31 @@ def export_to_aic_layout(
     print(f"  - KeyframeMap: {len(keyframe_rows)} rows (global_id 0 to {len(keyframe_rows)-1})")
     print(f"  - TextEvidence: {len(text_rows)} rows (OCR & ASR)")
     print(f"Database size: {db_out.stat().st_size} bytes -> {db_out}")
-    print("\nSUCCESS: AIC standard structure created under 'data/'.")
+    print(f"\nSUCCESS: AIC standard structure created under '{base_p}'.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Export VIDENTRA indexes into safe AIC layout.")
+    parser.add_argument("--output-base", default="work/aic_export")
+    parser.add_argument("--embeddings-dir", default="work/benchmark/smoke/embeddings")
+    parser.add_argument("--inputs-dir", default="work/kaggle/inputs")
+    parser.add_argument("--evidence-dir", default="work/benchmark/smoke/evidence")
+    parser.add_argument("--media-dir", default=None)
+    parser.add_argument(
+        "--i-understand-overwrite",
+        action="store_true",
+        help="Explicitly allow overwriting existing metadata.db / faiss_index.bin.",
+    )
+    args = parser.parse_args()
+    export_to_aic_layout(
+        output_base=args.output_base,
+        embeddings_dir=args.embeddings_dir,
+        inputs_dir=args.inputs_dir,
+        evidence_dir=args.evidence_dir,
+        media_dir=args.media_dir,
+        allow_overwrite=bool(args.i_understand_overwrite),
+    )
+
 
 if __name__ == "__main__":
-    export_to_aic_layout()
+    main()

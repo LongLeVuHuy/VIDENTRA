@@ -386,7 +386,8 @@ def ingest_p85_artifacts(
         raise FileNotFoundError(f"Metadata DB not found: {db_path}")
 
     target_dir = processed_dir or db_path.parent
-    preflight_conn = sqlite3.connect(str(db_path), timeout=30.0)
+    ro_uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
+    preflight_conn = sqlite3.connect(ro_uri, uri=True, timeout=30.0)
     try:
         preflight = _preflight_p85_artifacts(
             outputs_dir,

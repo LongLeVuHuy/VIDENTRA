@@ -200,21 +200,28 @@ def test_bug6_search_filters_video_ids_prefix_and_duration():
 
 
 def test_bug6_domain_lexical_synonyms_config_driven():
-    assert "letterman" in DOMAIN_LEXICAL_SYNONYMS
-    assert "news" in DOMAIN_LEXICAL_SYNONYMS
-    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    assert DOMAIN_LEXICAL_SYNONYMS == {}
+    pipeline_default = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    assert pipeline_default.enable_vlm_caption_lexical is False
+    assert pipeline_default.enable_vlm_caption_dense is False
 
-    fts_let, _, hi_let, _, _ = pipeline.prepare_fts5_query_and_tokens("David Letterman monologue")
-    assert '"lateshow"' in fts_let
-    assert "lateshow" in hi_let
+    fts_news_default, _, hi_news_default, _, _ = pipeline_default.prepare_fts5_query_and_tokens("breaking news channel broadcast")
+    assert '"cnn"' not in fts_news_default
+    assert "cnn" not in hi_news_default
 
-    fts_news, _, hi_news, _, _ = pipeline.prepare_fts5_query_and_tokens("breaking news channel broadcast")
-    assert '"cnn"' in fts_news and '"fox"' in fts_news
-    assert {"cnn", "fox"}.issubset(hi_news)
-
-    fts_io3, _, hi_io3, _, _ = pipeline.prepare_fts5_query_and_tokens("reaction with IO3 solution")
-    assert '"hio"' in fts_io3
-    assert "iodide" in hi_io3
+    pipeline_custom = UnifiedMultimodalSearchPipeline(
+        lazy_load=True,
+        use_disk_cache=False,
+        domain_synonyms={
+            "io3": {
+                "fts_tokens": ('"iodate"',),
+                "high_spec": ("iodate",),
+            }
+        },
+    )
+    fts_io3, _, hi_io3, _, _ = pipeline_custom.prepare_fts5_query_and_tokens("reaction with IO3 solution")
+    assert '"iodate"' in fts_io3
+    assert "iodate" in hi_io3
 
 
 def test_bug6_search_request_rerank_with_relations_forwarded():

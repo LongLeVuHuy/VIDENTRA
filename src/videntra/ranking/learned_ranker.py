@@ -15,11 +15,14 @@ import numpy as np
 
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
+    LTR_FEATURE_NAMES_V2,
     QueryZScoreResult,
     extract_ltr_features_batch,
+    extract_ltr_features_batch_32d,
 )
 
 DEFAULT_LTR_MODEL_PATH = Path("models/ranking/videntra_ltr_v1.json")
+_SUPPORTED_FEATURE_DIMS = frozenset({18, 22, 24, 32})
 
 # Sensible prior weights aligned with Plan §4.2 when trained artifact is absent.
 _FALLBACK_LINEAR_WEIGHTS: dict[str, float] = {
@@ -47,11 +50,79 @@ _FALLBACK_LINEAR_WEIGHTS: dict[str, float] = {
     "window_energy_concentration": 0.20,
     "temporal_attention_coherence": 0.25,
     "rrf_vis_caption": 0.25,
+    "vp_whole_cos": 0.50,
+    "vp_subclip_max": 0.40,
+    "vp_z": 0.45,
+    "vp_csls": 0.30,
+    "rrf_vp": 0.45,
+    "lex_reliability_score": 0.25,
+    "spatial_predicate_score": 0.20,
+    "action_order_score": 0.25,
 }
 
 
+def _compile_tree_ensemble(
+    trees: Sequence[Mapping[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int] | None:
+    """Flatten nested dict decision trees into contiguous 1D NumPy tables for fast traversal."""
+    n_trees = len(trees)
+    if n_trees == 0:
+        return None
+
+    def _tree_shape(root: Mapping[str, Any]) -> tuple[int, int]:
+        max_d = 0
+        count = 0
+        stack: list[tuple[Mapping[str, Any], int]] = [(root, 0)]
+        while stack:
+            node, depth = stack.pop()
+            count += 1
+            if depth > max_d:
+                max_d = depth
+            if "leaf_value" not in node:
+                stack.append((node["right"], depth + 1))
+                stack.append((node["left"], depth + 1))
+        return count, max_d
+
+    shapes = [_tree_shape(t) for t in trees]
+    max_nodes = max(c for c, _ in shapes)
+    max_depth = max(1, max(d for _, d in shapes))
+    total_nodes = n_trees * max_nodes
+
+    feat_flat = np.full(total_nodes, -1, dtype=np.int32)
+    thresh_flat = np.zeros(total_nodes, dtype=np.float64)
+    left_flat = np.arange(total_nodes, dtype=np.int32)
+    right_flat = np.arange(total_nodes, dtype=np.int32)
+    leaf_flat = np.zeros(total_nodes, dtype=np.float64)
+
+    for ti, root in enumerate(trees):
+        base = ti * max_nodes
+        next_id = 1
+        stack_fill: list[tuple[Mapping[str, Any], int]] = [(root, 0)]
+        while stack_fill:
+            node, nid = stack_fill.pop()
+            flat_nid = base + nid
+            if "leaf_value" in node:
+                feat_flat[flat_nid] = -1
+                left_flat[flat_nid] = flat_nid
+                right_flat[flat_nid] = flat_nid
+                leaf_flat[flat_nid] = float(node["leaf_value"])
+            else:
+                l_id = next_id
+                r_id = next_id + 1
+                next_id += 2
+                feat_flat[flat_nid] = int(node["feature_idx"])
+                thresh_flat[flat_nid] = float(node["threshold"])
+                left_flat[flat_nid] = base + l_id
+                right_flat[flat_nid] = base + r_id
+                stack_fill.append((node["right"], r_id))
+                stack_fill.append((node["left"], l_id))
+
+    tree_offsets = (np.arange(n_trees, dtype=np.int32) * max_nodes)[None, :]
+    return feat_flat, thresh_flat, left_flat, right_flat, leaf_flat, tree_offsets, max_depth
+
+
 class LearnedRankerLTR:
-    """Pure-NumPy LTR ranker over the 24 continuous multimodal features."""
+    """Pure-NumPy LTR ranker over the 24/32 continuous multimodal features."""
 
     def __init__(self, model_path: str | Path | None = DEFAULT_LTR_MODEL_PATH) -> None:
         self.model_path: Path | None = Path(model_path) if model_path is not None else None
@@ -68,6 +139,7 @@ class LearnedRankerLTR:
         self.bias: float = 0.0
         self.learning_rate: float = 1.0
         self.trees: list[dict[str, Any]] = []
+        self._compiled_trees: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int] | None = None
         self.fold_weights: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {}
 
@@ -77,12 +149,18 @@ class LearnedRankerLTR:
     def _apply_payload(self, payload: Mapping[str, Any], *, src_path: Path | None = None, update_metadata: bool = True) -> None:
         """Validate and apply a linear/logistic or tree-ensemble payload onto this ranker."""
         names = tuple(payload.get("feature_names", self.feature_names or LTR_FEATURE_NAMES))
-        if len(names) not in (18, 22, self.n_features):
+        if len(names) not in _SUPPORTED_FEATURE_DIMS:
             raise ValueError(
-                f"Expected {self.n_features} (or legacy 18/22) features in LTR model, got {len(names)}"
+                f"Expected 18, 22, 24, or 32 features in LTR model, got {len(names)}"
             )
-        legacy_prefix_len = len(names) if len(names) < self.n_features else 0
-        self.feature_names = LTR_FEATURE_NAMES if legacy_prefix_len else names
+        if len(names) == len(LTR_FEATURE_NAMES_V2):
+            self.n_features = len(LTR_FEATURE_NAMES_V2)
+            self.feature_names = names
+            legacy_prefix_len = 0
+        else:
+            self.n_features = len(LTR_FEATURE_NAMES)
+            legacy_prefix_len = len(names) if len(names) < self.n_features else 0
+            self.feature_names = LTR_FEATURE_NAMES if legacy_prefix_len else names
 
         default_type = "tree_ensemble" if "trees" in payload else "pairwise_logistic"
         model_type = str(payload.get("model_type", default_type)).lower()
@@ -130,6 +208,7 @@ class LearnedRankerLTR:
             if not isinstance(trees, list) or not trees:
                 raise ValueError("tree_ensemble model JSON must contain a non-empty 'trees' list")
             self.trees = list(trees)
+            self._compiled_trees = _compile_tree_ensemble(self.trees)
             self.weights = np.zeros(self.n_features, dtype=np.float64)
         else:
             raw_weights = payload.get("weights")
@@ -144,6 +223,7 @@ class LearnedRankerLTR:
             else:
                 self.weights = np.asarray(raw_weights, dtype=np.float64)
             self.trees = []
+            self._compiled_trees = None
 
         if src_path is not None:
             self.model_path = src_path
@@ -161,12 +241,14 @@ class LearnedRankerLTR:
             "is_loaded": self.is_loaded,
             "model_type": self.model_type,
             "feature_names": self.feature_names,
+            "n_features": self.n_features,
             "weights": self.weights.copy(),
             "bias": self.bias,
             "learning_rate": self.learning_rate,
             "feature_mean": self.feature_mean.copy(),
             "feature_std": self.feature_std.copy(),
             "trees": list(self.trees),
+            "_compiled_trees": self._compiled_trees,
         }
 
     def restore_state(self, state: Mapping[str, Any]) -> None:
@@ -175,12 +257,18 @@ class LearnedRankerLTR:
         self.model_type = str(state["model_type"])
         if "feature_names" in state:
             self.feature_names = tuple(state["feature_names"])
+        self.n_features = int(state.get("n_features", len(self.feature_names)))
         self.weights = np.asarray(state["weights"], dtype=np.float64).copy()
         self.bias = float(state["bias"])
         self.learning_rate = float(state.get("learning_rate", 1.0))
         self.feature_mean = np.asarray(state["feature_mean"], dtype=np.float64).copy()
         self.feature_std = np.asarray(state["feature_std"], dtype=np.float64).copy()
         self.trees = list(state["trees"])
+        self._compiled_trees = (
+            state["_compiled_trees"]
+            if "_compiled_trees" in state
+            else _compile_tree_ensemble(self.trees)
+        )
 
     def apply_fold_payload(self, fold_payload: Mapping[str, Any]) -> None:
         """Validate and temporarily apply an OOF fold payload while keeping artifact metadata intact."""
@@ -221,8 +309,8 @@ class LearnedRankerLTR:
         if X.shape[0] == 0:
             return np.zeros(0, dtype=np.float64)
         k_cols = X.shape[1]
-        if k_cols not in (18, 22, self.n_features) or k_cols > self.n_features:
-            raise ValueError(f"Expected {self.n_features} (or legacy 18/22) feature columns, got {k_cols}")
+        if k_cols not in _SUPPORTED_FEATURE_DIMS or k_cols > self.n_features:
+            raise ValueError(f"Expected {self.n_features} (or compatible legacy) feature columns, got {k_cols}")
 
         X = np.where(np.isfinite(X), X, 0.0)
 
@@ -232,6 +320,18 @@ class LearnedRankerLTR:
                 X_eval[:, :k_cols] = X
             else:
                 X_eval = X
+            if self._compiled_trees is not None and len(self._compiled_trees[5][0]) == len(self.trees):
+                feat_flat, thresh_flat, left_flat, right_flat, leaf_flat, tree_offsets, max_depth = self._compiled_trees
+                n_rows = X_eval.shape[0]
+                n_trees = tree_offsets.shape[1]
+                cur = np.repeat(tree_offsets, n_rows, axis=0)
+                x_flat = np.ascontiguousarray(X_eval, dtype=np.float64).ravel()
+                row_offsets = (np.arange(n_rows, dtype=np.int32) * self.n_features)[:, None]
+                for _ in range(max_depth):
+                    f = feat_flat.take(cur)
+                    vals = x_flat.take(row_offsets + np.maximum(0, f))
+                    cur = np.where(vals <= thresh_flat.take(cur), left_flat.take(cur), right_flat.take(cur))
+                return self.bias + self.learning_rate * np.sum(leaf_flat.take(cur), axis=1)
             scores = np.full(X_eval.shape[0], self.bias, dtype=np.float64)
             for tree in self.trees:
                 scores += self.learning_rate * self._predict_tree_batch(tree, X_eval)
@@ -245,10 +345,13 @@ class LearnedRankerLTR:
         candidates: Sequence[Mapping[str, Any]],
         z_stats: QueryZScoreResult | Mapping[str, float] | None = None,
     ) -> np.ndarray:
-        """Extract 18D features for candidates and return their LTR scores."""
+        """Extract features matching ranker schema and return LTR scores."""
         if not candidates:
             return np.zeros(0, dtype=np.float64)
-        X = extract_ltr_features_batch(candidates, z_stats=z_stats)
+        if self.n_features == len(LTR_FEATURE_NAMES_V2):
+            X = extract_ltr_features_batch_32d(candidates, z_stats=z_stats)
+        else:
+            X = extract_ltr_features_batch(candidates, z_stats=z_stats)
         return self.score_matrix(X)
 
     def score_one(

@@ -261,11 +261,11 @@ def handle_search(args):
 
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
-        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH")
-        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH")
-        model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR")
-        if args.mock or not db_path or not faiss_path or not model_path:
-            raise ValueError("Unified backend requires --db-path, --faiss-path and --model-path; --mock is unsupported")
+        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH") or "data/processed/metadata.db"
+        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH") or "data/processed/faiss_index.bin"
+        model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR") or "models/siglip2"
+        if args.mock:
+            raise ValueError("Unified backend does not support --mock; remove --mock to use processed artifacts")
         for path in (db_path, faiss_path, model_path):
             if not Path(path).exists():
                 raise FileNotFoundError(f"Unified backend input not found: {path}")
@@ -334,11 +334,11 @@ def handle_serve(args):
     pipeline = None
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
-        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH")
-        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH")
-        model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR")
-        if args.mock or not db_path or not faiss_path or not model_path:
-            raise ValueError("Unified backend requires --db-path, --faiss-path and --model-path; --mock is unsupported")
+        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH") or "data/processed/metadata.db"
+        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH") or "data/processed/faiss_index.bin"
+        model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR") or "models/siglip2"
+        if args.mock:
+            raise ValueError("Unified backend does not support --mock; remove --mock to use processed artifacts")
         for path in (db_path, faiss_path, model_path):
             if not Path(path).exists():
                 raise FileNotFoundError(f"Unified backend input not found: {path}")

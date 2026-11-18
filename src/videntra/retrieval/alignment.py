@@ -22,6 +22,7 @@ def align_sequential_keyframe_clauses(
     cand_timestamps: Sequence[float],
     clause_vectors: Sequence[np.ndarray],
     max_transition_sec: float = 35.0,
+    precomputed_clause_curves: np.ndarray | None = None,
 ) -> tuple[float, tuple[float, float] | None]:
     """Aligns sequential clauses (e.g. C_1 -> C_2) across keyframes within a video candidate.
     
@@ -35,6 +36,7 @@ def align_sequential_keyframe_clauses(
         cand_timestamps: Sequence of length K_v, ascending float seconds
         clause_vectors: Sequence of M clause query vectors, each shape (D,)
         max_transition_sec: Maximum permitted gap between consecutive clause transitions (default: 35.0s)
+        precomputed_clause_curves: Optional (M, K_v) similarity matrix to skip redundant GEMM
         
     Returns:
         tuple (best_sequence_score, anchor_window)
@@ -49,17 +51,29 @@ def align_sequential_keyframe_clauses(
     ts = list(map(float, cand_timestamps))
 
     if k_v == 1:
-        avg_score = float(np.mean([np.dot(cand_matrix[0], cv) for cv in clause_vectors]))
+        if precomputed_clause_curves is not None and precomputed_clause_curves.shape == (m_clauses, 1):
+            avg_score = float(np.mean(precomputed_clause_curves[:, 0]))
+        else:
+            avg_score = float(np.mean([np.dot(cand_matrix[0], cv) for cv in clause_vectors]))
         return avg_score, (ts[0], ts[0])
 
     if m_clauses == 1:
-        sims = (cand_matrix @ clause_vectors[0]).flatten()
+        if precomputed_clause_curves is not None and precomputed_clause_curves.shape == (1, k_v):
+            sims = precomputed_clause_curves[0].ravel()
+        else:
+            sims = (cand_matrix @ clause_vectors[0]).flatten()
         best_idx = int(np.argmax(sims))
         return float(sims[best_idx]), (ts[best_idx], ts[best_idx])
 
-    # Compute similarity curves for each clause: shape (M, K_v) via single GEMM
-    clause_mat = np.vstack(clause_vectors)
-    clause_curves = (cand_matrix @ clause_mat.T).T.astype(np.float32)
+    if (
+        precomputed_clause_curves is not None
+        and np.asarray(precomputed_clause_curves).shape == (m_clauses, k_v)
+    ):
+        clause_curves = np.asarray(precomputed_clause_curves, dtype=np.float32)
+    else:
+        # Compute similarity curves for each clause: shape (M, K_v) via single GEMM
+        clause_mat = np.vstack(clause_vectors)
+        clause_curves = (cand_matrix @ clause_mat.T).T.astype(np.float32)
 
     # For 2 clauses: vectorized optimization over valid ordered pairs (a <= b and ts[b] - ts[a] <= max_transition)
     if m_clauses == 2:
@@ -432,9 +446,12 @@ def temporal_sinkhorn_alignment_score(
     u = np.zeros(m_clauses, dtype=np.float64)
     v = np.zeros(t_frames, dtype=np.float64)
 
-    for _ in range(max(1, int(n_iters))):
+    for it in range(max(1, int(n_iters))):
+        prev_u = u
         v = np.minimum(0.0, log_b - _logsumexp(log_k + u[:, None], axis=0))
         u = log_a - _logsumexp(log_k + v[None, :], axis=1)
+        if it >= 3 and float(np.max(np.abs(u - prev_u))) < 1e-4:
+            break
 
     plan = np.exp(log_k + u[:, None] + v[None, :])
     return float(np.sum(plan * sims))
@@ -446,6 +463,8 @@ def query_guided_temporal_attention_score(
     *,
     tau: float = 12.0,
     disp_penalty: float = 0.15,
+    precomputed_cos_sims: np.ndarray | None = None,
+    assume_unit_norm: bool = False,
 ) -> float:
     """Parameter-Free Query-Guided Temporal Attention Pooler.
 
@@ -457,9 +476,8 @@ def query_guided_temporal_attention_score(
     if query_vec is None or frame_vecs is None:
         return 0.0
 
-    q_arr = np.asarray(query_vec, dtype=np.float32).ravel()
     f_arr = np.asarray(frame_vecs, dtype=np.float32)
-    if q_arr.size == 0 or f_arr.size == 0:
+    if f_arr.size == 0:
         return 0.0
 
     if f_arr.ndim == 1:
@@ -467,26 +485,39 @@ def query_guided_temporal_attention_score(
     elif f_arr.ndim != 2:
         raise ValueError(f"frame_vecs must be 1D or 2D, got shape {f_arr.shape}")
 
-    if f_arr.shape[1] != q_arr.size:
-        raise ValueError(
-            f"Dimension mismatch: query_vec has {q_arr.size}, "
-            f"frame_vecs has {f_arr.shape[1]}"
-        )
+    if f_arr.shape[0] == 1 and assume_unit_norm and precomputed_cos_sims is not None and precomputed_cos_sims.size == 1:
+        return float(precomputed_cos_sims.flat[0])
 
-    q_norm = float(np.linalg.norm(q_arr))
-    if q_norm <= 1e-8:
-        return 0.0
-    q_unit = (q_arr / q_norm).astype(np.float64)
+    use_fast_f32 = bool(assume_unit_norm and precomputed_cos_sims is not None and precomputed_cos_sims.size == f_arr.shape[0])
+    f_unit = None
+    if use_fast_f32:
+        cos_sims = np.asarray(precomputed_cos_sims, dtype=np.float64).ravel()
+    else:
+        f_unit = f_arr.astype(np.float64, copy=False) if assume_unit_norm else _l2_normalize_rows(f_arr).astype(np.float64)
+        if precomputed_cos_sims is not None and precomputed_cos_sims.size == f_arr.shape[0]:
+            cos_sims = np.asarray(precomputed_cos_sims, dtype=np.float64).ravel()
+        else:
+            q_arr = np.asarray(query_vec, dtype=np.float32).ravel()
+            if q_arr.size == 0:
+                return 0.0
+            if f_arr.shape[1] != q_arr.size:
+                raise ValueError(
+                    f"Dimension mismatch: query_vec has {q_arr.size}, "
+                    f"frame_vecs has {f_arr.shape[1]}"
+                )
+            q_norm = float(np.linalg.norm(q_arr))
+            if q_norm <= 1e-8:
+                return 0.0
+            q_unit = (q_arr / q_norm).astype(np.float64)
+            cos_sims = f_unit @ q_unit
 
-    f_unit = _l2_normalize_rows(f_arr).astype(np.float64)
-    cos_sims = f_unit @ q_unit
     logits = float(tau) * cos_sims
     logits_shifted = logits - np.max(logits)
     exp_logits = np.exp(logits_shifted)
     alpha = exp_logits / np.sum(exp_logits)
 
     mean_cos = float(np.dot(alpha, cos_sims))
-    v_att = alpha @ f_unit
+    v_att = (alpha.astype(np.float32) @ f_arr) if use_fast_f32 else (alpha @ f_unit)
     v_norm = float(np.linalg.norm(v_att))
     if v_norm <= 1e-8:
         return 0.0

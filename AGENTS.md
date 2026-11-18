@@ -28,6 +28,7 @@
 - Sau khi hoàn thành sau một công việc gì đó thì cập nhật vào mục PROGRESS.md ở C:\Users\DELL\Desktop\VIDENTRA\docs
 - Cập nhật PROJECT.md về cấu trúc của chương trình
 - Cập nhật file requirements.txt cho các gói thư viện mới cần dùng
-- Commit github khi đã hoàn thành tự ghi commit message nếu chưa có repo thì tạo repo tên project
+- Commit github khi đã hoàn thành tự ghi commit message nếu chưa có repo thì tạo repo tên project. Thêm nữa nếu như có chỉnh sửa gì pipeline, công thức, hoặc thêm các chức năng thì cập nhật README.md luôn
+- Mỗi khi chạy benhmark xong thì  luôn cập nhật các file benchmark cũ bằng benchmark vừa chạy rồi cập nhật README.md
 
 

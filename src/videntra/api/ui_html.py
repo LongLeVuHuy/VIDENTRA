@@ -132,6 +132,12 @@ UI_HTML = """<!DOCTYPE html>
     .evidence-tab { padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-muted); font-size: 11px; cursor: pointer; }
     .evidence-tab.active { border-color: var(--primary); color: var(--primary); background: rgba(56, 189, 248, 0.12); }
     .frame-preview { border-radius: 8px; border: 1px solid var(--border); width: 100%; max-height: 220px; object-fit: contain; background: #000; }
+    .filmstrip-row { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 6px; }
+    .filmstrip-item { flex: 0 0 112px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; cursor: pointer; text-align: center; transition: border-color 0.15s; }
+    .filmstrip-item:hover { border-color: var(--primary); }
+    .filmstrip-item.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+    .filmstrip-item img { width: 100%; height: 64px; object-fit: cover; border-radius: 4px; background: #020617; display: block; margin-bottom: 4px; }
+    .filmstrip-item span { font-size: 11px; color: var(--text-muted); font-family: monospace; }
 
     .toast { position: fixed; bottom: 20px; right: 20px; background: #0f172a; color: #f8fafc; border: 1px solid var(--primary); padding: 10px 14px; border-radius: 8px; font-size: 13px; z-index: 200; display: none; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
 
@@ -158,6 +164,8 @@ UI_HTML = """<!DOCTYPE html>
         <div class="subtitle">Multi-Modal Video Retrieval Engine • Snapshot: current</div>
       </div>
       <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" onclick="exportData('aic_kis')">Export AIC KIS</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportData('vbs_csv')">Export VBS CSV</button>
         <button class="btn btn-secondary btn-sm" onclick="exportData('csv')">Export CSV</button>
         <button class="btn btn-secondary btn-sm" onclick="exportData('json')">Export JSON</button>
       </div>
@@ -190,7 +198,12 @@ UI_HTML = """<!DOCTYPE html>
           </select>
         </label>
         <label class="control-item">Dataset:
-          <input id="datasetInput" class="input-ctl" type="text" placeholder="Tất cả (tuỳ chọn)" style="width:130px;">
+          <input id="datasetInput" list="datasetPresets" class="input-ctl" type="text" placeholder="Tất cả (tuỳ chọn)" style="width:130px;">
+          <datalist id="datasetPresets">
+            <option value="msrvtt"></option>
+            <option value="avc"></option>
+            <option value="qvhighlights"></option>
+          </datalist>
         </label>
         <label class="control-item">Backend:
           <select id="backendSelect" class="select-ctl">
@@ -265,6 +278,16 @@ UI_HTML = """<!DOCTYPE html>
             </div>
 
             <div id="momentJumpPills" class="jump-pills"></div>
+
+            <div class="inspector-card">
+              <div class="inspector-card-header">
+                <strong style="color:var(--primary);">Duyệt Keyframes Lân Cận (Neighbor Filmstrip)</strong>
+                <span id="neighborMeta" style="color:var(--text-muted); font-size:11px;"></span>
+              </div>
+              <div id="neighborFilmstrip" class="filmstrip-row">
+                <span style="color:var(--text-muted); font-size:12px;">Đang tải các frame lân cận...</span>
+              </div>
+            </div>
 
             <div class="inspector-controls">
               <button class="btn btn-sm" onclick="replayMoment()">Replay Moment (<span class="kbd">R</span>)</button>
@@ -687,6 +710,7 @@ UI_HTML = """<!DOCTYPE html>
           </div>
           <div class="card-footer">
             <button class="btn btn-sm" onclick="openInspector(${idx})">Mở Inspector</button>
+            <button class="btn btn-secondary btn-sm" onclick='searchSimilar(${JSON.stringify(item.video_id)}, ${startVal}, ${repOrd})'>Tương tự</button>
             <button class="btn btn-secondary btn-sm" onclick='copySingle(${JSON.stringify(item.video_id)}, ${repOrd})'>Copy ID</button>
           </div>
         `;
@@ -827,6 +851,7 @@ UI_HTML = """<!DOCTYPE html>
       updateTimelineUI();
 
       loadExactFrame(item.video_id, currentOrdinal);
+      loadNeighborKeyframes(item.video_id, targetStart);
       document.getElementById("modalOverlay").style.display = "flex";
     }
 
@@ -937,23 +962,102 @@ UI_HTML = """<!DOCTYPE html>
       navigator.clipboard.writeText(text).then(() => showToast("Đã sao chép: " + text)).catch(() => {});
     }
 
+    async function loadNeighborKeyframes(videoId, centerSec) {
+      const strip = document.getElementById("neighborFilmstrip");
+      const meta = document.getElementById("neighborMeta");
+      if (!strip) return;
+      strip.innerHTML = "<span style='color:var(--text-muted); font-size:12px;'>Đang tải keyframe lân cận...</span>";
+      try {
+        const url = `/v1/videos/${encodeURIComponent(videoId)}/neighbors?timestamp=${encodeURIComponent(centerSec.toFixed(2))}&window=25&limit=15`;
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          strip.innerHTML = "<span style='color:var(--text-muted); font-size:12px;'>Không có keyframe lân cận.</span>";
+          if (meta) meta.textContent = "";
+          return;
+        }
+        const data = await resp.json();
+        const list = data.neighbors || [];
+        if (meta) meta.textContent = `${list.length} keyframes (±25s)`;
+        strip.innerHTML = "";
+        if (list.length === 0) {
+          strip.innerHTML = "<span style='color:var(--text-muted); font-size:12px;'>Không có keyframe lân cận.</span>";
+          return;
+        }
+        list.forEach((kf) => {
+          const item = document.createElement("div");
+          item.className = `filmstrip-item ${kf.is_anchor ? "active" : ""}`;
+          item.innerHTML = `<img src="${kf.thumb_url}" alt="${kf.pts_time}s" loading="lazy"><span>${Number(kf.pts_time).toFixed(1)}s (#${kf.source_frame_index})</span>`;
+          item.onclick = () => {
+            currentOrdinal = kf.source_frame_index;
+            seekPlayerSafely(kf.pts_time, false);
+            loadExactFrame(videoId, kf.source_frame_index);
+            strip.querySelectorAll(".filmstrip-item").forEach((el) => el.classList.remove("active"));
+            item.classList.add("active");
+          };
+          strip.appendChild(item);
+        });
+      } catch (err) {
+        strip.innerHTML = `<span style='color:var(--text-muted); font-size:12px;'>Không thể tải filmstrip: ${escapeHtml(err.message)}</span>`;
+      }
+    }
+
+    async function searchSimilar(videoId, tsSec, frameOrd) {
+      const topK = parseInt(document.getElementById("topKSelect").value, 10);
+      const rankMode = document.getElementById("rankModeSelect").value;
+      const dataset = document.getElementById("datasetInput").value.trim();
+      const filters = dataset ? { dataset } : {};
+      showErrorBanner("");
+      setLoading(true);
+      document.getElementById("resultsMeta").textContent = `Đang tìm cảnh tương tự ${videoId} @ ${Number(tsSec).toFixed(1)}s...`;
+      try {
+        const resp = await fetch("/v1/search/similar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            video_id: videoId,
+            timestamp_seconds: Number(tsSec),
+            frame_index: Number(frameOrd),
+            top_k: topK,
+            ranking_mode: rankMode,
+            filters,
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        currentResults = data.results || [];
+        renderDegradedBanner(data);
+        document.getElementById("resultsMeta").textContent = `${currentResults.length} cảnh tương tự với ${videoId} • Status: ${data.status}`;
+        document.getElementById("timingsMeta").textContent = data.timings && data.timings.elapsed_ms != null ? `${data.timings.elapsed_ms} ms` : "";
+        renderQueryGraph(null);
+        renderGrid(currentResults);
+      } catch (err) {
+        showErrorBanner(`Lỗi tìm cảnh tương tự: ${err.message}`);
+      } finally {
+        setLoading(false);
+      }
+    }
+
     async function exportData(format) {
       if (!currentResults || currentResults.length === 0) {
         showToast("Chưa có kết quả để xuất.");
         return;
       }
       try {
-        const resp = await fetch(`/v1/exports?format=${format}`, {
+        const resp = await fetch("/v1/exports", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(currentResults),
+          body: JSON.stringify({
+            results: currentResults,
+            format: format,
+          }),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const blob = await resp.blob();
         const a = document.createElement("a");
         const objUrl = URL.createObjectURL(blob);
         a.href = objUrl;
-        a.download = `videntra_export.${format}`;
+        const ext = format === "json" ? "json" : "csv";
+        a.download = `videntra_${format}.${ext}`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
         showToast(`Đã xuất file ${format.toUpperCase()}`);

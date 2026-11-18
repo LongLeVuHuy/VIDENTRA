@@ -399,9 +399,11 @@ def test_pipeline_ltr_blend_weight_default_and_vlm_caption_fts_wiring(tmp_path: 
     import faiss
     from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
 
-    # 1. Default ltr_blend_weight is 0.015
+    # 1. Default ltr_blend_weight is 0.015 and VLM captions are disabled by default
     p_default = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
     assert p_default.ltr_blend_weight == pytest.approx(0.015, abs=1e-9)
+    assert p_default.enable_vlm_caption_lexical is False
+    assert p_default.enable_vlm_caption_dense is False
 
     # 2. DB without fts_vlm_caption -> has_vlm_caption_fts is False (safe no-op)
     db_plain = tmp_path / "plain.db"
@@ -448,6 +450,7 @@ def test_pipeline_ltr_blend_weight_default_and_vlm_caption_fts_wiring(tmp_path: 
         db_path=db_cap,
         lazy_load=True,
         use_disk_cache=False,
+        enable_vlm_caption_lexical=True,
         search_depth=1,  # Force v_cap (faiss_id=1) to be missed by Stage 2 top-1!
     )
     pipeline.db_conn = sqlite3.connect(f"file:{db_cap.resolve().as_posix()}?mode=ro", uri=True, check_same_thread=False)
@@ -529,7 +532,11 @@ def test_b6_e5_caption_decoupled_and_b11_degraded_diagnostics(tmp_path: Path, ca
     (tmp_path / "faiss_e5_caption_384.bin").write_text("not a valid faiss", encoding="utf-8")
     (tmp_path / "e5_caption_manifest.json").write_text("[]", encoding="utf-8")
 
-    pipeline = UnifiedMultimodalSearchPipeline(lazy_load=True, use_disk_cache=False)
+    pipeline = UnifiedMultimodalSearchPipeline(
+        lazy_load=True,
+        use_disk_cache=False,
+        enable_vlm_caption_dense=True,
+    )
     with caplog.at_level("WARNING"):
         loaded = pipeline.load_optional_phase74_artifacts(tmp_path)
     assert loaded["spatial_patches"] is False

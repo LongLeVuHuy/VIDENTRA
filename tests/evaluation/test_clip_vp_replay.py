@@ -919,3 +919,87 @@ def test_c3_vl_reranker_cache_contract_order_invariance_cascade_and_flip_precisi
     assert ov["flip_precision"] == pytest.approx(0.5, abs=1e-6)
     assert "Flip precision:" in (tmp_path / "cmp_vl" / "benchmark_report.md").read_text(encoding="utf-8")
 
+
+def test_vl_cache_strict_qsha_join_no_qid_leak_and_provenance(tmp_path: Path) -> None:
+    from videntra.ranking.vl_reranker_cache import load_vl_reranker_cache
+
+    pools_dir, _, _, queries_data = _make_synthetic_pools(tmp_path)
+    q1 = queries_data[0]
+    stale_q_sha = sha256_text("completely different old query sharing the same query_id")
+
+    def _row(qid: str, q_sha: str, vid: str, score: float, **overrides):
+        base = {
+            "query_id": qid,
+            "query_text_sha256": q_sha,
+            "video_id": vid,
+            "media_sha256": "deadbeef",
+            "snapshot_sha256": "cafebabe",
+            "frame_ordinals": [0, 4, 8],
+            "frame_pts_time": [0.0, 1.0, 2.0],
+            "sampling_recipe": "uniform_3f",
+            "model_revision": "Qwen/Qwen3-VL-Reranker-2B@rev1",
+            "processor_revision": "proc@rev1",
+            "code_sha256": "code123",
+            "prompt_sha256": "prompt123",
+            "score": score,
+            "status": "ok",
+        }
+        base.update(overrides)
+        return base
+
+    # 1. Cross-query query_id collision must NOT inject stale VL scores into run_replay
+    stale_cache = tmp_path / "stale_vl.jsonl"
+    _write_jsonl(stale_cache, [
+        _row(q1["query_id"], stale_q_sha, "video0001", 0.05),
+        _row(q1["query_id"], stale_q_sha, "video0004", 0.99),
+    ])
+    out_replay = tmp_path / "replay_collision"
+    run_replay(
+        pools_dir=pools_dir,
+        pool="a5",
+        k=20,
+        alpha=0.0,
+        vl_cache=stale_cache,
+        vl_top_m=5,
+        vl_mode="pure",
+        out_dir=out_replay,
+    )
+    recs = {
+        r["query_id"]: r
+        for r in (json.loads(l) for l in (out_replay / "per_query_evaluation.jsonl").read_text(encoding="utf-8").splitlines())
+    }
+    assert recs[q1["query_id"]]["vl_applied"] is False
+    assert recs[q1["query_id"]]["vl_fallback_reason"] == "missing_vl_scores"
+    assert recs[q1["query_id"]]["new_top1"] == recs[q1["query_id"]]["base_top1"]
+
+    # 2. Duplicate (query_text_sha256, video_id) must raise ValueError in strict mode
+    dup_cache = tmp_path / "dup_vl.jsonl"
+    _write_jsonl(dup_cache, [
+        _row(q1["query_id"], stale_q_sha, "video0001", 0.1),
+        _row(q1["query_id"], stale_q_sha, "video0001", 0.9),
+    ])
+    with pytest.raises(ValueError, match="Duplicate"):
+        load_vl_reranker_cache(dup_cache, strict=True)
+
+    # 3. Non-monotonic frame_ordinals & mismatched expected_provenance must raise ValueError
+    nonmono_cache = tmp_path / "nonmono_vl.jsonl"
+    _write_jsonl(nonmono_cache, [
+        _row(q1["query_id"], stale_q_sha, "video0001", 0.8, frame_ordinals=[0, 8, 4]),
+    ])
+    with pytest.raises(ValueError, match="strictly increasing"):
+        load_vl_reranker_cache(nonmono_cache, strict=True)
+
+    with pytest.raises(ValueError, match="snapshot_sha256 mismatch"):
+        load_vl_reranker_cache(
+            stale_cache,
+            strict=True,
+            expected_provenance={"snapshot_sha256": "other_snapshot"},
+        )
+    with pytest.raises(ValueError, match="model_revision mismatch"):
+        load_vl_reranker_cache(
+            stale_cache,
+            strict=True,
+            expected_provenance={"model_revision": "other_rev"},
+        )
+
+

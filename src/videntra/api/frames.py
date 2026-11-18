@@ -1,12 +1,14 @@
-"""Exact frame extraction and thumbnail inspection endpoints."""
+"""Exact frame extraction, thumbnail caching, and neighbor keyframe browsing endpoints."""
 from fractions import Fraction
+from functools import lru_cache
 import io
 from pathlib import Path
 import re
 import sqlite3
+from typing import Any
 
 import av
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
 
@@ -67,9 +69,10 @@ def _lookup_unified_keyframe(pipeline: object, video_id: str, index: int) -> tup
     return None
 
 
-def _decode_frame_from_media(media_path: Path, target_ordinal: int) -> tuple[bytes, int | None, str]:
-    """Decode zero-based frame ordinal directly from media_path via PyAV."""
-    container = av.open(str(media_path))
+@lru_cache(maxsize=512)
+def _cached_decode_frame_from_media(media_path_str: str, mtime_ns: int, target_ordinal: int) -> tuple[bytes, int | None, str]:
+    """Decode zero-based presentation-order frame ordinal from media_path with bounded LRU cache."""
+    container = av.open(media_path_str)
     try:
         video_streams = [s for s in container.streams if s.type == "video"]
         if not video_streams:
@@ -89,6 +92,12 @@ def _decode_frame_from_media(media_path: Path, target_ordinal: int) -> tuple[byt
     finally:
         container.close()
     raise IndexError(f"Frame ordinal {target_ordinal} out of range")
+
+
+def _decode_frame_from_media(media_path: Path, target_ordinal: int) -> tuple[bytes, int | None, str]:
+    """Decode zero-based frame ordinal directly from media_path via cached PyAV decoder."""
+    st_mtime = media_path.stat().st_mtime_ns
+    return _cached_decode_frame_from_media(str(media_path.resolve()), int(st_mtime), int(target_ordinal))
 
 
 @router.get("/frames/{video_id}/{index}")
@@ -174,6 +183,82 @@ def get_exact_frame(video_id: str, index: int, request: Request):
         ts_us=ts_us,
         revision="direct_decode",
     )
+
+
+@router.get("/videos/{video_id}/neighbors")
+def get_neighbor_keyframes(
+    video_id: str,
+    request: Request,
+    timestamp: float | None = Query(default=None, ge=0.0),
+    window: float = Query(default=25.0, gt=0.0, le=300.0),
+    limit: int = Query(default=15, ge=1, le=50),
+) -> dict[str, Any]:
+    """Browse neighboring pre-extracted keyframes around a target timestamp (P6 competition UI)."""
+    pipeline = getattr(request.app.state, "pipeline", None)
+    raw_kfs: list[dict[str, Any]] = []
+    v_dur: float | None = None
+
+    if pipeline is not None:
+        v_dur = getattr(pipeline, "video_durations", {}).get(video_id)
+        kf_list = getattr(pipeline, "video_keyframes", {}).get(video_id) or []
+        for kf in kf_list:
+            raw_kfs.append({
+                "faiss_id": int(kf.get("faiss_id", -1)),
+                "source_frame_index": int(kf.get("source_frame_index", 0)),
+                "pts_time": float(kf.get("pts_time", 0.0)),
+            })
+
+    if not raw_kfs and pipeline is not None and getattr(pipeline, "db_path", None):
+        db_p = Path(pipeline.db_path)
+        if db_p.exists():
+            try:
+                with sqlite3.connect(str(db_p)) as conn:
+                    rows = conn.execute(
+                        "SELECT source_frame_index, timestamp_ms FROM Keyframes WHERE video_id = ? ORDER BY timestamp_ms ASC;",
+                        (video_id,),
+                    ).fetchall()
+                for idx_i, (s_ord, ts_ms) in enumerate(rows):
+                    raw_kfs.append({
+                        "faiss_id": idx_i,
+                        "source_frame_index": int(s_ord or 0),
+                        "pts_time": float(ts_ms or 0.0) / 1000.0,
+                    })
+            except sqlite3.Error:
+                pass
+
+    if not raw_kfs:
+        raise HTTPException(status_code=404, detail=f"No keyframes indexed for video: {video_id}")
+
+    raw_kfs.sort(key=lambda item: (item["pts_time"], item["source_frame_index"]))
+    center_t = float(timestamp) if timestamp is not None else 0.5 * (raw_kfs[0]["pts_time"] + raw_kfs[-1]["pts_time"])
+    in_win = [k for k in raw_kfs if abs(k["pts_time"] - center_t) <= window]
+    pool = in_win if in_win else raw_kfs
+
+    # Keep chronologically ordered subset centered around center_t when len(pool) > limit
+    if len(pool) > limit:
+        nearest_idx = min(range(len(pool)), key=lambda i: abs(pool[i]["pts_time"] - center_t))
+        half = limit // 2
+        lo = max(0, min(nearest_idx - half, len(pool) - limit))
+        pool = pool[lo : lo + limit]
+
+    anchor_idx = min(range(len(pool)), key=lambda i: abs(pool[i]["pts_time"] - center_t))
+    neighbors = [
+        {
+            "faiss_id": k["faiss_id"],
+            "source_frame_index": k["source_frame_index"],
+            "pts_time": round(float(k["pts_time"]), 3),
+            "thumb_url": f"/v1/frames/{video_id}/{k['source_frame_index']}",
+            "is_anchor": bool(i == anchor_idx),
+        }
+        for i, k in enumerate(pool)
+    ]
+    return {
+        "video_id": video_id,
+        "center_timestamp": round(center_t, 3),
+        "video_duration": round(float(v_dur), 3) if v_dur is not None else None,
+        "count": len(neighbors),
+        "neighbors": neighbors,
+    }
 
 
 @router.get("/thumbnails/{sampled_frame_id}")

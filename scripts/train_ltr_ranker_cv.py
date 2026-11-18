@@ -27,8 +27,10 @@ from videntra.evaluation.provenance import (
 )
 from videntra.ranking.features import (
     LTR_FEATURE_NAMES,
+    LTR_FEATURE_NAMES_V2,
     compute_query_z_scores,
     extract_ltr_features_24d,
+    extract_ltr_features_32d,
 )
 from videntra.ranking.learned_ranker import LearnedRankerLTR
 
@@ -67,6 +69,19 @@ NEGATIVE_MONOTONIC_FEATURES: frozenset[str] = frozenset({
     "spike_drop_ratio",
     "unverified_lexical_hazard",
 })
+
+POSITIVE_MONOTONIC_FEATURES_V2: frozenset[str] = POSITIVE_MONOTONIC_FEATURES | frozenset({
+    "vp_whole_cos",
+    "vp_subclip_max",
+    "vp_z",
+    "vp_csls",
+    "rrf_vp",
+    "lex_reliability_score",
+    "spatial_predicate_score",
+    "action_order_score",
+})
+
+NEGATIVE_MONOTONIC_FEATURES_V2: frozenset[str] = NEGATIVE_MONOTONIC_FEATURES
 
 
 def assert_no_heldout_leakage(path: str | Path) -> Path:
@@ -134,8 +149,9 @@ def build_pairwise_differences(
     query_ids: Sequence[str],
     max_neg_per_pos: int = 20,
     base_scores: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Construct balanced pairwise feature differences (x_pos - x_neg) per query."""
+    return_sample_weights: bool = False,
+) -> tuple[Any, ...]:
+    """Construct hard-negative-weighted pairwise feature differences (x_pos - x_neg) per query."""
     by_query: dict[str, list[int]] = defaultdict(list)
     for idx, qid in enumerate(query_ids):
         by_query[str(qid)].append(idx)
@@ -143,6 +159,7 @@ def build_pairwise_differences(
     diffs: list[np.ndarray] = []
     labels: list[float] = []
     base_diffs: list[float] = []
+    pair_weights: list[float] = []
 
     for idxs in by_query.values():
         pos_idxs = [i for i in idxs if y[i] > 0]
@@ -150,14 +167,32 @@ def build_pairwise_differences(
         if not pos_idxs or not neg_idxs:
             continue
 
-        sampled_negs = neg_idxs[:max_neg_per_pos]
+        if base_scores is not None:
+            neg_idxs_sorted = sorted(neg_idxs, key=lambda idx_n: float(base_scores[idx_n]), reverse=True)
+        else:
+            neg_idxs_sorted = neg_idxs
+        sampled_negs = neg_idxs_sorted[:max_neg_per_pos]
+
         for p in pos_idxs:
-            for n in sampled_negs:
+            for rank_neg, n in enumerate(sampled_negs, start=1):
+                if base_scores is not None:
+                    margin = float(base_scores[p] - base_scores[n])
+                    if rank_neg <= 5 or margin <= 0.05:
+                        w_pair = 2.0
+                    elif rank_neg <= 15:
+                        w_pair = 1.25
+                    else:
+                        w_pair = 0.65
+                else:
+                    w_pair = 1.0
+
                 delta = X[p] - X[n]
                 diffs.append(delta)
                 labels.append(1.0)
+                pair_weights.append(w_pair)
                 diffs.append(-delta)
                 labels.append(0.0)
+                pair_weights.append(w_pair)
                 if base_scores is not None:
                     b_delta = float(base_scores[p] - base_scores[n])
                     base_diffs.append(b_delta)
@@ -166,13 +201,24 @@ def build_pairwise_differences(
     if not diffs:
         empty_x = np.zeros((0, X.shape[1]), dtype=np.float64)
         empty_y = np.zeros(0, dtype=np.float64)
+        empty_w = np.zeros(0, dtype=np.float64)
+        if base_scores is not None and return_sample_weights:
+            return empty_x, empty_y, np.zeros(0, dtype=np.float64), empty_w
         if base_scores is not None:
             return empty_x, empty_y, np.zeros(0, dtype=np.float64)
+        if return_sample_weights:
+            return empty_x, empty_y, empty_w
         return empty_x, empty_y
+
     X_pair = np.vstack(diffs).astype(np.float64)
     y_pair = np.asarray(labels, dtype=np.float64)
+    w_arr = np.asarray(pair_weights, dtype=np.float64)
+    if base_scores is not None and return_sample_weights:
+        return X_pair, y_pair, np.asarray(base_diffs, dtype=np.float64), w_arr
     if base_scores is not None:
         return X_pair, y_pair, np.asarray(base_diffs, dtype=np.float64)
+    if return_sample_weights:
+        return X_pair, y_pair, w_arr
     return X_pair, y_pair
 
 
@@ -181,12 +227,14 @@ def _build_monotonic_masks(
     feature_names: Sequence[str] = LTR_FEATURE_NAMES,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build boolean masks for positive (>= 0) and negative (<= 0) monotonic constraints."""
+    pos_set = POSITIVE_MONOTONIC_FEATURES_V2 if len(feature_names) >= len(LTR_FEATURE_NAMES_V2) else POSITIVE_MONOTONIC_FEATURES
+    neg_set = NEGATIVE_MONOTONIC_FEATURES_V2 if len(feature_names) >= len(LTR_FEATURE_NAMES_V2) else NEGATIVE_MONOTONIC_FEATURES
     pos_mask = np.zeros(n_features, dtype=bool)
     neg_mask = np.zeros(n_features, dtype=bool)
     for idx, name in enumerate(feature_names[:n_features]):
-        if name in POSITIVE_MONOTONIC_FEATURES:
+        if name in pos_set:
             pos_mask[idx] = True
-        elif name in NEGATIVE_MONOTONIC_FEATURES:
+        elif name in neg_set:
             neg_mask[idx] = True
     return pos_mask, neg_mask
 
@@ -203,17 +251,7 @@ def train_pairwise_logistic_l2(
     base_scores_train: np.ndarray | None = None,
     blend_weight: float = 0.015,
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
-    """Train L2-regularized pairwise logistic regression in pure NumPy.
-
-    When ``base_scores_train`` is provided, optimizes the Base-Anchored Residual
-    Pairwise Logistic Loss with margin
-    ``(base_i - base_j) + blend_weight * ((x_i - x_j) @ w)``.
-    Applies Monotonic Sign Projection after each Adam step when
-    ``monotonic_constraints=True`` so physical feature signs cannot invert.
-
-    Returns:
-        (weights, bias, feature_mean, feature_std)
-    """
+    """Train hard-negative-weighted L2-regularized pairwise logistic regression in pure NumPy."""
     X = np.asarray(X_train, dtype=np.float64)
     y = np.asarray(y_train, dtype=np.float64)
 
@@ -224,11 +262,13 @@ def train_pairwise_logistic_l2(
 
     if base_scores_train is not None:
         base_arr = np.asarray(base_scores_train, dtype=np.float64)
-        X_pair, y_pair, base_pair = build_pairwise_differences(
-            X_norm, y, query_ids_train, base_scores=base_arr
+        X_pair, y_pair, base_pair, pair_w = build_pairwise_differences(
+            X_norm, y, query_ids_train, base_scores=base_arr, return_sample_weights=True
         )
     else:
-        X_pair, y_pair = build_pairwise_differences(X_norm, y, query_ids_train)
+        X_pair, y_pair, pair_w = build_pairwise_differences(
+            X_norm, y, query_ids_train, return_sample_weights=True
+        )
         base_pair = None
 
     n_features = X.shape[1]
@@ -237,22 +277,22 @@ def train_pairwise_logistic_l2(
         return weights, 0.0, feat_mean, feat_std
 
     pos_mask, neg_mask = _build_monotonic_masks(n_features, feature_names=feature_names)
-    n_pairs = float(X_pair.shape[0])
+    weight_sum = max(1.0, float(np.sum(pair_w)))
     lam = float(blend_weight)
-    # Adam optimizer for fast, deterministic convergence without SciPy
     m = np.zeros(n_features, dtype=np.float64)
     v = np.zeros(n_features, dtype=np.float64)
     beta1, beta2, eps = 0.9, 0.999, 1e-8
 
     for step in range(1, max_iter + 1):
         if base_pair is not None:
-            logits = np.clip(base_pair + lam * (X_pair @ weights), -30.0, 30.0)
+            # Mirror bounded base + blend_weight * (x @ w) residual scoring
+            logits = np.clip((base_pair + lam * (X_pair @ weights)) * 12.0, -30.0, 30.0)
             probs = 1.0 / (1.0 + np.exp(-logits))
-            grad = (lam * (X_pair.T @ (probs - y_pair))) / n_pairs + (l2_reg / n_pairs) * weights
+            grad = (12.0 * lam * (X_pair.T @ ((probs - y_pair) * pair_w))) / weight_sum + (l2_reg / weight_sum) * weights
         else:
             logits = np.clip(X_pair @ weights, -30.0, 30.0)
             probs = 1.0 / (1.0 + np.exp(-logits))
-            grad = (X_pair.T @ (probs - y_pair)) / n_pairs + (l2_reg / n_pairs) * weights
+            grad = (X_pair.T @ ((probs - y_pair) * pair_w)) / weight_sum + (l2_reg / weight_sum) * weights
 
         m = beta1 * m + (1.0 - beta1) * grad
         v = beta2 * v + (1.0 - beta2) * (grad * grad)
@@ -322,14 +362,18 @@ def _train_lightgbm_fold(
     X_train: np.ndarray,
     y_train: np.ndarray,
     query_ids_train: Sequence[str],
+    feature_names: Sequence[str] = LTR_FEATURE_NAMES,
 ) -> dict[str, Any] | None:
-    """Optional LightGBM LambdaMART training if lightgbm is installed."""
+    """LightGBM LambdaMART training using native Dataset/train API (no sklearn dependency)."""
     try:
         import lightgbm as lgb
     except ImportError:
         return None
 
-    # Group rows contiguously by query_id for LGBMRanker
+    pos_mask, neg_mask = _build_monotonic_masks(X_train.shape[1], feature_names=feature_names)
+    mono = [1 if bool(pos_mask[i]) else (-1 if bool(neg_mask[i]) else 0) for i in range(X_train.shape[1])]
+
+    # Group rows contiguously by query_id for lambdarank
     order = sorted(range(len(query_ids_train)), key=lambda i: str(query_ids_train[i]))
     X_ord = X_train[order]
     y_ord = y_train[order]
@@ -343,17 +387,40 @@ def _train_lightgbm_fold(
         else:
             group_counts[-1] += 1
 
-    ranker = lgb.LGBMRanker(
-        objective="lambdarank",
-        n_estimators=40,
-        max_depth=3,
-        num_leaves=7,
-        learning_rate=0.05,
-        min_child_samples=10,
-        random_state=42,
-        verbose=-1,
-    )
-    ranker.fit(X_ord, y_ord, group=group_counts)
+    if hasattr(lgb, "Dataset") and hasattr(lgb, "train"):
+        dtrain = lgb.Dataset(X_ord, label=y_ord, group=group_counts, free_raw_data=False)
+        params = {
+            "objective": "lambdarank",
+            "metric": "ndcg",
+            "max_depth": 3,
+            "num_leaves": 7,
+            "learning_rate": 0.04,
+            "min_data_in_leaf": 25,
+            "feature_fraction": 0.8,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 1,
+            "lambda_l2": 10.0,
+            "monotone_constraints": mono,
+            "seed": 42,
+            "verbosity": -1,
+        }
+        booster = lgb.train(params, dtrain, num_boost_round=70)
+        dump = booster.dump_model()
+        ranker_obj: Any = booster
+    else:
+        ranker = lgb.LGBMRanker(
+            objective="lambdarank",
+            n_estimators=70,
+            max_depth=3,
+            num_leaves=7,
+            learning_rate=0.04,
+            min_child_samples=25,
+            random_state=42,
+            verbose=-1,
+        )
+        ranker.fit(X_ord, y_ord, group=group_counts)
+        dump = ranker.booster_.dump_model()
+        ranker_obj = ranker
 
     def _convert_tree(node: dict[str, Any]) -> dict[str, Any]:
         if "leaf_value" in node:
@@ -365,14 +432,13 @@ def _train_lightgbm_fold(
             "right": _convert_tree(node["right_child"]),
         }
 
-    dump = ranker.booster_.dump_model()
     trees = [_convert_tree(t["tree_structure"]) for t in dump.get("tree_info", [])]
     return {
         "model_type": "tree_ensemble",
         "trees": trees,
         "bias": 0.0,
         "learning_rate": 1.0,
-        "ranker": ranker,
+        "ranker": ranker_obj,
     }
 
 
@@ -424,6 +490,9 @@ def run_group_kfold_cv(
 
     splits = group_kfold_indices(source_video_ids, n_splits=n_splits)
     base_arr = np.asarray(base_scores, dtype=np.float64) if base_scores is not None else None
+    active_feature_names = (
+        LTR_FEATURE_NAMES_V2 if X.shape[1] == len(LTR_FEATURE_NAMES_V2) else LTR_FEATURE_NAMES
+    )
 
     fold_metrics: list[dict[str, float]] = []
     fold_weights: list[dict[str, Any]] = []
@@ -471,14 +540,14 @@ def run_group_kfold_cv(
             "eval_source_video_ids": sorted({str(source_video_ids[i]) for i in val_idx}),
             "manifest_hash": resolved_manifest_hash,
         }
-        fold_lgb_payload = _train_lightgbm_fold(X_tr, y_tr, q_tr) if use_lgb else None
+        fold_lgb_payload = _train_lightgbm_fold(X_tr, y_tr, q_tr, feature_names=active_feature_names) if use_lgb else None
         if use_lgb and fold_lgb_payload is None:
             raise RuntimeError("backend='lightgbm' requested but LightGBM training returned None")
         if fold_lgb_payload is not None:
             fold_entry = {
                 **fold_meta_base,
                 "model_type": "tree_ensemble",
-                "feature_names": list(LTR_FEATURE_NAMES),
+                "feature_names": list(active_feature_names),
                 "trees": fold_lgb_payload["trees"],
                 "bias": float(fold_lgb_payload.get("bias", 0.0)),
                 "learning_rate": float(fold_lgb_payload.get("learning_rate", 1.0)),
@@ -490,12 +559,14 @@ def run_group_kfold_cv(
                 y_tr,
                 q_tr,
                 l2_reg=l2_reg,
+                feature_names=active_feature_names,
                 base_scores_train=base_tr,
                 blend_weight=blend_weight,
             )
             fold_entry = {
                 **fold_meta_base,
                 "model_type": "pairwise_logistic",
+                "feature_names": list(active_feature_names),
                 "weights": [round(float(v), 6) for v in w],
                 "bias": round(float(bias), 6),
                 "feature_mean": [round(float(v), 6) for v in f_mean],
@@ -532,11 +603,11 @@ def run_group_kfold_cv(
     mean_cv_mrr = float(np.mean([m["mrr"] for m in fold_metrics]))
     mean_cv_ndcg10 = float(np.mean([m["ndcg_at_10"] for m in fold_metrics]))
 
-    lgb_payload = _train_lightgbm_fold(X, y, query_ids) if use_lgb else None
+    lgb_payload = _train_lightgbm_fold(X, y, query_ids, feature_names=active_feature_names) if use_lgb else None
     if lgb_payload is not None:
         artifact: dict[str, Any] = {
             "model_type": "tree_ensemble",
-            "feature_names": list(LTR_FEATURE_NAMES),
+            "feature_names": list(active_feature_names),
             "trees": lgb_payload["trees"],
             "bias": 0.0,
             "learning_rate": 1.0,
@@ -547,12 +618,13 @@ def run_group_kfold_cv(
             y,
             query_ids,
             l2_reg=l2_reg,
+            feature_names=active_feature_names,
             base_scores_train=base_arr,
             blend_weight=blend_weight,
         )
         artifact = {
             "model_type": "pairwise_logistic",
-            "feature_names": list(LTR_FEATURE_NAMES),
+            "feature_names": list(active_feature_names),
             "weights": [round(float(v), 6) for v in final_w],
             "bias": round(float(final_bias), 6),
             "feature_mean": [round(float(v), 6) for v in final_mean],
@@ -605,7 +677,7 @@ def load_ltr_jsonl_dataset(
             if not line.strip():
                 continue
             item = json.loads(line)
-            if "features" in item and isinstance(item["features"], list) and len(item["features"]) == len(LTR_FEATURE_NAMES):
+            if "features" in item and isinstance(item["features"], list) and len(item["features"]) in (len(LTR_FEATURE_NAMES), len(LTR_FEATURE_NAMES_V2)):
                 vec = np.asarray(item["features"], dtype=np.float32)
             elif "features" in item and isinstance(item["features"], list) and len(item["features"]) == 22:
                 vec = np.concatenate([
@@ -640,8 +712,9 @@ def extract_dev859_ltr_dataset(
     max_candidates_per_query: int = 60,
     return_base_scores: bool = False,
     return_metadata: bool = False,
+    feature_dim: int = 24,
 ) -> tuple[Any, ...]:
-    """Extract 24D LTR features from dev_full_859 (validation/ only, never held-out test)."""
+    """Extract 24D or 32D LTR features from dev_full_859 (validation/ only, never held-out test)."""
     assert_no_heldout_leakage(val_dir)
     if save_jsonl_path is not None:
         assert_no_heldout_leakage(save_jsonl_path)
@@ -798,7 +871,10 @@ def extract_dev859_ltr_dataset(
                         "graph_relation_score": 0.0,
                         "llm_modality_alignment": 1.0 if has_lex else 0.0,
                     }
-                vec = extract_ltr_features_24d(cand_dict, z_stats=z_stats, return_dict=False)
+                if int(feature_dim) == len(LTR_FEATURE_NAMES_V2):
+                    vec = extract_ltr_features_32d(cand_dict, z_stats=z_stats, return_dict=False)
+                else:
+                    vec = extract_ltr_features_24d(cand_dict, z_stats=z_stats, return_dict=False)
                 lbl = 1.0 if vid in target_set else 0.0
                 base_sc = float(m.ranking_score)
 
@@ -886,6 +962,7 @@ def main() -> None:
     parser.add_argument("--n-splits", type=int, default=5, help="Number of GroupKFold splits")
     parser.add_argument("--l2-reg", type=float, default=250000.0, help="L2 regularization strength")
     parser.add_argument("--blend-weight", type=float, default=0.015, help="Residual blend weight matching pipeline inference")
+    parser.add_argument("--feature-dim", type=int, choices=(24, 32), default=32, help="Feature schema dimensionality when extracting")
     parser.add_argument("--backend", choices=("auto", "pairwise_logistic", "lightgbm"), default="pairwise_logistic")
     args = parser.parse_args()
 
@@ -897,6 +974,7 @@ def main() -> None:
             save_jsonl_path=save_path,
             return_base_scores=True,
             return_metadata=True,
+            feature_dim=args.feature_dim,
         )
     else:
         X, y, query_ids, source_video_ids, base_scores = load_ltr_jsonl_dataset(

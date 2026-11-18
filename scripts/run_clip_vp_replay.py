@@ -367,11 +367,7 @@ def run_replay(
             "scores": {},
         }
         if vl_bundle is not None:
-            vl_entries = (
-                vl_bundle["by_qsha"].get(q_sha)
-                or vl_bundle["by_qid"].get(qid)
-                or {}
-            )
+            vl_entries = vl_bundle["by_qsha"].get(q_sha) or {}
             ranked_video_ids, vl_stats = rerank_top_m_with_vl(
                 ranked_video_ids,
                 vl_entries,

@@ -14,6 +14,79 @@ from videntra.query.rules import COCO_SYNONYM_MAP, extract_object_requirements
 # Fixed, alphabetically sorted list of 80 COCO classes
 COCO_80_CLASSES: list[str] = sorted(set(COCO_SYNONYM_MAP.values()))
 COCO_CLASS_TO_IDX: dict[str, int] = {cname: idx for idx, cname in enumerate(COCO_80_CLASSES)}
+_SMALL_COCO_CLASSES: frozenset[str] = frozenset({
+    "sports ball", "cell phone", "cup", "bottle", "book",
+    "remote", "mouse", "keyboard", "fork", "spoon", "knife",
+})
+
+
+def _bbox_iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    denom = area_a + area_b - inter
+    return (inter / denom) if denom > 1e-8 else 0.0
+
+
+def _extract_obj_bbox(obj: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    if all(obj.get(k) is not None for k in ("bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2")):
+        x1, y1, x2, y2 = float(obj["bbox_x1"]), float(obj["bbox_y1"]), float(obj["bbox_x2"]), float(obj["bbox_y2"])
+        if x2 > x1 and y2 > y1:
+            return (x1, y1, x2, y2)
+    raw_box = obj.get("bbox")
+    if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
+        x1, y1, x2, y2 = (float(v) for v in raw_box)
+        if x2 > x1 and y2 > y1:
+            return (x1, y1, x2, y2)
+    return None
+
+
+def deduplicate_and_filter_frame_objects(
+    objs: Sequence[dict[str, Any]],
+    *,
+    default_conf: float = 0.35,
+    small_conf: float = 0.28,
+    iou_thresh: float = 0.65,
+) -> list[dict[str, Any]]:
+    """Filter low-confidence YOLO detections and apply per-(frame, class) IoU NMS."""
+    by_frame_cls: dict[tuple[Any, str], list[dict[str, Any]]] = {}
+    for o in objs:
+        cname = str(o.get("canonical_class") or o.get("class_name") or "").lower().strip()
+        if not cname:
+            continue
+        conf = float(o.get("confidence", 0.0))
+        min_conf = small_conf if cname in _SMALL_COCO_CLASSES else default_conf
+        if conf < min_conf:
+            continue
+        fk = o.get("keyframe_id")
+        if fk is None:
+            pts_val = o.get("pts_sec")
+            fk = ("pts", round(float(pts_val), 2)) if pts_val is not None else ("noid", id(o))
+        by_frame_cls.setdefault((fk, cname), []).append(o)
+
+    kept: list[dict[str, Any]] = []
+    for group in by_frame_cls.values():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+        group_sorted = sorted(group, key=lambda item: float(item.get("confidence", 0.0)), reverse=True)
+        group_kept: list[tuple[dict[str, Any], tuple[float, float, float, float] | None]] = []
+        for cand in group_sorted:
+            c_box = _bbox_iou_box = _extract_obj_bbox(cand)
+            if c_box is not None and any(
+                k_box is not None and _bbox_iou(c_box, k_box) > iou_thresh
+                for _, k_box in group_kept
+            ):
+                continue
+            group_kept.append((cand, c_box))
+        kept.extend(item for item, _ in group_kept)
+    return kept
 
 
 def compute_coco_global_idf(
@@ -165,19 +238,49 @@ def build_augmented_864d_embeddings(
         else:
             nearby_objs = []
 
-        if nearby_objs:
+        filtered_objs = deduplicate_and_filter_frame_objects(nearby_objs)
+        valid_bboxes: list[tuple[float, float, float, float]] = []
+        if filtered_objs:
             class_counts: dict[str, int] = {}
             class_max_conf: dict[str, float] = {}
-            person_conf_count = 0
-
-            for o in nearby_objs:
-                cname = o.get("class_name", "")
-                conf = float(o.get("confidence", 0.0))
-                class_counts[cname] = class_counts.get(cname, 0) + 1
-                if conf > class_max_conf.get(cname, 0.0):
-                    class_max_conf[cname] = conf
-                if cname == "person" and conf >= 0.40:
-                    person_conf_count += 1
+            has_kf_ids = any(o.get("keyframe_id") is not None for o in filtered_objs)
+            if has_kf_ids:
+                # Group by single keyframe so tracked objects across keyframes are NOT summed
+                tight_objs = [o for o in filtered_objs if abs(float(o.get("pts_sec", t_sec)) - t_sec) <= 2.5]
+                agg_objs = tight_objs if tight_objs else filtered_objs
+                per_kf_counts: dict[Any, dict[str, int]] = {}
+                per_kf_person: dict[Any, int] = {}
+                for o in agg_objs:
+                    cname = o.get("class_name", "")
+                    conf = float(o.get("confidence", 0.0))
+                    fk = o.get("keyframe_id") if o.get("keyframe_id") is not None else round(float(o.get("pts_sec", t_sec)), 2)
+                    cdict = per_kf_counts.setdefault(fk, {})
+                    cdict[cname] = cdict.get(cname, 0) + 1
+                    if conf > class_max_conf.get(cname, 0.0):
+                        class_max_conf[cname] = conf
+                    if cname == "person" and conf >= 0.40:
+                        per_kf_person[fk] = per_kf_person.get(fk, 0) + 1
+                    box = _extract_obj_bbox(o)
+                    if box is not None:
+                        valid_bboxes.append(box)
+                for cdict in per_kf_counts.values():
+                    for cname, cnt in cdict.items():
+                        if cnt > class_counts.get(cname, 0):
+                            class_counts[cname] = cnt
+                person_conf_count = max(per_kf_person.values(), default=0)
+            else:
+                person_conf_count = 0
+                for o in filtered_objs:
+                    cname = o.get("class_name", "")
+                    conf = float(o.get("confidence", 0.0))
+                    class_counts[cname] = class_counts.get(cname, 0) + 1
+                    if conf > class_max_conf.get(cname, 0.0):
+                        class_max_conf[cname] = conf
+                    if cname == "person" and conf >= 0.40:
+                        person_conf_count += 1
+                    box = _extract_obj_bbox(o)
+                    if box is not None:
+                        valid_bboxes.append(box)
 
             for cname, count in class_counts.items():
                 if cname in COCO_CLASS_TO_IDX:
@@ -237,6 +340,19 @@ def build_augmented_864d_embeddings(
         if has_nearby_asr:
             meta_subspace[fid, 12] = 1.0
         meta_subspace[fid, 13] = min(1.0, overlap_speech_sec / 10.0)
+
+        # Optional spatial centroid & foreground area layout (only when real bboxes exist; preserve 0.0 when empty)
+        if valid_bboxes:
+            max_x2 = max(b[2] for b in valid_bboxes)
+            max_y2 = max(b[3] for b in valid_bboxes)
+            norm_w = max(640.0, max_x2) if max_x2 > 2.0 else 1.0
+            norm_h = max(360.0, max_y2) if max_y2 > 2.0 else 1.0
+            cxs = [0.5 * (b[0] + b[2]) / norm_w for b in valid_bboxes]
+            cys = [0.5 * (b[1] + b[3]) / norm_h for b in valid_bboxes]
+            areas = [max(0.0, (b[2] - b[0]) * (b[3] - b[1])) / (norm_w * norm_h) for b in valid_bboxes]
+            meta_subspace[fid, 10] = float(min(1.0, max(0.0, sum(cxs) / len(cxs)))) * 0.25
+            meta_subspace[fid, 11] = float(min(1.0, max(0.0, sum(cys) / len(cys)))) * 0.25
+            meta_subspace[fid, 15] = float(min(1.0, max(0.0, sum(areas)))) * 0.25
 
         # Normalize 16d context vector
         meta_norm = float(np.linalg.norm(meta_subspace[fid]))

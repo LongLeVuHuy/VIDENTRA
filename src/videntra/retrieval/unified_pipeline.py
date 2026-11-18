@@ -14,6 +14,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections import defaultdict, OrderedDict
 import hashlib
+import heapq
 import logging
 import math
 import os
@@ -23,7 +24,7 @@ import sqlite3
 import time
 import threading
 from copy import deepcopy
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 import unicodedata
 import warnings
 
@@ -59,6 +60,7 @@ from videntra.indexing.augmented_vector import (
     build_query_864d_vector,
     compute_late_interaction_maxsim,
     compute_multiscale_temporal_context,
+    deduplicate_and_filter_frame_objects,
 )
 from videntra.retrieval.alignment import (
     align_sequential_keyframe_clauses,
@@ -76,14 +78,45 @@ from videntra.retrieval.clip_branch import (
     compute_snapshot_signature,
     score_clip_branch,
 )
+from videntra.retrieval.videoprism_branch import (
+    VideoPrismClipRetriever,
+    VideoPrismRetrievalResult,
+)
 from videntra.evidence.normalize import contains_text_phrase
 from videntra.relations.entities import compute_object_verification_boost
-from videntra.localization.refine import expand_boundary_contrast
+from videntra.relations.spatial_action_verifier import SpatialActionVerifier
+from videntra.localization.refine import (
+    expand_boundary_contrast,
+    localize_moments_multimodal_dp,
+    propose_soft_nms_secondary_windows,
+)
 from videntra.ranking.calibration import calibrate_asr_confidence
-from videntra.ranking.features import compute_query_z_scores, extract_ltr_features_24d
+from videntra.ranking.features import (
+    LTR_FEATURE_NAMES,
+    LTR_FEATURE_NAMES_V2,
+    compute_query_z_scores,
+    extract_ltr_features_24d,
+    extract_ltr_features_32d,
+)
 from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
 
 logger = logging.getLogger(__name__)
+_WORD_TOK_RE = re.compile(r"\b[a-z0-9à-ỹ]+\b")
+_LEX_TOK_RE = re.compile(r"[a-z0-9à-ỹ]{2,}")
+
+
+def infer_video_dataset_family(video_id: str, file_path: str | None = None) -> str:
+    """Infer dataset family ('msrvtt', 'avc', 'qvhighlights', or 'other') from video_id/path."""
+    vid = str(video_id or "").strip()
+    fpath = str(file_path or "").lower()
+    low_vid = vid.lower()
+    if re.match(r"^video\d+$", low_vid) or "msrvtt" in fpath:
+        return "msrvtt"
+    if re.match(r"^l\d+_v\d+", low_vid) or "/avc/" in fpath or "\\avc\\" in fpath:
+        return "avc"
+    if re.search(r"_\d+(?:\.\d+)?_\d+(?:\.\d+)?$", vid) or "qvhighlights" in fpath:
+        return "qvhighlights"
+    return "other"
 
 
 def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
@@ -121,45 +154,8 @@ def unified_result_dict(moment: RankedMoment, snapshot_id: str) -> dict[str, Any
     return result
 
 
-DOMAIN_LEXICAL_SYNONYMS: dict[str, dict[str, Any]] = {
-    # Chemical / formula notation variants often transcribed differently in ASR/OCR
-    "io3": {
-        "fts_tokens": ('"hio"', "iodi*"),
-        "high_spec": ("hio", "iodide"),
-        "proper_nouns": ("hio", "iodide"),
-    },
-    "h2o2": {
-        "fts_tokens": ('"hio"', "iodi*"),
-        "high_spec": ("hio", "iodide"),
-        "proper_nouns": ("hio", "iodide"),
-    },
-    # Domain lexical & OCR/ASR transcription variants
-    "letterman": {
-        "fts_tokens": ('"lateshow"',),
-        "high_spec": ("lateshow",),
-    },
-    "host": {
-        "required_high": ("late",),
-        "required_low": ("show",),
-        "fts_tokens": ('"letterman"', '"ATESHO"'),
-        "high_spec": ("letterman", "atesho"),
-        "proper_nouns": ("letterman",),
-    },
-    "checking": {
-        "required_low": ("food",),
-        "fts_tokens": ('"check"', '"food"'),
-        "high_spec": ("check", "food"),
-    },
-    "news": {
-        "required_low": ("channel",),
-        "fts_tokens": ('"cnn"', '"fox"'),
-        "high_spec": ("cnn", "fox"),
-    },
-    "phrenologists": {
-        "fts_tokens": ("phrenolog*", '"frenologist"'),
-        "high_spec": ("phrenology", "frenologist"),
-    },
-}
+# Optional caller-supplied domain synonym table (empty by default; no dataset-specific shortcuts).
+DOMAIN_LEXICAL_SYNONYMS: dict[str, dict[str, Any]] = {}
 
 
 def _apply_domain_synonyms(
@@ -168,9 +164,11 @@ def _apply_domain_synonyms(
     high_spec_tokens: set[str],
     low_spec_tokens: set[str],
     proper_nouns_lower: set[str],
+    synonyms_map: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    """Expand token using DOMAIN_LEXICAL_SYNONYMS when contextual preconditions hold."""
-    spec = DOMAIN_LEXICAL_SYNONYMS.get(token)
+    """Expand token using explicit config-driven synonyms_map when contextual preconditions hold."""
+    active_map = synonyms_map if synonyms_map is not None else DOMAIN_LEXICAL_SYNONYMS
+    spec = active_map.get(token)
     if spec is None:
         return
     req_high = spec.get("required_high", ())
@@ -541,8 +539,9 @@ class UnifiedMultimodalSearchPipeline:
         ltr_model_path: Path | str | None = DEFAULT_LTR_MODEL_PATH,
         ltr_blend_weight: float = 0.015,
         enable_spatial_patches: bool = True,
-        enable_vlm_caption_lexical: bool = True,
-        enable_vlm_caption_dense: bool = True,
+        enable_vlm_caption_lexical: bool = False,
+        enable_vlm_caption_dense: bool = False,
+        domain_synonyms: Mapping[str, Any] | None = None,
         enable_temporal_rerank: bool = False,
         temporal_rerank_mode: str = "attention",
         temporal_rerank_lambda: float = 0.0,
@@ -578,6 +577,13 @@ class UnifiedMultimodalSearchPipeline:
         query_plan_prompt_version: str = "compact-v1",
         rules_only: bool = False,
         llm_enabled: bool | None = None,
+        enable_videoprism: bool = True,
+        videoprism_retriever: VideoPrismClipRetriever | None = None,
+        videoprism_cache_path: Path | str | None = None,
+        videoprism_top_n: int = 80,
+        videoprism_union_k: int = 30,
+        videoprism_rerank_top_k: int = 20,
+        videoprism_rerank_weight: float = 0.08,
     ):
         self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
         self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
@@ -612,6 +618,8 @@ class UnifiedMultimodalSearchPipeline:
         self.keyframe_obj_window: dict[int, list[dict[str, Any]]] = {}
         self.keyframe_obj_summary: dict[int, dict[str, tuple[float, int]]] = {}
         self.video_obj_pts: dict[str, list[float]] = {}
+        self._dedup_video_objects: dict[str, list[dict[str, Any]]] = {}
+        self._dedup_video_obj_pts: dict[str, list[float]] = {}
         self.video_classes_set: dict[str, set[str]] = {}
 
         self.db_conn: sqlite3.Connection | None = None
@@ -642,6 +650,7 @@ class UnifiedMultimodalSearchPipeline:
         self.enable_spatial_patches = bool(enable_spatial_patches)
         self.enable_vlm_caption_lexical = bool(enable_vlm_caption_lexical)
         self.enable_vlm_caption_dense = bool(enable_vlm_caption_dense)
+        self.domain_synonyms: dict[str, Any] = dict(domain_synonyms) if domain_synonyms is not None else dict(DOMAIN_LEXICAL_SYNONYMS)
         self.enable_temporal_rerank = bool(enable_temporal_rerank)
         self.temporal_rerank_mode = str(temporal_rerank_mode)
         self.temporal_rerank_lambda = float(temporal_rerank_lambda)
@@ -687,6 +696,11 @@ class UnifiedMultimodalSearchPipeline:
         self._clip_index_map_state: tuple[int, int, int, int] | None = None
         self._last_clip_score_res: ClipBranchScoreResult | None = None
         self._last_primary_q_768: np.ndarray | None = None
+        self._all_embeddings_unit_norm: bool = False
+        self._active_query_sims: dict[str, Any] | None = None
+        self._video_kf_fids_arr: dict[str, np.ndarray] = {}
+        self._unfiltered_stage2_mask: np.ndarray | None = None
+        self._unfiltered_stage2_sig: tuple[int, int] | None = None
         self._initial_detector_covered_videos: set[str] | None = (
             {str(v) for v in detector_covered_videos} if detector_covered_videos is not None else None
         )
@@ -763,6 +777,28 @@ class UnifiedMultimodalSearchPipeline:
         self.e5_model: Any | None = None
         self.last_routing_plan: ModalityRoutingPlan | None = None
         self._last_event_intervals: dict[str, dict[str, tuple[float, float]]] = {}
+        self.enable_videoprism = bool(enable_videoprism)
+        self.videoprism_top_n = max(1, int(videoprism_top_n))
+        self.videoprism_union_k = max(0, int(videoprism_union_k))
+        self.videoprism_rerank_top_k = max(1, int(videoprism_rerank_top_k))
+        self.videoprism_rerank_weight = float(videoprism_rerank_weight)
+        self.videoprism_cache_path = Path(videoprism_cache_path) if videoprism_cache_path else Path("data/cache/query_videoprism_768d.npz")
+        if videoprism_retriever is not None:
+            self.videoprism_retriever: VideoPrismClipRetriever | None = videoprism_retriever
+        elif self.enable_videoprism:
+            self.videoprism_retriever = VideoPrismClipRetriever(
+                processed_dir=self.db_path.parent,
+                cache_path=self.videoprism_cache_path,
+            )
+        else:
+            self.videoprism_retriever = None
+        self.ocr_conf_lookup: dict[tuple[str, int], float] = {}
+        self.asr_conf_lookup: dict[tuple[str, int, int], float] = {}
+        self._lexical_doc_freq: dict[str, int] = {}
+        self._total_lexical_docs: int = 0
+        self._token_idf_cache: dict[str, float] = {}
+        self._default_token_idf: float = 1.0
+        self.spatial_action_verifier = SpatialActionVerifier(window_pad_sec=2.0)
 
         if not lazy_load:
             self._initialize()
@@ -845,15 +881,76 @@ class UnifiedMultimodalSearchPipeline:
                 for vid in self.video_objects:
                     self.video_objects[vid].sort(key=lambda x: x["pts_sec"])
 
-                cursor.execute("SELECT video_id, timestamp_ms FROM OCRObservations;")
-                self.ocr_data: dict[str, list[float]] = defaultdict(list)
-                for vid, ts_ms in cursor.fetchall():
-                    self.ocr_data[vid].append(float(ts_ms) / 1000.0)
+                ocr_cols = _table_columns(cursor, "OCRObservations")
+                asr_cols = _table_columns(cursor, "ASRSegments")
+                vid_lex_tokens: dict[str, set[str]] = defaultdict(set)
 
-                cursor.execute("SELECT video_id, start_ms, end_ms FROM ASRSegments;")
+                self.ocr_data: dict[str, list[float]] = defaultdict(list)
+                self.ocr_conf_lookup = {}
+                if ocr_cols:
+                    ocr_text_col = "normalized_text" if "normalized_text" in ocr_cols else ("raw_text" if "raw_text" in ocr_cols else None)
+                    has_ocr_conf = "confidence" in ocr_cols
+                    sel_ocr = ["video_id", "timestamp_ms"]
+                    if has_ocr_conf:
+                        sel_ocr.append("confidence")
+                    if ocr_text_col:
+                        sel_ocr.append(ocr_text_col)
+                    cursor.execute(f"SELECT {', '.join(sel_ocr)} FROM OCRObservations;")
+                    for row in cursor.fetchall():
+                        vid_s = str(row[0])
+                        ts_ms_i = int(row[1]) if row[1] is not None else 0
+                        self.ocr_data[vid_s].append(float(ts_ms_i) / 1000.0)
+                        pos = 2
+                        raw_conf = 0.75
+                        if has_ocr_conf:
+                            raw_conf = float(row[pos]) if row[pos] is not None else 0.75
+                            pos += 1
+                        self.ocr_conf_lookup[(vid_s, ts_ms_i)] = min(1.0, max(0.05, raw_conf))
+                        if ocr_text_col and row[pos]:
+                            for tok in re.findall(r"[a-z0-9à-ỹ]{2,}", str(row[pos]).lower()):
+                                vid_lex_tokens[vid_s].add(tok)
+
                 self.asr_data: dict[str, list[tuple[float, float]]] = defaultdict(list)
-                for vid, st_ms, et_ms in cursor.fetchall():
-                    self.asr_data[vid].append((float(st_ms) / 1000.0, float(et_ms) / 1000.0))
+                self.asr_conf_lookup = {}
+                if asr_cols:
+                    asr_text_col = "normalized_text" if "normalized_text" in asr_cols else ("raw_text" if "raw_text" in asr_cols else None)
+                    has_asr_conf = "confidence" in asr_cols
+                    sel_asr = ["video_id", "start_ms", "end_ms"]
+                    if has_asr_conf:
+                        sel_asr.append("confidence")
+                    if asr_text_col:
+                        sel_asr.append(asr_text_col)
+                    cursor.execute(f"SELECT {', '.join(sel_asr)} FROM ASRSegments;")
+                    for row in cursor.fetchall():
+                        vid_s = str(row[0])
+                        st_ms_i = int(row[1]) if row[1] is not None else 0
+                        et_ms_i = int(row[2]) if row[2] is not None else st_ms_i
+                        self.asr_data[vid_s].append((float(st_ms_i) / 1000.0, float(et_ms_i) / 1000.0))
+                        pos = 3
+                        cal_conf = 0.70
+                        if has_asr_conf and row[pos] is not None:
+                            rc = float(row[pos])
+                            cal_conf = float(calibrate_asr_confidence(rc)) if rc <= 0.0 else min(1.0, max(0.05, rc))
+                        if has_asr_conf:
+                            pos += 1
+                        self.asr_conf_lookup[(vid_s, st_ms_i, et_ms_i)] = cal_conf
+                        if asr_text_col and row[pos]:
+                            for tok in _LEX_TOK_RE.findall(str(row[pos]).lower()):
+                                vid_lex_tokens[vid_s].add(tok)
+
+                doc_freq: dict[str, int] = defaultdict(int)
+                for tok_set in vid_lex_tokens.values():
+                    for tok in tok_set:
+                        doc_freq[tok] += 1
+                self._lexical_doc_freq = dict(doc_freq)
+                self._total_lexical_docs = len(vid_lex_tokens)
+                if self._total_lexical_docs > 1:
+                    n_docs_f = float(self._total_lexical_docs)
+                    self._default_token_idf = float(min(1.65, max(0.35, (math.log(1.0 + n_docs_f) + 1.0) / 2.5)))
+                    self._token_idf_cache = {
+                        tok: float(min(1.65, max(0.35, (math.log((1.0 + n_docs_f) / (1.0 + float(df))) + 1.0) / 2.5)))
+                        for tok, df in self._lexical_doc_freq.items()
+                    }
 
                 for_cols = _table_columns(cursor, "FrameObjectRuns")
                 if for_cols:
@@ -869,6 +966,8 @@ class UnifiedMultimodalSearchPipeline:
             self.asr_data = defaultdict(list)
 
         self.video_obj_pts: dict[str, list[float]] = {}
+        self._dedup_video_objects: dict[str, list[dict[str, Any]]] = {}
+        self._dedup_video_obj_pts: dict[str, list[float]] = {}
         self.video_classes_set: dict[str, set[str]] = {}
         for vid, objs in self.video_objects.items():
             for o in objs:
@@ -878,6 +977,7 @@ class UnifiedMultimodalSearchPipeline:
             objs.sort(key=lambda x: x["pts_sec"])
             self.video_obj_pts[vid] = [o["pts_sec"] for o in objs]
             self.video_classes_set[vid] = {o["class_name"] for o in objs}
+        self._rebuild_dedup_video_objects()
         if self._initial_detector_covered_videos is None:
             self.detector_covered_videos.update(str(v) for v in self.video_objects.keys())
 
@@ -920,9 +1020,15 @@ class UnifiedMultimodalSearchPipeline:
         # Precompute per-video keyframe matrices and timestamp lists for fast O(1) lookup
         self.video_kf_pts: dict[str, list[float]] = {}
         self.video_kf_fids: dict[str, list[int]] = {}
+        self._video_kf_fids_arr: dict[str, np.ndarray] = {}
         self.video_kf_matrix: dict[str, np.ndarray] = {}
         self.keyframe_obj_window: dict[int, list[dict[str, Any]]] = {}
         self.keyframe_obj_summary: dict[int, dict[str, tuple[float, int]]] = {}
+        if self.all_embeddings is not None and len(self.all_embeddings) > 0:
+            emb_norms = np.linalg.norm(self.all_embeddings, axis=1)
+            self._all_embeddings_unit_norm = bool(np.allclose(emb_norms, 1.0, atol=1e-3))
+        else:
+            self._all_embeddings_unit_norm = False
         if self.augmented_embeddings is not None and len(self.augmented_embeddings) > 0:
             n_aug = len(self.augmented_embeddings)
             for vid, kf_list in self.video_keyframes.items():
@@ -930,6 +1036,7 @@ class UnifiedMultimodalSearchPipeline:
                 pts = [float(kf["pts_time"]) for kf in kf_list if int(kf["faiss_id"]) < n_aug]
                 if fids:
                     self.video_kf_fids[vid] = fids
+                    self._video_kf_fids_arr[vid] = np.asarray(fids, dtype=np.int64)
                     self.video_kf_pts[vid] = pts
                     self.video_kf_matrix[vid] = np.ascontiguousarray(self.augmented_embeddings[fids])
                 v_objs = self.video_objects.get(vid, [])
@@ -971,6 +1078,13 @@ class UnifiedMultimodalSearchPipeline:
             self._clip_index_emb_id = None
             self._clip_index_emb_shape = None
             self._clip_index_map_state = None
+        if (
+            (self.enable_clip_branch or self.enable_clip_consensus_boost)
+            and self.all_embeddings is not None
+            and len(self.all_embeddings) > 0
+            and self.keyframe_map
+        ):
+            self._ensure_clip_branch_index()
 
         # 3. Text Encoder (Lazy-loaded on first cache miss to save RAM and startup latency)
         pass
@@ -1078,7 +1192,8 @@ class UnifiedMultimodalSearchPipeline:
                     if len(w_l) >= 5:
                         cand_tokens.append(f'{w_l}*')
 
-        # 2. Proper nouns and clean domain synonyms (e.g., formula notations)
+        # 2. Proper nouns and explicit config-driven synonyms
+        syn_map = getattr(self, "domain_synonyms", DOMAIN_LEXICAL_SYNONYMS)
         for pn in list(proper_nouns_lower):
             if pn not in ALL_STOPWORDS and len(pn) >= 3:
                 cand_tokens.append(f'"{pn}"')
@@ -1090,6 +1205,7 @@ class UnifiedMultimodalSearchPipeline:
                     high_spec_tokens,
                     low_spec_tokens,
                     proper_nouns_lower,
+                    synonyms_map=syn_map,
                 )
 
         # 3. High-specificity tokens (sorted descending by length)
@@ -1105,13 +1221,14 @@ class UnifiedMultimodalSearchPipeline:
                     high_spec_tokens,
                     low_spec_tokens,
                     proper_nouns_lower,
+                    synonyms_map=syn_map,
                 )
-            if ht == "checking" or ht.endswith(("ologists", "ologist")):
+            if ht.isalpha() and len(ht) >= 8 and ht not in ALL_STOPWORDS:
                 for st in _generate_morphological_stems(ht):
                     if len(stem_tokens) >= 2:
                         break
-                    st_tok = f'{st}*' if len(st) >= 5 else f'"{st}"'
-                    stem_tokens.append(st_tok)
+                    if len(st) >= 5:
+                        stem_tokens.append(f"{st}*")
 
         # 4. General adjacent-bigram OCR compound joins (resilient to missing-space captions like "lateshow")
         ordered_words = re.findall(r'\b[a-z0-9à-ỹ]+\b', split_compound_tokens(query).lower())
@@ -1161,8 +1278,24 @@ class UnifiedMultimodalSearchPipeline:
             return [], np.zeros(0, dtype=np.float32)
 
         kf_pts = self.video_kf_pts.get(vid)
-        kf_matrix = self.video_kf_matrix.get(vid)
+        fids_arr = self._video_kf_fids_arr.get(vid)
         fids = self.video_kf_fids.get(vid)
+
+        active = self._active_query_sims
+        if (
+            active is not None
+            and active.get("q_864") is primary_q_864
+            and (primary_q_768 is None or active.get("q_768") is primary_q_768)
+            and kf_pts is not None
+            and (fids_arr is not None or fids is not None)
+        ):
+            idx_obj = fids_arr if fids_arr is not None else fids
+            if blend_768_864 and active.get("sims_comb_all") is not None:
+                return kf_pts, active["sims_comb_all"][idx_obj]
+            if (not blend_768_864) and active.get("sims_864_all") is not None:
+                return kf_pts, active["sims_864_all"][idx_obj]
+
+        kf_matrix = self.video_kf_matrix.get(vid)
         if kf_pts is None or kf_matrix is None:
             n_aug = len(self.augmented_embeddings) if self.augmented_embeddings is not None else 0
             valid_kfs = [kf for kf in kf_list if int(kf["faiss_id"]) < n_aug]
@@ -1209,6 +1342,31 @@ class UnifiedMultimodalSearchPipeline:
         if len(sims) == 0:
             return []
         return np.sort(sims)[::-1].tolist()
+
+    def _video_top2_visual_scores(
+        self,
+        vid: str,
+        primary_q_864: np.ndarray,
+        primary_q_768: np.ndarray | None = None,
+    ) -> tuple[float, float] | None:
+        """Return (top1, top2) visual similarities via O(K) partition."""
+        if primary_q_864 is None:
+            return None
+        _, sims = self._compute_video_visual_curve(
+            vid,
+            primary_q_864=primary_q_864,
+            primary_q_768=primary_q_768,
+            blend_768_864=True,
+        )
+        n_s = len(sims)
+        if n_s < 2:
+            return None
+        if n_s == 2:
+            a, b = float(sims[0]), float(sims[1])
+            return (a, b) if a >= b else (b, a)
+        top2 = np.partition(sims, -2)[-2:]
+        a, b = float(top2[0]), float(top2[1])
+        return (a, b) if a >= b else (b, a)
 
     def lookup_true_visual_sim(
         self,
@@ -1338,20 +1496,27 @@ class UnifiedMultimodalSearchPipeline:
     ) -> list[RankedMoment]:
         """Deduplicate scored moments by video_id keeping each video's best score with stable tie-break."""
         best_by_vid: dict[str, RankedMoment] = {}
-        seen_in_primary: set[str] = set()
         for m in moments:
-            seen_in_primary.add(m.video_id)
             prev = best_by_vid.get(m.video_id)
             if prev is None or float(m.ranking_score) > float(prev.ranking_score):
                 best_by_vid[m.video_id] = m
-        for m in candidate_moments:
-            if m.video_id in seen_in_primary:
-                continue
-            prev = best_by_vid.get(m.video_id)
-            if prev is None or float(m.ranking_score) > float(prev.ranking_score):
-                best_by_vid[m.video_id] = m
+        if candidate_moments and candidate_moments is not moments:
+            seen_in_primary = set(best_by_vid)
+            for m in candidate_moments:
+                if m.video_id in seen_in_primary:
+                    continue
+                prev = best_by_vid.get(m.video_id)
+                if prev is None or float(m.ranking_score) > float(prev.ranking_score):
+                    best_by_vid[m.video_id] = m
+        vals = best_by_vid.values()
+        if top_k is not None and 0 < top_k * 2 < len(best_by_vid):
+            return heapq.nsmallest(
+                top_k,
+                vals,
+                key=lambda m: (-float(m.ranking_score), str(m.video_id), float(m.moment_start_seconds)),
+            )
         ranked = sorted(
-            best_by_vid.values(),
+            vals,
             key=lambda m: (-float(m.ranking_score), str(m.video_id), float(m.moment_start_seconds)),
         )
         return ranked[:top_k] if top_k is not None else ranked
@@ -1752,7 +1917,10 @@ class UnifiedMultimodalSearchPipeline:
                         f"spatial_patches rows {patches.shape[0]} < max keyframe_map faiss_id {max(self.keyframe_map)}"
                     )
 
-                self.spatial_patches = patches
+                if patches.nbytes <= 256 * 1024 * 1024:
+                    self.spatial_patches = np.ascontiguousarray(patches, dtype=np.float16)
+                else:
+                    self.spatial_patches = patches
                 self._channel_mismatches.pop("spatial_patches", None)
                 loaded["spatial_patches"] = True
             except self._ArtifactMismatchError as exc:
@@ -1845,7 +2013,7 @@ class UnifiedMultimodalSearchPipeline:
             self._clip_index_emb_id = None
             self._clip_index_emb_shape = None
             self._clip_index_map_state = None
-            return self._snapshot_clip_token
+        return self._snapshot_clip_token
 
     def publish_snapshot(
         self,
@@ -1878,11 +2046,24 @@ class UnifiedMultimodalSearchPipeline:
                 self.video_durations = video_durations
             if video_objects is not None:
                 self.video_objects = video_objects
+                self._rebuild_dedup_video_objects()
                 if detector_covered_videos is None and self._initial_detector_covered_videos is None:
                     self.detector_covered_videos.update(str(v) for v in video_objects.keys())
             if detector_covered_videos is not None:
                 self.detector_covered_videos = {str(v) for v in detector_covered_videos}
             return self.invalidate_clip_branch_index()
+
+    def _rebuild_dedup_video_objects(self) -> None:
+        """Precompute deduplicated sorted frame objects and PTS arrays per video."""
+        dedup_objs: dict[str, list[dict[str, Any]]] = {}
+        dedup_pts: dict[str, list[float]] = {}
+        for vid, objs in self.video_objects.items():
+            cleaned = deduplicate_and_filter_frame_objects(objs)
+            cleaned.sort(key=lambda x: float(x.get("pts_sec", 0.0)))
+            dedup_objs[vid] = cleaned
+            dedup_pts[vid] = [float(o.get("pts_sec", 0.0)) for o in cleaned]
+        self._dedup_video_objects = dedup_objs
+        self._dedup_video_obj_pts = dedup_pts
 
     def _ensure_clip_branch_index(self) -> ClipBranchIndex | None:
         """Lazily build and cache the SigLIP 2 frame+clip index for the active snapshot."""
@@ -1905,6 +2086,18 @@ class UnifiedMultimodalSearchPipeline:
 
             emb_id = id(emb_source)
             emb_shape = tuple(emb_mat.shape)
+            if (
+                self._clip_branch_index is not None
+                and self._clip_index_built_token == self._snapshot_clip_token
+                and self._clip_index_emb_id == emb_id
+                and self._clip_index_emb_shape == emb_shape
+                and self._clip_index_map_state is not None
+                and self._clip_index_map_state[0] == len(self.video_keyframes)
+                and self._clip_index_map_state[2] == len(self.video_kf_fids)
+                and self._clip_index_map_state[3] == len(self.keyframe_map)
+            ):
+                return self._clip_branch_index
+
             map_state = (
                 len(self.video_keyframes),
                 sum(len(v) for v in self.video_keyframes.values()),
@@ -1949,6 +2142,7 @@ class UnifiedMultimodalSearchPipeline:
         cand_moments: list[RankedMoment],
         primary_q_768: np.ndarray | None,
         filters: dict[str, Any] | None,
+        precomputed_frame_dots: np.ndarray | None = None,
     ) -> tuple[list[RankedMoment], ClipBranchScoreResult | None, dict[str, Any]]:
         """Promote top Frame+Clip consensus candidate when both ranks agree within safe margin."""
         pre_top_k = [
@@ -1975,6 +2169,21 @@ class UnifiedMultimodalSearchPipeline:
         if len(cand_moments) < 2 or primary_q_768 is None:
             base_diag["reason"] = "insufficient_candidates_or_query"
             return cand_moments, None, base_diag
+        if not self.enable_clip_branch:
+            top1_m: RankedMoment | None = None
+            top2_sc = -float("inf")
+            for m_cur in cand_moments:
+                sc_cur = float(m_cur.ranking_score)
+                if top1_m is None or sc_cur > float(top1_m.ranking_score) or (sc_cur == float(top1_m.ranking_score) and str(m_cur.video_id) < str(top1_m.video_id)):
+                    if top1_m is not None:
+                        top2_sc = max(top2_sc, float(top1_m.ranking_score))
+                    top1_m = m_cur
+                elif sc_cur > top2_sc:
+                    top2_sc = sc_cur
+            if top1_m is not None and top2_sc > -float("inf") and (float(top1_m.ranking_score) - top2_sc) > 0.045:
+                base_diag["reason"] = "gate_not_met"
+                return cand_moments, None, base_diag
+
         q_arr = np.asarray(primary_q_768, dtype=np.float32).reshape(-1)
         if q_arr.size == 0 or not np.isfinite(q_arr).all() or float(np.linalg.norm(q_arr)) <= 1e-8:
             base_diag["reason"] = "invalid_query_norm"
@@ -1985,17 +2194,25 @@ class UnifiedMultimodalSearchPipeline:
             base_diag["reason"] = "small_or_missing_gallery"
             return cand_moments, None, base_diag
 
-        valid_gallery = [vid for vid in clip_idx.video_ids if self._video_passes_filters(vid, filters)]
-        base_diag["valid_gallery_count"] = len(valid_gallery)
-        if len(valid_gallery) < 5:
+        if filters:
+            valid_gallery: list[str] | None = [vid for vid in clip_idx.video_ids if self._video_passes_filters(vid, filters)]
+            gallery_count = len(valid_gallery)
+        else:
+            valid_gallery = None
+            gallery_count = len(clip_idx.video_ids)
+        base_diag["valid_gallery_count"] = gallery_count
+        if gallery_count < 5:
             base_diag["reason"] = "filtered_gallery_too_small"
             return cand_moments, None, base_diag
 
+        a5_top1_hint = base_diag["a5_top1_video_id"]
         score_res = score_clip_branch(
             clip_idx,
             q_arr,
             valid_video_ids=valid_gallery,
             window_size=self.clip_window_size,
+            precomputed_frame_dots=precomputed_frame_dots,
+            consensus_only_a5_vid=(a5_top1_hint if (not self.enable_clip_branch and not filters) else None),
         )
         if not score_res.branch_order:
             base_diag["reason"] = "empty_branch_order"
@@ -2402,6 +2619,47 @@ class UnifiedMultimodalSearchPipeline:
             logger.warning("E5 query encoding failed: %s", exc, exc_info=True)
             return None
 
+    def _token_lexical_idf(self, token: str) -> float:
+        """Compute normalized corpus IDF multiplier in [0.35, 1.65] for an OCR/ASR token."""
+        if self._total_lexical_docs <= 1:
+            return 1.0
+        t_low = token.lower()
+        if self._token_idf_cache:
+            return self._token_idf_cache.get(t_low, self._default_token_idf)
+        df = int(self._lexical_doc_freq.get(t_low, 0))
+        raw_idf = math.log((1.0 + float(self._total_lexical_docs)) / (1.0 + float(df))) + 1.0
+        return float(min(1.65, max(0.35, raw_idf / 2.5)))
+
+    def _compute_lexical_quality(
+        self,
+        branch: str,
+        video_id: str,
+        ts_key: Any,
+        matched_text: str,
+        query_tokens: set[str],
+    ) -> tuple[float, float]:
+        """Return (reliability_score, mean_idf) from calibrated confidence, IDF & specificity."""
+        if branch == "ocr":
+            raw_conf = float(self.ocr_conf_lookup.get((video_id, int(ts_key)), 0.75))
+        else:
+            st_i, et_i = ts_key
+            raw_conf = float(self.asr_conf_lookup.get((video_id, int(st_i), int(et_i)), 0.70))
+
+        matched_toks = set(_LEX_TOK_RE.findall(matched_text.lower())) if matched_text else set()
+        overlap = (query_tokens & matched_toks) if query_tokens else matched_toks
+        if not overlap:
+            overlap = matched_toks
+        if overlap:
+            idfs = [self._token_lexical_idf(tok) for tok in overlap]
+            mean_idf = float(sum(idfs) / len(idfs))
+            avg_len = float(sum(len(tok) for tok in overlap) / len(overlap))
+            len_spec = 0.65 + 0.35 * min(1.0, avg_len / 5.0)
+        else:
+            mean_idf = 1.0
+            len_spec = 0.85
+        reliability = float(min(1.5, max(0.15, raw_conf * mean_idf * len_spec)))
+        return reliability, mean_idf
+
     @staticmethod
     def _search_e5_faiss_index(
         index: faiss.Index | None,
@@ -2476,6 +2734,17 @@ class UnifiedMultimodalSearchPipeline:
         video_ids = filters.get("video_ids")
         if video_ids is not None and vid not in set(video_ids):
             return False
+        dataset_filter = filters.get("dataset")
+        if dataset_filter:
+            allowed_ds = (
+                {str(d).strip().lower() for d in dataset_filter if str(d).strip()}
+                if isinstance(dataset_filter, (list, tuple, set))
+                else {str(dataset_filter).strip().lower()}
+            )
+            allowed_ds.discard("")
+            if allowed_ds and "all" not in allowed_ds:
+                if infer_video_dataset_family(vid) not in allowed_ds:
+                    return False
         dataset_prefix = filters.get("dataset_prefix")
         if dataset_prefix:
             if isinstance(dataset_prefix, (list, tuple, set)):
@@ -2504,12 +2773,22 @@ class UnifiedMultimodalSearchPipeline:
         """Build a boolean mask over FAISS frame IDs passing keyframe and filter checks."""
         if n_total <= 0:
             return np.zeros(0, dtype=bool)
-        mask = np.zeros(n_total, dtype=bool)
-        if not filters:
-            for fid in self.keyframe_map:
-                if 0 <= fid < n_total:
-                    mask[fid] = True
+        if n_total >= 128 and not filters:
+            sig = (int(n_total), len(self.keyframe_map))
+            if self._unfiltered_stage2_mask is not None and self._unfiltered_stage2_sig == sig:
+                return self._unfiltered_stage2_mask
+            mask = np.zeros(n_total, dtype=bool)
+            if self.keyframe_map:
+                fids_arr = np.fromiter(
+                    (int(fid) for fid in self.keyframe_map if 0 <= int(fid) < n_total),
+                    dtype=np.int64,
+                )
+                if fids_arr.size > 0:
+                    mask[fids_arr] = True
+            self._unfiltered_stage2_mask = mask
+            self._unfiltered_stage2_sig = sig
             return mask
+        mask = np.zeros(n_total, dtype=bool)
         vid_pass_cache: dict[str, bool] = {}
         for fid, info in self.keyframe_map.items():
             if not (0 <= fid < n_total):
@@ -2916,6 +3195,11 @@ class UnifiedMultimodalSearchPipeline:
         video_anchor_windows: dict[str, tuple[float, float]] = {}
         video_min_clause_sim: dict[str, float] = {}
         stage2_retrieval_path = "uninitialized"
+        active_sims_768_all: np.ndarray | None = None
+        active_sims_864_all: np.ndarray | None = None
+        active_sims_comb_all: np.ndarray | None = None
+        clause_sims_all: np.ndarray | None = None
+        self._active_query_sims = None
         video_proposal_stats: dict[str, Any] = {
             "mode": self.video_proposal_mode,
             "selected_videos_count": 0,
@@ -2937,14 +3221,19 @@ class UnifiedMultimodalSearchPipeline:
                 and len(self.all_embeddings) == len(self.augmented_embeddings)
                 and len(self.augmented_embeddings) > 0
             )
-            # Vectorized OpenBLAS GEMM across all query clauses (blending 768d + 864d when aligned)
-            all_sims_864 = (all_864_vecs @ self.augmented_embeddings.T).astype(np.float32)
+            # Vectorized OpenBLAS GEMM across all query clauses with C-contiguous corpus layout
+            all_sims_864 = (self.augmented_embeddings @ np.ascontiguousarray(all_864_vecs.T, dtype=np.float32)).T
+            active_sims_864_all = all_sims_864[0]
             if has_matched_768:
                 all_768_vecs = np.vstack([primary_q_768] + [sv.reshape(1, -1) for sv in sub_vecs_768])
-                all_sims_768 = (all_768_vecs @ self.all_embeddings.T).astype(np.float32)
+                all_sims_768 = (self.all_embeddings @ np.ascontiguousarray(all_768_vecs.T, dtype=np.float32)).T
+                active_sims_768_all = all_sims_768[0]
                 all_sims_mat = (0.70 * all_sims_768 + 0.30 * all_sims_864).astype(np.float32)
+                active_sims_comb_all = all_sims_mat[0]
             else:
                 all_sims_mat = all_sims_864
+                active_sims_comb_all = active_sims_864_all
+            clause_sims_all = all_sims_mat[1:] if len(all_sims_mat) > 1 else None
             valid_mask = self._build_stage2_valid_mask(all_sims_mat.shape[1], filters)
             k_part = min(search_depth, int(np.count_nonzero(valid_mask)))
             stage2_retrieval_path = "multiclause_exact_numpy"
@@ -3063,6 +3352,7 @@ class UnifiedMultimodalSearchPipeline:
                             cand_timestamps=cand_ts,
                             clause_vectors=sub_q_864,
                             max_transition_sec=35.0,
+                            precomputed_clause_curves=clause_frame_sims,
                         )
                     if len(sub_clauses) >= 2 and clause_frame_sims.shape[0] >= 2:
                         t_sot_score = temporal_sinkhorn_alignment_score(
@@ -3114,6 +3404,7 @@ class UnifiedMultimodalSearchPipeline:
         elif ablation_config == "A0":
             if self.all_embeddings is not None and len(self.all_embeddings) > 0:
                 sims_768_all = (self.all_embeddings @ primary_q_768.reshape(-1)).astype(np.float32)
+                active_sims_768_all = sims_768_all
                 valid_mask = self._build_stage2_valid_mask(len(sims_768_all), filters)
                 stage2_retrieval_path = "a0_exact_numpy"
                 if self.video_proposal_mode != "frame_topk":
@@ -3162,10 +3453,13 @@ class UnifiedMultimodalSearchPipeline:
             if has_matched_768_single:
                 sims_768_all = (self.all_embeddings @ primary_q_768.reshape(-1)).astype(np.float32)
                 sims_864_all = (self.augmented_embeddings @ primary_q_864_mat.reshape(-1)).astype(np.float32)
+                active_sims_768_all = sims_768_all
+                active_sims_864_all = sims_864_all
                 valid_mask = self._build_stage2_valid_mask(len(sims_864_all), filters)
                 if self.stage2_selection_mode == "exact":
                     stage2_retrieval_path = "exact_blended_numpy"
                     sims_comb_all = (w_768 * sims_768_all + w_864 * sims_864_all).astype(np.float32)
+                    active_sims_comb_all = sims_comb_all
                     if self.video_proposal_mode != "frame_topk":
                         vis_hits, video_proposal_stats = self._build_video_level_visual_proposals(
                             sims_comb_all, valid_mask, primary_q_768, filters
@@ -3263,7 +3557,6 @@ class UnifiedMultimodalSearchPipeline:
                     else:
                         vis_hits = scored_visual[:search_depth]
 
-        has_computer_term = bool(re.search(r'\b(?:computer|desktop|pc)\b', q_low))
         for fid, raw_score in vis_hits:
             info = self.keyframe_map[fid]
             vid = info["video_id"]
@@ -3300,10 +3593,6 @@ class UnifiedMultimodalSearchPipeline:
                         detector_ran=detector_ran,
                     )
                 final_score += 0.08 * obj_boost
-                if has_computer_term:
-                    vid_classes = self.video_classes_set.get(vid)
-                    if vid_classes and "laptop" in vid_classes and ("keyboard" in vid_classes or "mouse" in vid_classes):
-                        final_score += 0.0045
 
             visual_candidates.append({
                 "video_id": vid,
@@ -3315,7 +3604,39 @@ class UnifiedMultimodalSearchPipeline:
                 "obj_boost": float(obj_boost),
             })
 
+        self._active_query_sims = {
+            "q_864": primary_q_864,
+            "q_768": primary_q_768,
+            "sims_768_all": active_sims_768_all,
+            "sims_864_all": active_sims_864_all,
+            "sims_comb_all": active_sims_comb_all,
+        }
         t_faiss_end = time.perf_counter()
+
+        # =========================================================================
+        # Stage 2b (Step D): Parallel VideoPrism-LvT-B Clip + Sub-clip Retrieval
+        # =========================================================================
+        vp_retrieval_res: VideoPrismRetrievalResult | None = None
+        vp_rank_map: dict[str, int] = {}
+        if (
+            self.enable_videoprism
+            and self.videoprism_retriever is not None
+            and self.videoprism_retriever.available
+            and ablation_config == "A5"
+        ):
+            allowed_vids_vp: set[str] | None = None
+            if filters:
+                allowed_vids_vp = {
+                    v for v in self.videoprism_retriever.video_ids if self._video_passes_filters(v, filters)
+                }
+            vp_retrieval_res = self.videoprism_retriever.retrieve_parallel(
+                query=query,
+                clauses=sub_clauses,
+                top_n=self.videoprism_top_n,
+                allowed_video_ids=allowed_vids_vp,
+            )
+            if vp_retrieval_res.status == "ok":
+                vp_rank_map = {vid: r for r, (vid, _) in enumerate(vp_retrieval_res.ranked_videos, 1)}
 
         # =========================================================================
         # Stage 3: Specificity-Sorted Lexical FTS5 Search (B7, C2 persistent SQLite)
@@ -3328,6 +3649,7 @@ class UnifiedMultimodalSearchPipeline:
         else:
             fts_ocr_query, fts_asr_query = fts_query, fts_query
 
+        lex_query_tokens = high_spec_tokens | low_spec_tokens
         if fts_query and self.db_conn is not None and ablation_config not in ("A0", "A1", "A2"):
             try:
                 cursor = self.db_conn.cursor()
@@ -3337,14 +3659,20 @@ class UnifiedMultimodalSearchPipeline:
                         (fts_ocr_query,),
                     )
                     for vid, ts_ms, rank, norm_text in cursor.fetchall():
-                        if filters and not self._video_passes_filters(str(vid), filters):
+                        vid_s = str(vid)
+                        if filters and not self._video_passes_filters(vid_s, filters):
                             continue
+                        lex_q, idf_mean = self._compute_lexical_quality(
+                            "ocr", vid_s, int(ts_ms), str(norm_text or ""), lex_query_tokens
+                        )
                         ocr_candidates.append({
-                            "video_id": vid,
+                            "video_id": vid_s,
                             "timestamp_sec": ts_ms / 1000.0,
                             "score": -float(rank),
                             "branch": "ocr",
                             "matched_text": norm_text or "",
+                            "lex_quality": lex_q,
+                            "matched_idf_mean": idf_mean,
                         })
 
                 if fts_asr_query:
@@ -3353,16 +3681,22 @@ class UnifiedMultimodalSearchPipeline:
                         (fts_asr_query,),
                     )
                     for vid, st_ms, et_ms, rank, norm_text in cursor.fetchall():
-                        if filters and not self._video_passes_filters(str(vid), filters):
+                        vid_s = str(vid)
+                        if filters and not self._video_passes_filters(vid_s, filters):
                             continue
+                        lex_q, idf_mean = self._compute_lexical_quality(
+                            "asr", vid_s, (int(st_ms), int(et_ms)), str(norm_text or ""), lex_query_tokens
+                        )
                         asr_candidates.append({
-                            "video_id": vid,
+                            "video_id": vid_s,
                             "start_sec": st_ms / 1000.0,
                             "end_sec": et_ms / 1000.0,
                             "timestamp_sec": (st_ms + et_ms) / 2000.0,
                             "score": -float(rank),
                             "branch": "asr",
                             "matched_text": norm_text or "",
+                            "lex_quality": lex_q,
+                            "matched_idf_mean": idf_mean,
                         })
             except sqlite3.Error as exc:
                 raise RuntimeError("Lexical retrieval failed") from exc
@@ -3624,23 +3958,32 @@ class UnifiedMultimodalSearchPipeline:
         for rank, c in enumerate(visual_candidates, 1):
             rrf_val = 1.0 / (k_rrf + rank)
             rrf_vis_cap = float(c.get("rrf_vis_caption", 0.0))
+            vid_c = str(c["video_id"])
+            vp_r = vp_rank_map.get(vid_c)
+            rrf_vp = (1.0 / (k_rrf + vp_r)) if vp_r is not None else 0.0
             prov = set(c.get("branch_provenance") or {c.get("branch", "visual")})
+            if vp_r is not None and vp_r <= self.videoprism_union_k:
+                prov.add("videoprism")
             cl_obj = {
-                "video_id": c["video_id"],
+                "video_id": vid_c,
                 "rep_timestamp": c["timestamp_sec"],
                 "visual_sim": c["score"],
                 "faiss_id": c.get("faiss_id"),
                 "obj_boost": float(c.get("obj_boost", 0.0)),
                 "rrf_vis": rrf_val,
+                "rrf_vp": rrf_vp,
+                "vp_score": float(vp_retrieval_res.combined_scores.get(vid_c, 0.0)) if vp_retrieval_res else 0.0,
                 "rrf_caption": rrf_vis_cap,
                 "rrf_vis_caption": rrf_vis_cap,
                 "ocr_rrfs": [],
                 "asr_rrfs": [],
+                "lex_qualities": [],
+                "matched_idfs": [],
                 "branches": prov,
                 "matched_texts": [],  # B2: Per-cluster matched texts
             }
             clusters.append(cl_obj)
-            clusters_by_video[c["video_id"]].append(cl_obj)
+            clusters_by_video[vid_c].append(cl_obj)
 
         # 4a-cap. Initialize Caption-Only Seed Clusters (strictly rrf_vis = 0.0, never tagged "visual")
         caption_only_candidates.sort(
@@ -3648,33 +3991,91 @@ class UnifiedMultimodalSearchPipeline:
         )
         for c in caption_only_candidates:
             rrf_vis_cap = float(c.get("rrf_vis_caption", 0.0))
+            vid_c = str(c["video_id"])
+            vp_r = vp_rank_map.get(vid_c)
+            rrf_vp = (1.0 / (k_rrf + vp_r)) if vp_r is not None else 0.0
             prov = set(c.get("branch_provenance") or {"caption"})
             prov.discard("visual")
             if not prov:
                 prov = {"caption"}
             cl_obj = {
-                "video_id": c["video_id"],
+                "video_id": vid_c,
                 "rep_timestamp": c["timestamp_sec"],
                 "visual_sim": c["score"],
                 "faiss_id": c.get("faiss_id"),
                 "obj_boost": float(c.get("obj_boost", 0.0)),
                 "rrf_vis": 0.0,
+                "rrf_vp": rrf_vp,
+                "vp_score": float(vp_retrieval_res.combined_scores.get(vid_c, 0.0)) if vp_retrieval_res else 0.0,
                 "rrf_caption": rrf_vis_cap,
                 "rrf_vis_caption": rrf_vis_cap,
                 "ocr_rrfs": [],
                 "asr_rrfs": [],
+                "lex_qualities": [],
+                "matched_idfs": [],
                 "branches": prov,
                 "matched_texts": [],
             }
             clusters.append(cl_obj)
-            clusters_by_video[c["video_id"]].append(cl_obj)
+            clusters_by_video[vid_c].append(cl_obj)
 
-        # 4b. Integrate OCR Candidates
+        # 4a-vp (Step F). Candidate Union from parallel VideoPrism clip/sub-clip branch
+        if vp_retrieval_res is not None and vp_retrieval_res.status == "ok" and self.videoprism_union_k > 0:
+            for vp_rank, (vp_vid, vp_sc) in enumerate(vp_retrieval_res.ranked_videos[: self.videoprism_union_k], 1):
+                if vp_vid in clusters_by_video:
+                    continue
+                best_win = vp_retrieval_res.best_subclip_windows.get(vp_vid)
+                if best_win is not None:
+                    rep_t_vp = 0.5 * (float(best_win[0]) + float(best_win[1]))
+                    v_sim_vp = self.lookup_true_visual_sim(
+                        vp_vid,
+                        rep_t_vp,
+                        start_sec=float(best_win[0]),
+                        end_sec=float(best_win[1]),
+                        primary_q_864=primary_q_864,
+                        primary_q_768=primary_q_768,
+                        curve_cache=video_curve_cache,
+                    )
+                else:
+                    kf_list_vp = self.video_keyframes.get(vp_vid, [])
+                    rep_t_vp = float(kf_list_vp[len(kf_list_vp) // 2]["pts_time"]) if kf_list_vp else 0.0
+                    v_sim_vp = self.lookup_true_visual_sim(
+                        vp_vid,
+                        rep_t_vp,
+                        primary_q_864=primary_q_864,
+                        primary_q_768=primary_q_768,
+                        curve_cache=video_curve_cache,
+                    )
+                cl_obj = {
+                    "video_id": vp_vid,
+                    "rep_timestamp": rep_t_vp,
+                    "visual_sim": float(v_sim_vp),
+                    "faiss_id": None,
+                    "obj_boost": 0.0,
+                    "rrf_vis": 0.0,
+                    "rrf_vp": 1.0 / (k_rrf + vp_rank),
+                    "vp_score": float(vp_sc),
+                    "rrf_caption": 0.0,
+                    "rrf_vis_caption": 0.0,
+                    "ocr_rrfs": [],
+                    "asr_rrfs": [],
+                    "lex_qualities": [],
+                    "matched_idfs": [],
+                    "branches": {"videoprism"},
+                    "matched_texts": [],
+                }
+                clusters.append(cl_obj)
+                clusters_by_video[vp_vid].append(cl_obj)
+
+        # 4b. Integrate OCR Candidates (with confidence & IDF reliability weighting)
         for rank, c in enumerate(ocr_candidates, 1):
-            rrf_val = 1.0 / (k_rrf + rank)
+            lex_q = float(c.get("lex_quality", 1.0))
+            idf_m = float(c.get("matched_idf_mean", 1.0))
+            rrf_val = (1.0 / (k_rrf + rank)) * (0.65 + 0.35 * min(1.2, lex_q))
+            vid_c = str(c["video_id"])
             best_cl = None
             best_diff = float("inf")
-            for cl in clusters_by_video.get(c["video_id"], ()):
+            for cl in clusters_by_video.get(vid_c, ()):
                 diff = abs(cl["rep_timestamp"] - c["timestamp_sec"])
                 if diff <= 3.0 and diff < best_diff:
                     best_diff = diff
@@ -3682,44 +4083,56 @@ class UnifiedMultimodalSearchPipeline:
 
             if best_cl is not None:
                 best_cl["ocr_rrfs"].append(rrf_val)
+                best_cl.setdefault("lex_qualities", []).append(lex_q)
+                best_cl.setdefault("matched_idfs", []).append(idf_m)
                 best_cl["branches"].add("ocr")
                 best_cl["fts_score"] = max(best_cl.get("fts_score", 0.0), c.get("score", 0.0))
                 if c.get("matched_text"):
                     best_cl["matched_texts"].append(c["matched_text"])
             else:
                 v_sim = self.lookup_true_visual_sim(
-                    c["video_id"],
+                    vid_c,
                     c["timestamp_sec"],
                     primary_q_864=primary_q_864,
                     primary_q_768=primary_q_768,
                     curve_cache=video_curve_cache,
                 )
+                vp_r = vp_rank_map.get(vid_c)
                 cl_obj = {
-                    "video_id": c["video_id"],
+                    "video_id": vid_c,
                     "rep_timestamp": c["timestamp_sec"],
                     "visual_sim": v_sim,
                     "rrf_vis": 0.0,
+                    "rrf_vp": (1.0 / (k_rrf + vp_r)) if vp_r is not None else 0.0,
+                    "vp_score": float(vp_retrieval_res.combined_scores.get(vid_c, 0.0)) if vp_retrieval_res else 0.0,
                     "rrf_caption": 0.0,
                     "rrf_vis_caption": 0.0,
                     "ocr_rrfs": [rrf_val],
                     "asr_rrfs": [],
+                    "lex_qualities": [lex_q],
+                    "matched_idfs": [idf_m],
                     "branches": {"ocr"},
                     "fts_score": c.get("score", 0.0),
                     "matched_texts": [c["matched_text"]] if c.get("matched_text") else [],
                 }
                 clusters.append(cl_obj)
-                clusters_by_video[c["video_id"]].append(cl_obj)
+                clusters_by_video[vid_c].append(cl_obj)
 
-        # 4c. Integrate ASR Candidates
+        # 4c. Integrate ASR Candidates (with calibrated confidence & IDF weighting)
         for rank, c in enumerate(asr_candidates, 1):
-            rrf_val = 1.0 / (k_rrf + rank)
+            lex_q = float(c.get("lex_quality", 1.0))
+            idf_m = float(c.get("matched_idf_mean", 1.0))
+            rrf_val = (1.0 / (k_rrf + rank)) * (0.65 + 0.35 * min(1.2, lex_q))
+            vid_c = str(c["video_id"])
             st = c.get("start_sec", c["timestamp_sec"] - 1.0)
             et = c.get("end_sec", c["timestamp_sec"] + 1.0)
             merged = False
-            for cl in clusters_by_video.get(c["video_id"], ()):
+            for cl in clusters_by_video.get(vid_c, ()):
                 tol = 8.0 if ("ocr" in cl["branches"] and "visual" not in cl["branches"]) else 4.5
                 if (st - tol) <= cl["rep_timestamp"] <= (et + tol):
                     cl["asr_rrfs"].append(rrf_val)
+                    cl.setdefault("lex_qualities", []).append(lex_q)
+                    cl.setdefault("matched_idfs", []).append(idf_m)
                     cl["branches"].add("asr")
                     cl["fts_score"] = max(cl.get("fts_score", 0.0), c.get("score", 0.0))
                     if c.get("matched_text"):
@@ -3727,7 +4140,7 @@ class UnifiedMultimodalSearchPipeline:
                     merged = True
             if not merged:
                 v_sim = self.lookup_true_visual_sim(
-                    c["video_id"],
+                    vid_c,
                     c["timestamp_sec"],
                     start_sec=st,
                     end_sec=et,
@@ -3735,26 +4148,31 @@ class UnifiedMultimodalSearchPipeline:
                     primary_q_768=primary_q_768,
                     curve_cache=video_curve_cache,
                 )
+                vp_r = vp_rank_map.get(vid_c)
                 cl_obj = {
-                    "video_id": c["video_id"],
+                    "video_id": vid_c,
                     "rep_timestamp": c["timestamp_sec"],
                     "visual_sim": v_sim,
                     "rrf_vis": 0.0,
+                    "rrf_vp": (1.0 / (k_rrf + vp_r)) if vp_r is not None else 0.0,
+                    "vp_score": float(vp_retrieval_res.combined_scores.get(vid_c, 0.0)) if vp_retrieval_res else 0.0,
                     "rrf_caption": 0.0,
                     "rrf_vis_caption": 0.0,
                     "ocr_rrfs": [],
                     "asr_rrfs": [rrf_val],
+                    "lex_qualities": [lex_q],
+                    "matched_idfs": [idf_m],
                     "branches": {"asr"},
                     "fts_score": c.get("score", 0.0),
                     "matched_texts": [c["matched_text"]] if c.get("matched_text") else [],
                 }
                 clusters.append(cl_obj)
-                clusters_by_video[c["video_id"]].append(cl_obj)
+                clusters_by_video[vid_c].append(cl_obj)
 
         # B3: Order-invariant RRF computation for each cluster
         for cl in clusters:
-            cl["rrf_ocr"] = compute_order_invariant_rrf(cl["ocr_rrfs"])
-            cl["rrf_asr"] = compute_order_invariant_rrf(cl["asr_rrfs"])
+            cl["rrf_ocr"] = compute_order_invariant_rrf(cl["ocr_rrfs"]) if cl["ocr_rrfs"] else 0.0
+            cl["rrf_asr"] = compute_order_invariant_rrf(cl["asr_rrfs"]) if cl["asr_rrfs"] else 0.0
 
         # =========================================================================
         # Stage 5: Gated Lexical-Visual Fusion (B1, B9)
@@ -3772,17 +4190,48 @@ class UnifiedMultimodalSearchPipeline:
             if split_compound_tokens(qp).strip()
         ] if quoted_phrases else []
 
+        _PURE_VIS_SET = {"visual"}
         for cl in clusters:
             v_sim = cl["visual_sim"]
+            rrf_ocr = cl["rrf_ocr"]
+            rrf_asr = cl["rrf_asr"]
+            if rrf_ocr == 0.0 and rrf_asr == 0.0 and cl["branches"] == _PURE_VIS_SET:
+                cl["lex_reliability_score"] = 0.0
+                cl["matched_idf_mean"] = 1.0
+                cl["evidence_status"] = "visual_only"
+                vid_cl = cl["video_id"]
+                per_video_evidence_status[vid_cl] = "visual_only"
+                cl["m_high"] = 0
+                cl["k_high"] = max(1, k_high_len)
+                cl["anchor_match"] = 0.0
+                cl["num_consist"] = 1.0
+                rrf_primary_fast = float(cl["rrf_vis"]) + 0.85 * float(cl.get("rrf_vp", 0.0))
+                score_fast = v_sim + 2.5 * rrf_primary_fast
+                vid_ltr_eligible.add(vid_cl)
+                rep_t_fast = float(cl["rep_timestamp"])
+                by_video_raw[vid_cl].append((
+                    float(score_fast),
+                    max(0.0, rep_t_fast - 1.0),
+                    rep_t_fast + 1.0,
+                    rep_t_fast,
+                    "visual",
+                ))
+                continue
+
             delta_vis = max(0.0, s_vis_max - v_sim)
 
             # Visual compatibility gate
             gamma_vis = float(math.exp(-max(0.0, delta_vis - 0.012) * 35.0))
-
-            rrf_ocr = cl["rrf_ocr"]
-            rrf_asr = cl["rrf_asr"]
-            base_lex = max(1.6 * rrf_ocr, 1.4 * rrf_asr) + 0.35 * min(1.6 * rrf_ocr, 1.4 * rrf_asr)
-            is_visually_anchored = ("visual" in cl["branches"])
+            lex_qs = cl.get("lex_qualities") or []
+            lex_idfs = cl.get("matched_idfs") or []
+            cl_lex_q = max(lex_qs) if lex_qs else 0.0
+            cl_idf_mean = (sum(lex_idfs) / len(lex_idfs)) if lex_idfs else 1.0
+            cl["lex_reliability_score"] = float(cl_lex_q)
+            cl["matched_idf_mean"] = float(cl_idf_mean)
+            raw_base_lex = max(1.6 * rrf_ocr, 1.4 * rrf_asr) + 0.35 * min(1.6 * rrf_ocr, 1.4 * rrf_asr)
+            lex_rel_scale = (0.75 + 0.25 * min(1.4, cl_lex_q)) if cl_lex_q > 0.0 else 1.0
+            base_lex = raw_base_lex * lex_rel_scale
+            is_visually_anchored = ("visual" in cl["branches"]) or ("videoprism" in cl["branches"] and v_sim >= s_vis_max - 0.04)
             has_unmatched_query_number = False
 
             if base_lex <= 0.0:
@@ -3797,7 +4246,7 @@ class UnifiedMultimodalSearchPipeline:
                 # B2: Strictly use per-cluster matched texts!
                 texts_combined = " ".join(cl.get("matched_texts", []))
                 clean_cand_text = split_compound_tokens(texts_combined).lower()
-                cand_words = set(re.findall(r'\b[a-z0-9à-ỹ]+\b', clean_cand_text))
+                cand_words = set(_WORD_TOK_RE.findall(clean_cand_text))
 
                 has_quoted_match = any(cqp in clean_cand_text for cqp in precleaned_qps)
 
@@ -3922,6 +4371,18 @@ class UnifiedMultimodalSearchPipeline:
             elif base_lex > 0.0 and lex_boost > 0.0 and purely_visual_intent and single_common_only:
                 lex_boost *= 0.85
 
+            # P2 Visual Consensus Guardrail: dampen weak low-IDF single-token matches with poor visual agreement
+            if (
+                base_lex > 0.0
+                and lex_boost > 0.0
+                and not has_quoted_match
+                and not has_proper_noun_match
+                and m_high <= 1
+                and cl_idf_mean < 0.65
+                and v_sim < (s_vis_max - 0.045)
+            ):
+                lex_boost *= 0.35
+
             if has_quoted_match:
                 per_video_exact_span[cl["video_id"]] = True
 
@@ -3954,7 +4415,8 @@ class UnifiedMultimodalSearchPipeline:
             cl["num_consist"] = -1.0 if (not is_visually_anchored and has_unmatched_query_number) else 1.0
 
             rrf_cap_term = 0.5 * gamma_vis * float(cl.get("rrf_caption", 0.0))
-            rrf_vis_eff = float(cl["rrf_vis"]) + rrf_cap_term
+            rrf_vp_term = 0.85 * float(cl.get("rrf_vp", 0.0))
+            rrf_vis_eff = float(cl["rrf_vis"]) + rrf_vp_term + rrf_cap_term
             if pure_visual_suppression:
                 rrf_primary = rrf_vis_eff
             elif is_visually_anchored or has_quoted_match or ((has_proper_noun_match or fts_sc >= 22.0) and can_enter_case_a):
@@ -4006,26 +4468,66 @@ class UnifiedMultimodalSearchPipeline:
                 vid_best_cluster[vid_c] = cl
 
         sp_enabled, _ = self._is_spatial_patches_enabled(ablation_config)
+        sa_query_ctx = (
+            self.spatial_action_verifier.prepare_query_context(
+                query,
+                sub_clauses,
+                query_graph=(routing_plan.query_graph if routing_plan is not None else None),
+            )
+            if ablation_config not in ("A0", "A1", "A2", "A3")
+            else None
+        )
         late_interaction_scored_candidates = 0
         cand_moments: list[RankedMoment] = []
         cand_ltr_features: dict[str, dict[str, Any]] = {}
+        sa_has_obj_or_motion = sa_query_ctx is not None and bool(
+            sa_query_ctx.get("obj_reqs")
+            or sa_query_ctx.get("spatial_rels")
+            or sa_query_ctx.get("has_motion_cue")
+        )
+        sa_has_order = sa_query_ctx is not None and bool(
+            sa_query_ctx.get("has_order_cue")
+            or len(sub_clauses) >= 2
+        )
+        if len(by_video_raw) <= 25:
+            top_heavy_vids = set(by_video_raw.keys())
+        else:
+            top_heavy_vids = {
+                v
+                for v, _ in sorted(
+                    ((v_k, max(x[0] for x in v_items)) for v_k, v_items in by_video_raw.items()),
+                    key=lambda kv: (-kv[1], kv[0]),
+                )[:25]
+            }
         for vid, vid_items in by_video_raw.items():
             if not self._video_passes_filters(vid, filters):
                 continue
-            vid_items.sort(key=lambda x: x[0], reverse=True)
-            scores = [x[0] for x in vid_items]
-            m_count = len(scores)
-            s_max = scores[0]
+            m_count = len(vid_items)
+            if m_count > 1:
+                vid_items.sort(key=lambda x: x[0], reverse=True)
+            s_max = vid_items[0][0]
             n_kf = len(self.video_keyframes.get(vid, []))
 
-            top3_mean = sum(scores[:min(m_count, 3)]) / min(m_count, 3)
-            top5_mean = sum(scores[:min(m_count, 5)]) / min(m_count, 5)
-
-            sorted_by_time = sorted(vid_items, key=lambda x: x[1])
-            adjacent_pairs = 0
-            for i in range(len(sorted_by_time) - 1):
-                if sorted_by_time[i + 1][1] - sorted_by_time[i][2] <= 6.0:
-                    adjacent_pairs += 1
+            if m_count == 1:
+                top3_mean = s_max
+                top5_mean = s_max
+                adjacent_pairs = 0
+                local_window_mean = s_max
+            else:
+                scores = [x[0] for x in vid_items]
+                top3_mean = sum(scores[:min(m_count, 3)]) / min(m_count, 3)
+                top5_mean = sum(scores[:min(m_count, 5)]) / min(m_count, 5)
+                sorted_by_time = sorted(vid_items, key=lambda x: x[1])
+                adjacent_pairs = 0
+                for i in range(len(sorted_by_time) - 1):
+                    if sorted_by_time[i + 1][1] - sorted_by_time[i][2] <= 6.0:
+                        adjacent_pairs += 1
+                best_rep_tmp = vid_items[0][3]
+                local_window_scores = sorted(
+                    (x[0] for x in vid_items if abs(x[3] - best_rep_tmp) <= 3.5),
+                    reverse=True,
+                )[:2]
+                local_window_mean = (sum(local_window_scores) / len(local_window_scores)) if local_window_scores else s_max
 
             effective_s_max = max(0.0, s_max)
             ratio = adjacent_pairs / max(1.0, float(n_kf - 1))
@@ -4034,24 +4536,18 @@ class UnifiedMultimodalSearchPipeline:
                 density_bonus *= 0.50
 
             best_sc, best_st, best_et, best_rep_t, best_branch = vid_items[0]
-            local_window_scores = sorted(
-                (x[0] for x in vid_items if abs(x[3] - best_rep_t) <= 3.5),
-                reverse=True,
-            )[:2]
-            local_window_mean = (sum(local_window_scores) / len(local_window_scores)) if local_window_scores else s_max
 
             # Targeted Single-Frame Outlier Spike Guard (only when m_count == 1 and pure visual)
             tail_adjustment = 0.0
             spike_drop_val = 0.0
             if ablation_config != "A0" and m_count == 1 and n_kf >= 3 and best_branch == "visual":
-                sorted_kf_vis = self._video_sorted_visual_scores(
+                top2_vis = self._video_top2_visual_scores(
                     vid,
                     primary_q_864=primary_q_864,
                     primary_q_768=primary_q_768,
-                    blend_768_864=True,
                 )
-                if len(sorted_kf_vis) >= 2:
-                    kf1, kf2 = float(sorted_kf_vis[0]), float(sorted_kf_vis[1])
+                if top2_vis is not None:
+                    kf1, kf2 = top2_vis
                     spike_drop = kf1 - kf2
                     spike_drop_val = max(0.0, spike_drop)
                     if spike_drop > 0.20:
@@ -4092,63 +4588,186 @@ class UnifiedMultimodalSearchPipeline:
                     + density_bonus
                     + tail_adjustment
                 )
-            all_branches_in_video: set[str] = set()
-            for item in vid_items:
-                b_status = item[4]
-                if b_status and b_status not in ("supported", "partial", "unknown", "contradicted"):
-                    for b in b_status.split("+"):
-                        all_branches_in_video.add(b.strip())
-            branch_attribution = "+".join(sorted(all_branches_in_video)) if all_branches_in_video else "visual"
+            if m_count == 1 and best_branch not in ("supported", "partial", "unknown", "contradicted"):
+                branch_attribution = best_branch if best_branch else "visual"
+            else:
+                all_branches_in_video: set[str] = set()
+                for item in vid_items:
+                    b_status = item[4]
+                    if b_status and b_status not in ("supported", "partial", "unknown", "contradicted"):
+                        for b in b_status.split("+"):
+                            all_branches_in_video.add(b.strip())
+                branch_attribution = "+".join(sorted(all_branches_in_video)) if all_branches_in_video else "visual"
 
             best_cl = vid_best_cluster.get(vid, {})
-            vid_vis_sims = sorted(
-                (float(cl["visual_sim"]) for cl in clusters_by_video.get(vid, ())),
-                reverse=True,
-            )
-            if vid_vis_sims:
-                top3_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 3)]) / min(len(vid_vis_sims), 3)
-                top5_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 5)]) / min(len(vid_vis_sims), 5)
-            else:
-                top3_vis_mean = 0.0
-                top5_vis_mean = 0.0
+            v_clusters = clusters_by_video.get(vid, ())
             best_vis_t = float(best_cl.get("rep_timestamp", best_rep_t))
-            local_vis_scores = sorted(
-                (
-                    float(cl["visual_sim"])
-                    for cl in clusters_by_video.get(vid, ())
-                    if abs(float(cl["rep_timestamp"]) - best_vis_t) <= 3.5
-                ),
-                reverse=True,
-            )[:2]
-            local_vis_coherence = (
-                (sum(local_vis_scores) / len(local_vis_scores))
-                if local_vis_scores
-                else float(best_cl.get("visual_sim", 0.0))
-            )
+            if len(v_clusters) == 1:
+                v_s0 = float(v_clusters[0]["visual_sim"])
+                top3_vis_mean = v_s0
+                top5_vis_mean = v_s0
+                local_vis_coherence = v_s0
+            else:
+                vid_vis_sims = sorted(
+                    (float(cl["visual_sim"]) for cl in v_clusters),
+                    reverse=True,
+                )
+                if vid_vis_sims:
+                    top3_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 3)]) / min(len(vid_vis_sims), 3)
+                    top5_vis_mean = sum(vid_vis_sims[:min(len(vid_vis_sims), 5)]) / min(len(vid_vis_sims), 5)
+                else:
+                    top3_vis_mean = 0.0
+                    top5_vis_mean = 0.0
+                local_vis_scores = sorted(
+                    (
+                        float(cl["visual_sim"])
+                        for cl in v_clusters
+                        if abs(float(cl["rep_timestamp"]) - best_vis_t) <= 3.5
+                    ),
+                    reverse=True,
+                )[:2]
+                local_vis_coherence = (
+                    (sum(local_vis_scores) / len(local_vis_scores))
+                    if local_vis_scores
+                    else float(best_cl.get("visual_sim", 0.0))
+                )
 
             vis_ctx_coherence = float(local_vis_coherence)
             if self.temporal_context_768 is not None and len(self.temporal_context_768) > 0:
                 rep_fid = best_cl.get("faiss_id")
                 if rep_fid is None:
-                    kf_list_v = self.video_keyframes.get(vid, [])
-                    if kf_list_v:
-                        nearest_kf = min(
-                            kf_list_v,
-                            key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_vis_t),
-                        )
-                        rep_fid = int(nearest_kf["faiss_id"])
+                    pts_ctx = self.video_kf_pts.get(vid)
+                    fids_ctx = self._video_kf_fids_arr.get(vid)
+                    if pts_ctx is not None and fids_ctx is not None and len(pts_ctx) == len(fids_ctx) and len(pts_ctx) > 0:
+                        pos_ctx = bisect_left(pts_ctx, best_vis_t)
+                        if pos_ctx == 0:
+                            n_ctx = 0
+                        elif pos_ctx >= len(pts_ctx):
+                            n_ctx = len(pts_ctx) - 1
+                        else:
+                            n_ctx = pos_ctx if (pts_ctx[pos_ctx] - best_vis_t) < (best_vis_t - pts_ctx[pos_ctx - 1]) else (pos_ctx - 1)
+                        rep_fid = int(fids_ctx[n_ctx])
+                    else:
+                        kf_list_v = self.video_keyframes.get(vid, [])
+                        if kf_list_v:
+                            nearest_kf = min(
+                                kf_list_v,
+                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_vis_t),
+                            )
+                            rep_fid = int(nearest_kf["faiss_id"])
                 if rep_fid is not None and 0 <= int(rep_fid) < len(self.temporal_context_768):
                     vis_ctx_coherence = float(
                         np.dot(self.temporal_context_768[int(rep_fid)], primary_q_768.reshape(-1))
                     )
 
-            if sp_enabled and self.spatial_patches is not None and len(self.spatial_patches) > 0:
+            if vid in top_heavy_vids and sp_enabled and self.spatial_patches is not None and len(self.spatial_patches) > 0:
                 late_interaction_scored_candidates += 1
                 late_int_sc = self._score_late_interaction_window(
                     vid, best_st - 2.0, best_et + 2.0, primary_q_768
                 )
             else:
                 late_int_sc = 0.0
+
+            att_sc = 0.0
+            if vid in top_heavy_vids and ablation_config not in ("A0", "A1"):
+                use_768_att = self.all_embeddings is not None and len(self.all_embeddings) > 0 and primary_q_768 is not None
+                att_q = primary_q_768.reshape(-1) if use_768_att else primary_q_864.reshape(-1)
+                att_emb_mat = self.all_embeddings if use_768_att else self.augmented_embeddings
+                if att_emb_mat is not None and len(att_emb_mat) > 0:
+                    n_att_mat = len(att_emb_mat)
+                    valid_fids: list[int] | np.ndarray = ()
+                    pts_v = self.video_kf_pts.get(vid)
+                    fids_arr_v = self._video_kf_fids_arr.get(vid)
+                    if (
+                        pts_v is not None
+                        and fids_arr_v is not None
+                        and len(pts_v) == len(fids_arr_v)
+                        and len(pts_v) > 0
+                        and int(fids_arr_v.max()) < n_att_mat
+                    ):
+                        i_l = bisect_left(pts_v, best_st - 2.0)
+                        i_r = bisect_right(pts_v, best_et + 2.0)
+                        span_cnt = i_r - i_l
+                        if 1 <= span_cnt <= 5:
+                            valid_fids = fids_arr_v[i_l:i_r]
+                        else:
+                            if span_cnt == 0:
+                                pos_mid = bisect_left(pts_v, best_rep_t)
+                                cand_l = max(0, pos_mid - 5)
+                                cand_r = min(len(pts_v), pos_mid + 5)
+                            else:
+                                cand_l, cand_r = i_l, i_r
+                            picked_idxs = sorted(
+                                range(cand_l, cand_r),
+                                key=lambda idx_k: abs(pts_v[idx_k] - best_rep_t),
+                            )[:5]
+                            picked_idxs.sort()
+                            valid_fids = fids_arr_v[picked_idxs]
+                    else:
+                        kf_list = self.video_keyframes.get(vid, [])
+                        if kf_list:
+                            win_kfs = [
+                                k for k in kf_list
+                                if (best_st - 2.0) <= float(k.get("pts_time", 0.0)) <= (best_et + 2.0)
+                            ]
+                            if not win_kfs:
+                                win_kfs = sorted(
+                                    kf_list,
+                                    key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
+                                )[:5]
+                            elif len(win_kfs) > 5:
+                                win_kfs = sorted(
+                                    win_kfs,
+                                    key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
+                                )[:5]
+                                win_kfs.sort(key=lambda k: float(k.get("pts_time", 0.0)))
+                            valid_fids = [int(k["faiss_id"]) for k in win_kfs if 0 <= int(k["faiss_id"]) < n_att_mat]
+                    if len(valid_fids) > 0:
+                        pre_att_cos = (
+                            active_sims_768_all[valid_fids]
+                            if (use_768_att and active_sims_768_all is not None and self._all_embeddings_unit_norm)
+                            else None
+                        )
+                        att_sc = float(
+                            query_guided_temporal_attention_score(
+                                att_q,
+                                att_emb_mat[valid_fids],
+                                tau=12.0,
+                                precomputed_cos_sims=pre_att_cos,
+                                assume_unit_norm=bool(use_768_att and self._all_embeddings_unit_norm),
+                            )
+                        )
+
+            sa_graph_score = 0.0
+            sa_spatial_score = 0.0
+            sa_order_score = 0.0
+            vid_dedup_objs = self._dedup_video_objects.get(vid, ())
+            if vid in top_heavy_vids and sa_query_ctx is not None and (sa_has_order or (sa_has_obj_or_motion and bool(vid_dedup_objs))):
+                vid_clause_curve: np.ndarray | None = None
+                kf_fids_v = self._video_kf_fids_arr.get(vid)
+                if clause_sims_all is not None and kf_fids_v is not None and len(kf_fids_v) >= 2:
+                    if int(kf_fids_v.max()) < clause_sims_all.shape[1]:
+                        vid_clause_curve = clause_sims_all[:, kf_fids_v]
+                elif self.videoprism_retriever is not None and self.videoprism_retriever.available and len(sub_clauses) >= 2:
+                    vp_curve = self.videoprism_retriever.get_subclip_curve(vid, query, sub_clauses)
+                    if vp_curve is not None and vp_curve[2] is not None:
+                        vid_clause_curve = vp_curve[2]
+                sa_res = self.spatial_action_verifier.verify_candidate(
+                    query_ctx=sa_query_ctx,
+                    video_id=vid,
+                    window_start=best_st,
+                    window_end=best_et,
+                    video_objects=vid_dedup_objs,
+                    video_obj_pts=self._dedup_video_obj_pts.get(vid),
+                    detector_ran=(vid in self.detector_covered_videos),
+                    clause_curve=vid_clause_curve,
+                    already_deduplicated=True,
+                )
+                sa_graph_score = float(sa_res.score)
+                sa_spatial_score = float(sa_res.spatial_predicate_score)
+                sa_order_score = float(sa_res.action_order_score)
+                if abs(sa_graph_score) > 1e-6:
+                    video_score += 0.012 * sa_graph_score
 
             s_vis_blend_val = float(best_cl.get("visual_sim", 0.0))
             subclause_weak_val = float(video_min_clause_sim.get(vid, s_vis_blend_val))
@@ -4158,51 +4777,44 @@ class UnifiedMultimodalSearchPipeline:
                 else 0.0
             )
             win_energy_conc = min(1.5, coherence_ratio * (1.0 + 0.10 * min(adjacent_pairs, 3)))
-
-            att_sc = 0.0
-            if ablation_config not in ("A0", "A1"):
-                use_768_att = self.all_embeddings is not None and len(self.all_embeddings) > 0 and primary_q_768 is not None
-                att_q = primary_q_768.reshape(-1) if use_768_att else primary_q_864.reshape(-1)
-                att_emb_mat = self.all_embeddings if use_768_att else self.augmented_embeddings
-                if att_emb_mat is not None and len(att_emb_mat) > 0:
-                    kf_list = self.video_keyframes.get(vid, [])
-                    if kf_list:
-                        win_kfs = [
-                            k for k in kf_list
-                            if (best_st - 2.0) <= float(k.get("pts_time", 0.0)) <= (best_et + 2.0)
-                        ]
-                        if not win_kfs:
-                            win_kfs = sorted(
-                                kf_list,
-                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
-                            )[:5]
-                        elif len(win_kfs) > 5:
-                            win_kfs = sorted(
-                                win_kfs,
-                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_rep_t),
-                            )[:5]
-                            win_kfs.sort(key=lambda k: float(k.get("pts_time", 0.0)))
-                        valid_fids = [int(k["faiss_id"]) for k in win_kfs if 0 <= int(k["faiss_id"]) < len(att_emb_mat)]
-                        if valid_fids:
-                            att_sc = float(query_guided_temporal_attention_score(att_q, att_emb_mat[valid_fids], tau=12.0))
+            z_vis_val = ((s_vis_blend_val - z_stats.mean) / (z_stats.std + 1e-6)) if z_stats is not None else 0.0
+            delta_z_vis_val = (z_stats.z_max - z_vis_val) if z_stats is not None else 0.0
+            fts_raw_val = float(best_cl.get("fts_score", 0.0))
+            bm25_log_val = math.log1p(max(0.0, fts_raw_val))
+            m_high_val = max(0.0, float(best_cl.get("m_high", 0.0)))
+            k_high_val = max(1.0, float(best_cl.get("k_high", max(1, k_high_len))))
+            high_spec_cov_val = m_high_val / k_high_val
+            rrf_ocr_val = float(best_cl.get("rrf_ocr", 0.0))
+            rrf_asr_val = float(best_cl.get("rrf_asr", 0.0))
+            lex_rrf_sum = rrf_ocr_val + rrf_asr_val
+            vis_lex_syn_val = max(0.0, s_vis_blend_val - 0.12) * lex_rrf_sum
+            unver_lex_haz_val = max(0.0, 0.50 - z_vis_val) * lex_rrf_sum
 
             raw_ltr_cand: dict[str, Any] = {
                 "s_vis_blend_max": s_vis_blend_val,
+                "z_vis_max": float(z_vis_val),
+                "delta_z_vis": float(delta_z_vis_val),
                 "s_vis_top3_mean": float(top3_vis_mean),
                 "s_vis_top5_mean": float(top5_vis_mean),
                 "s_vis_ctx_coherence": float(vis_ctx_coherence),
                 "s_late_interaction": float(late_int_sc),
                 "spike_drop_ratio": float(spike_drop_val),
                 "rrf_vis": float(best_cl.get("rrf_vis", 0.0)),
-                "rrf_ocr": float(best_cl.get("rrf_ocr", 0.0)),
-                "rrf_asr": float(best_cl.get("rrf_asr", 0.0)),
-                "fts_score": float(best_cl.get("fts_score", 0.0)),
-                "m_high": float(best_cl.get("m_high", 0.0)),
-                "k_high": float(best_cl.get("k_high", max(1, k_high_len))),
+                "rrf_ocr": rrf_ocr_val,
+                "rrf_asr": rrf_asr_val,
+                "fts_score": fts_raw_val,
+                "bm25_log_score": float(bm25_log_val),
+                "m_high": m_high_val,
+                "k_high": k_high_val,
+                "high_spec_token_coverage": float(high_spec_cov_val),
                 "anchor_lexical_match": float(best_cl.get("anchor_match", 0.0)),
                 "number_consistency": float(best_cl.get("num_consist", 1.0)),
                 "yolo_object_verification_boost": float(best_cl.get("obj_boost", 0.0)),
-                "graph_relation_score": 0.0,
+                "graph_relation_score": sa_graph_score,
+                "spatial_predicate_score": sa_spatial_score,
+                "action_order_score": sa_order_score,
+                "rrf_vp": float(best_cl.get("rrf_vp", 0.0)),
+                "lex_reliability_score": float(best_cl.get("lex_reliability_score", 0.0)),
                 "llm_modality_alignment": 1.0 if (
                     routing_plan is not None
                     and routing_plan.routing_mode == "llm_compact"
@@ -4211,13 +4823,17 @@ class UnifiedMultimodalSearchPipeline:
                         or (routing_plan.has_explicit_asr_intent and "asr" in branch_attribution)
                     )
                 ) else 0.0,
+                "vis_lexical_synergy": float(vis_lex_syn_val),
+                "unverified_lexical_hazard": float(unver_lex_haz_val),
                 "subclause_weakest_link": subclause_weak_val,
                 "window_energy_concentration": float(win_energy_conc),
                 "temporal_attention_coherence": float(att_sc),
                 "rrf_vis_caption": float(best_cl.get("rrf_vis_caption", 0.0)),
+                "vp_whole_cos": 0.0,
+                "vp_subclip_max": 0.0,
+                "vp_z": 0.0,
+                "vp_csls": 0.0,
             }
-            ltr_24d_dict = extract_ltr_features_24d(raw_ltr_cand, z_stats=z_stats, return_dict=True)
-            raw_ltr_cand.update(ltr_24d_dict)
             cand_ltr_features[vid] = raw_ltr_cand
             cand_moments.append(RankedMoment(
                 moment_id=f"{vid}_{round(best_rep_t, 1)}",
@@ -4232,12 +4848,74 @@ class UnifiedMultimodalSearchPipeline:
                 match_status=branch_attribution,
             ))
 
-        # Section 2.2: Capture pre-rerank video IDs after Stage 5 base fusion, BEFORE LTR or temporal rerank
+        # Section 2.2: Capture pre-rerank video IDs after Stage 5 base fusion, BEFORE Step H / LTR / temporal rerank
         pre_rerank_sorted = sorted(
             cand_moments,
             key=lambda m: (-float(m.ranking_score), str(m.video_id)),
         )
         pre_rerank_video_ids: list[str] = list(dict.fromkeys(m.video_id for m in pre_rerank_sorted))
+
+        # Step H: VideoPrism Top-20 Reranking (computes vp_* signals & bounded consensus adjustment)
+        videoprism_stats: dict[str, Any] = {
+            "enabled": bool(self.enable_videoprism),
+            "available": bool(self.videoprism_retriever is not None and self.videoprism_retriever.available),
+            "status": self.videoprism_retriever.status if self.videoprism_retriever is not None else "disabled",
+            "retrieval_status": vp_retrieval_res.status if vp_retrieval_res is not None else "skipped",
+            "query_source": vp_retrieval_res.query_source if vp_retrieval_res is not None else "none",
+            "retrieved_count": len(vp_rank_map),
+            "reranked_top20_count": 0,
+            "top1_flipped": False,
+        }
+        if (
+            ablation_config == "A5"
+            and self.enable_videoprism
+            and self.videoprism_retriever is not None
+            and self.videoprism_retriever.available
+            and pre_rerank_video_ids
+        ):
+            vp_top_k_vids = pre_rerank_video_ids[: self.videoprism_rerank_top_k]
+            vp_rerank_sigs = self.videoprism_retriever.rerank_top_candidates(
+                query=query,
+                clauses=sub_clauses,
+                candidate_video_ids=vp_top_k_vids,
+                retrieval_result=vp_retrieval_res,
+            )
+            if vp_rerank_sigs:
+                videoprism_stats["reranked_top20_count"] = len(vp_rerank_sigs)
+                pre_vp_top1 = pre_rerank_video_ids[0]
+                vp_adjusted: list[RankedMoment] = []
+                for m in cand_moments:
+                    sig = vp_rerank_sigs.get(m.video_id)
+                    if sig is None:
+                        vp_adjusted.append(m)
+                        continue
+                    fdict = cand_ltr_features.get(m.video_id)
+                    if fdict is not None:
+                        fdict["vp_whole_cos"] = float(sig.whole_cos)
+                        fdict["vp_subclip_max"] = float(sig.subclip_max_cos)
+                        fdict["vp_z"] = float(sig.vp_z)
+                        fdict["vp_csls"] = float(sig.csls_score)
+                        fdict["vp_clause_order"] = float(sig.clause_order_score)
+                    delta_vp = self.videoprism_rerank_weight * float(np.tanh(0.75 * sig.vp_z))
+                    if per_video_exact_span.get(m.video_id, False):
+                        delta_vp *= 0.35
+                    vp_adjusted.append(
+                        RankedMoment(
+                            moment_id=m.moment_id,
+                            video_id=m.video_id,
+                            moment_start_seconds=m.moment_start_seconds,
+                            moment_end_seconds=m.moment_end_seconds,
+                            start_original_frame_index=m.start_original_frame_index,
+                            end_original_frame_index=m.end_original_frame_index,
+                            representative_original_frame_index=m.representative_original_frame_index,
+                            representative_timestamp_seconds=m.representative_timestamp_seconds,
+                            ranking_score=float(m.ranking_score) + delta_vp,
+                            match_status=(m.match_status if "videoprism" in m.match_status else f"{m.match_status}+videoprism"),
+                        )
+                    )
+                cand_moments = vp_adjusted
+                post_vp_top1 = max(cand_moments, key=lambda x: float(x.ranking_score)).video_id
+                videoprism_stats["top1_flipped"] = bool(post_vp_top1 != pre_vp_top1)
 
         pre_ltr_videos = self._build_ranked_videos(cand_moments, cand_moments, top_k=5)
         pre_ltr_top1 = pre_ltr_videos[0].video_id if pre_ltr_videos else None
@@ -4247,15 +4925,25 @@ class UnifiedMultimodalSearchPipeline:
             if len(pre_ltr_videos) >= 2
             else None
         )
+        eff_ltr_weight = float(self.ltr_blend_weight)
+        if (
+            abs(eff_ltr_weight - 0.015) <= 1e-9
+            and self.ltr_ranker.is_loaded
+            and self.ltr_ranker.model_type == "tree_ensemble"
+            and isinstance(self.ltr_ranker.metadata, dict)
+            and self.ltr_ranker.metadata.get("blend_weight") is not None
+        ):
+            eff_ltr_weight = float(self.ltr_ranker.metadata["blend_weight"])
+
         ltr_stats: dict[str, Any] = {
-            "enabled": bool(self.ltr_ranker.is_loaded and self.ltr_blend_weight > 0.0),
+            "enabled": bool(self.ltr_ranker.is_loaded and eff_ltr_weight > 0.0),
             "applied": False,
             "reason": (
                 None
-                if (self.ltr_ranker.is_loaded and self.ltr_blend_weight > 0.0)
-                else ("disabled_by_weight" if self.ltr_blend_weight <= 0.0 else "ltr_not_loaded")
+                if (self.ltr_ranker.is_loaded and eff_ltr_weight > 0.0)
+                else ("disabled_by_weight" if eff_ltr_weight <= 0.0 else "ltr_not_loaded")
             ),
-            "ltr_blend_weight": float(self.ltr_blend_weight),
+            "ltr_blend_weight": float(eff_ltr_weight),
             "eligible_candidates": 0,
             "total_candidates": len(cand_moments),
             "delta_min": 0.0,
@@ -4269,17 +4957,25 @@ class UnifiedMultimodalSearchPipeline:
             "pre_ltr_top1_margin": round(pre_ltr_top1_margin, 6) if pre_ltr_top1_margin is not None else None,
             "flip_base_margin": None,
         }
-        if self.ltr_ranker.is_loaded and cand_moments and self.ltr_blend_weight > 0.0:
-            ltr_matrix = np.vstack([
-                extract_ltr_features_24d(cand_ltr_features[m.video_id], z_stats=z_stats)
-                for m in cand_moments
-            ])
+        if self.ltr_ranker.is_loaded and cand_moments and eff_ltr_weight > 0.0:
+            active_ltr_names = (
+                LTR_FEATURE_NAMES_V2
+                if int(getattr(self.ltr_ranker, "n_features", len(LTR_FEATURE_NAMES))) == len(LTR_FEATURE_NAMES_V2)
+                else LTR_FEATURE_NAMES
+            )
+            ltr_matrix = np.array(
+                [
+                    [float(cand_ltr_features[m.video_id].get(name, 0.0)) for name in active_ltr_names]
+                    for m in cand_moments
+                ],
+                dtype=np.float32,
+            )
             ltr_scores = self.ltr_ranker.score_matrix(ltr_matrix)
             eligible_deltas: list[float] = []
             updated_ltr_moments: list[RankedMoment] = []
             for m, ltr_sc in zip(cand_moments, ltr_scores.tolist()):
                 is_elig = m.video_id in vid_ltr_eligible
-                delta = self.ltr_blend_weight * float(np.tanh(ltr_sc)) if is_elig else 0.0
+                delta = eff_ltr_weight * float(np.tanh(ltr_sc)) if is_elig else 0.0
                 if is_elig:
                     eligible_deltas.append(delta)
                 updated_ltr_moments.append(
@@ -4319,7 +5015,10 @@ class UnifiedMultimodalSearchPipeline:
         precomputed_clip_score_res: ClipBranchScoreResult | None = None
         if ablation_config == "A5" and self.enable_clip_consensus_boost:
             cand_moments, precomputed_clip_score_res, clip_consensus_stats = self._apply_clip_consensus_boost(
-                cand_moments, primary_q_768, filters
+                cand_moments,
+                primary_q_768,
+                filters,
+                precomputed_frame_dots=(active_sims_768_all if self._all_embeddings_unit_norm else None),
             )
         else:
             pre_cons_top_k = [
@@ -4386,7 +5085,14 @@ class UnifiedMultimodalSearchPipeline:
         aggregated_moments = cand_moments[:top_k]
         t_fusion_end = time.perf_counter()
 
-        # Stage 6 Refinement with B10:
+        # Stage 6 Refinement with P5 Multimodal DP + Shot Snapping:
+        lex_ts_by_vid: dict[str, list[float]] = defaultdict(list)
+        if ablation_config == "A5":
+            for c_lex in ocr_candidates:
+                lex_ts_by_vid[str(c_lex["video_id"])].append(float(c_lex["timestamp_sec"]))
+            for c_lex in asr_candidates:
+                lex_ts_by_vid[str(c_lex["video_id"])].append(float(c_lex["timestamp_sec"]))
+
         final_results: list[RankedMoment] = []
         for rank_idx, moment in enumerate(aggregated_moments, 1):
             vid = moment.video_id
@@ -4422,26 +5128,75 @@ class UnifiedMultimodalSearchPipeline:
                     video_curve_cache[vid] = (ts_array, sims)
                     exact_curve = sims.tolist()
 
-                boundary_curve = exact_curve
-                # B10: Anchor index and anchor window calculation
                 anchor_win = video_anchor_windows.get(vid)
-                if anchor_win is not None:
-                    t_mid = (anchor_win[0] + anchor_win[1]) / 2.0
-                    best_idx = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - t_mid))
+                if ablation_config == "A5" and rank_idx <= 2:
+                    frame_vecs_768: np.ndarray | None = None
+                    vid_cl_curve: np.ndarray | None = None
+                    kf_fids_v = self._video_kf_fids_arr.get(vid)
+                    n_ts = len(ts_array)
+                    if (
+                        n_ts >= 15
+                        and kf_fids_v is not None
+                        and len(kf_fids_v) == n_ts
+                        and self.all_embeddings is not None
+                        and len(self.all_embeddings) > 0
+                        and int(kf_fids_v.max()) < len(self.all_embeddings)
+                    ):
+                        frame_vecs_768 = self.all_embeddings[kf_fids_v]
+                    if (
+                        clause_sims_all is not None
+                        and kf_fids_v is not None
+                        and len(kf_fids_v) == n_ts
+                        and int(kf_fids_v.max()) < clause_sims_all.shape[1]
+                    ):
+                        vid_cl_curve = clause_sims_all[:, kf_fids_v]
+                    vp_sub_curve = (
+                        self.videoprism_retriever.get_subclip_curve(vid, query, sub_clauses)
+                        if (
+                            n_ts >= 15
+                            and self.enable_videoprism
+                            and self.videoprism_retriever is not None
+                            and self.videoprism_retriever.available
+                        )
+                        else None
+                    )
+                    start_sec, end_sec, fused_boundary_curve = localize_moments_multimodal_dp(
+                        timestamps=ts_array,
+                        visual_scores=exact_curve,
+                        v_dur=v_dur,
+                        frame_vectors_768=frame_vecs_768,
+                        subclip_curve=vp_sub_curve,
+                        clause_curves=vid_cl_curve,
+                        lexical_timestamps=lex_ts_by_vid.get(vid, ()),
+                        rep_timestamp=rep_t,
+                        anchor_window=anchor_win,
+                        decay_lambda=0.015,
+                        c_thresh=0.45,
+                        max_gap_sec=4.0,
+                        max_dur_ratio=0.45,
+                    )
+                    if n_ts >= 20:
+                        exact_curve = fused_boundary_curve
+                    rep_t = 0.5 * (start_sec + end_sec)
+                    best_idx = min(range(n_ts), key=lambda i: abs(ts_array[i] - rep_t))
                 else:
-                    best_idx = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - rep_t))
+                    if anchor_win is not None:
+                        t_mid = (anchor_win[0] + anchor_win[1]) / 2.0
+                        best_idx = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - t_mid))
+                    else:
+                        best_idx = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - rep_t))
 
-                start_sec, end_sec = expand_boundary_contrast(
-                    ts=ts_array,
-                    curve=boundary_curve,
-                    v_dur=v_dur,
-                    anchor_idx=best_idx,
-                    anchor_window=anchor_win,
-                    decay_lambda=0.015,
-                    c_thresh=0.45,
-                    max_gap_sec=4.0,
-                    max_dur_ratio=0.45,
-                )
+                    start_sec, end_sec = expand_boundary_contrast(
+                        ts=ts_array,
+                        curve=exact_curve,
+                        v_dur=v_dur,
+                        anchor_idx=best_idx,
+                        anchor_window=anchor_win,
+                        decay_lambda=0.015,
+                        c_thresh=0.45,
+                        max_gap_sec=4.0,
+                        max_dur_ratio=0.45,
+                    )
             else:
                 delta = min(5.0, 0.45 * v_dur)
                 start_sec = max(0.0, rep_t - delta / 2.0)
@@ -4464,74 +5219,28 @@ class UnifiedMultimodalSearchPipeline:
                 evidence_frame_indices=ev_indices,
             ))
 
-            # NMS-MultiPeak Proposal for Top-1 Video (enabled in A5):
+            # Soft-NMS Multi-Peak Proposals for Top-1 Video (enabled in A5):
             if ablation_config == "A5" and rank_idx == 1 and len(kf_list) > 3 and exact_curve:
-                win1_scores = [exact_curve[i] for i, t in enumerate(ts_array) if start_sec <= t <= end_sec]
-                s_max1 = max(win1_scores) if win1_scores else max(exact_curve)
-                s_min = min(exact_curve)
-                existing_windows: list[tuple[float, float]] = [(start_sec, end_sec)]
-                max_extra = 2 if len(ts_array) >= 20 else 1
-                prev_win_score = float(moment.ranking_score)
-                min_peak_ratio = 0.80 if len(ts_array) >= 20 else 0.88
-
-                for p_offset in range(max_extra):
-                    p_num = p_offset + 2  # 2 for _win2, 3 for _win3
-                    masked_curve = [
-                        (
-                            s_min - 0.05
-                            if any((ws - 4.0) <= ts_array[i] <= (we + 4.0) for ws, we in existing_windows)
-                            else s
-                        )
-                        for i, s in enumerate(exact_curve)
-                    ]
-                    peak_p_idx = max(range(len(masked_curve)), key=lambda i: masked_curve[i])
-                    s_max_p = masked_curve[peak_p_idx]
-                    if s_max_p < min_peak_ratio * s_max1:
-                        break
-                    t_peak_p = ts_array[peak_p_idx]
-
-                    # Require a genuine valley between the new peak and existing windows
-                    valley_scores = [
-                        exact_curve[i]
-                        for i, t in enumerate(ts_array)
-                        if any((we < t < t_peak_p) or (t_peak_p < t < ws) for ws, we in existing_windows)
-                    ]
-                    has_valley = bool(valley_scores) and min(valley_scores) <= s_min + 0.65 * (s_max_p - s_min)
-                    if not has_valley:
-                        break
-
-                    st_p, et_p = expand_boundary_contrast(
-                        ts=ts_array,
-                        curve=masked_curve,
-                        v_dur=v_dur,
-                        anchor_idx=peak_p_idx,
-                        decay_lambda=0.015,
-                        c_thresh=0.45,
-                        max_gap_sec=4.0,
-                        max_dur_ratio=0.45,
-                    )
-                    if et_p <= st_p or (et_p - st_p) < 1.0:
-                        break
-                    max_tiou = max(temporal_iou(st_p, et_p, ws, we) for ws, we in existing_windows)
-                    if max_tiou >= 0.30:
-                        break
-
-                    rep_t_p = (st_p + et_p) / 2.0
+                extra_windows = propose_soft_nms_secondary_windows(
+                    ts=ts_array,
+                    curve=exact_curve,
+                    v_dur=v_dur,
+                    primary_start=start_sec,
+                    primary_end=end_sec,
+                    base_ranking_score=float(moment.ranking_score),
+                    iou_thresh=0.30,
+                    decay_lambda=0.015,
+                    c_thresh=0.45,
+                    max_gap_sec=4.0,
+                    max_dur_ratio=0.45,
+                )
+                for p_idx, (st_p, et_p, rep_t_p, win_p_score) in enumerate(extra_windows, 2):
                     best_idx_p = min(range(len(ts_array)), key=lambda i: abs(ts_array[i] - rep_t_p))
                     s_orig_p, e_orig_p, rep_orig_p, ev_indices_p = _resolve_moment_frame_indices(
                         kf_list, st_p, et_p, best_idx_p
                     )
-                    peak_ratio = min(1.0, float(s_max_p) / max(float(s_max1), 1e-8))
-                    if len(ts_array) >= 20:
-                        cap = 0.96 - 0.03 * (p_num - 2)
-                        win_p_score = float(moment.ranking_score) * min(cap, max(0.78, 0.92 * peak_ratio))
-                    else:
-                        win_p_score = float(moment.ranking_score) * 0.85 * (peak_ratio ** 2)
-                    win_p_score = min(win_p_score, prev_win_score - 1e-4)
-                    prev_win_score = win_p_score
-                    existing_windows.append((st_p, et_p))
                     final_results.append(RankedMoment(
-                        moment_id=f"{vid}_{round(st_p, 1)}_{round(et_p, 1)}_win{p_num}",
+                        moment_id=f"{vid}_{round(st_p, 1)}_{round(et_p, 1)}_win{p_idx}",
                         video_id=vid,
                         moment_start_seconds=round(st_p, 2),
                         moment_end_seconds=round(et_p, 2),
@@ -4545,6 +5254,7 @@ class UnifiedMultimodalSearchPipeline:
                     ))
 
         final_results.sort(key=lambda m: float(m.ranking_score), reverse=True)
+        self._active_query_sims = None
         t_boundary_end = time.perf_counter()
 
         t_parse_ms = (t_parse_end - t_start) * 1000.0
@@ -4705,6 +5415,7 @@ class UnifiedMultimodalSearchPipeline:
                 "temporal_rerank_tau": self.temporal_rerank_tau,
                 "enable_clip_branch": self.enable_clip_branch,
                 "enable_clip_consensus_boost": self.enable_clip_consensus_boost,
+                "enable_videoprism": self.enable_videoprism,
                 "clip_reserve_k": self.clip_reserve_k,
                 "clip_window_size": self.clip_window_size,
                 "ltr_blend_weight": self.ltr_blend_weight,
@@ -4722,6 +5433,7 @@ class UnifiedMultimodalSearchPipeline:
             },
             "clip_branch_stats": clip_branch_stats,
             "clip_consensus_stats": clip_consensus_stats,
+            "videoprism_stats": videoprism_stats,
             "temporal_rerank_stats": temporal_rerank_stats,
             "query_plan_mode": routing_plan.routing_mode if routing_plan is not None else None,
             "query_plan_cache_hit": routing_plan.cache_hit if routing_plan is not None else None,
@@ -4752,6 +5464,7 @@ class UnifiedMultimodalSearchPipeline:
 
     def close(self) -> None:
         """Close SQLite persistent connection and persist any dirty disk cache."""
+        self._active_query_sims = None
         self._text_memory_cache.clear()
         self._e5_memory_cache.clear()
         if self.cache is not None:
