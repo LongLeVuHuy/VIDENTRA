@@ -297,6 +297,8 @@ class HybridAdaptiveSampler:
         self.ring_buffer: deque[_FrameSignalEntry] = deque()
         self.pending_burst_targets: list[float] = []
         self.soft_sample_timestamps: deque[float] = deque()
+        self.last_burst_trigger_ts: float = -999.0
+        self.last_soft_commit_ts: float = -999.0
         self.overflow_count = 0
         self.total_frames = 0
         self.shot_cut_ordinals: set[int] = set()
@@ -356,11 +358,15 @@ class HybridAdaptiveSampler:
         )
 
     def _update_soft_quota(self, now_sec: float) -> bool:
-        """Enforce rolling soft target <= soft_target_fps over soft_window_seconds."""
+        """Enforce rolling soft target <= soft_target_fps (duration-bounded for hybrid_v2_adaptive)."""
         window_start = now_sec - self.cfg.soft_window_seconds
         while self.soft_sample_timestamps and self.soft_sample_timestamps[0] < window_start:
             self.soft_sample_timestamps.popleft()
-        max_allowed = self.cfg.soft_target_fps * self.cfg.soft_window_seconds
+        if self.strategy == "hybrid_v2_adaptive":
+            eff_window = min(self.cfg.soft_window_seconds, max(2.0, now_sec + 1.0))
+            max_allowed = math.ceil(self.cfg.soft_target_fps * eff_window)
+        else:
+            max_allowed = self.cfg.soft_target_fps * self.cfg.soft_window_seconds
         return len(self.soft_sample_timestamps) < max_allowed
 
     def _min_recent_phash_distance(self, curr_phash: int) -> int:
@@ -445,11 +451,17 @@ class HybridAdaptiveSampler:
                 phash_dist = min(phash_dist, min(phash_hamming_distance(h, entry.phash_int) for h in self.recent_phashes))
             if phash_dist <= self.cfg.phash_min_distance:
                 return None
+            if self.strategy == "hybrid_v2_adaptive" and t_sec is not None:
+                min_soft_gap = min(0.45, 0.5 / max(0.5, self.cfg.soft_target_fps))
+                if (t_sec - self.last_soft_commit_ts) < min_soft_gap and "burst" not in reasons:
+                    return None
             if t_sec is not None:
                 if not self._update_soft_quota(t_sec):
                     self.overflow_count += 1
                     return None
                 self.soft_sample_timestamps.append(t_sec)
+                if not is_mandatory:
+                    self.last_soft_commit_ts = t_sec
 
         rec = self._upsert_sample(entry, reasons, make_mandatory=is_mandatory)
         if t_sec is not None:
@@ -787,6 +799,8 @@ class HybridAdaptiveSampler:
             self.d_history.clear()
             self.pending_burst_targets.clear()
             self.ring_buffer.clear()
+            self.last_burst_trigger_ts = -999.0
+            self.last_soft_commit_ts = -999.0
         self.current_epoch_id = frame.epoch_id
 
         entry = self._extract_signal(frame, include_compact=False)
@@ -913,11 +927,18 @@ class HybridAdaptiveSampler:
                     triggered = True
                     reasons.add("change_trigger")
 
-            if (triggered or is_cut) and t_sec is not None:
-                self._select_pre_burst(t_sec, entry.ordinal)
-                step = 1.0 / self.cfg.burst_fps
-                post_steps = int(round(self.cfg.burst_post_seconds * self.cfg.burst_fps))
-                self.pending_burst_targets.extend([t_sec + step * k for k in range(1, post_steps + 1)])
+            if t_sec is not None:
+                should_burst = (
+                    is_cut and (t_sec - self.last_burst_trigger_ts) >= max(0.5, self.cfg.burst_post_seconds)
+                    if self.strategy == "hybrid_v2_adaptive"
+                    else (triggered or is_cut)
+                )
+                if should_burst:
+                    self.last_burst_trigger_ts = t_sec
+                    self._select_pre_burst(t_sec, entry.ordinal)
+                    step = 1.0 / self.cfg.burst_fps
+                    post_steps = int(round(self.cfg.burst_post_seconds * self.cfg.burst_fps))
+                    self.pending_burst_targets.extend([t_sec + step * k for k in range(1, post_steps + 1)])
 
         # Pending post-burst targets
         if self.pending_burst_targets and t_sec is not None:
