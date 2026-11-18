@@ -56,29 +56,41 @@ def select_ocr_probes(
     video_id: str,
     probe_fps: float = 1.0,
     shot_cut_ordinals: Sequence[int] | None = None,
+    burst_ordinals: Sequence[int] | None = None,
 ) -> OCRProbeManifest:
     """Select independent OCR text probe frames.
-    
-    Operates independently from visual sample filtering (1 fps base rate + cuts).
+
+    Operates independently from visual sample filtering (1 fps base rate + cuts + optional bursts),
+    resetting grid cadence cleanly across container epoch boundaries.
     """
     cuts_set = set(shot_cut_ordinals or ())
+    burst_set = set(burst_ordinals or ())
     probes = []
     last_probe_sec: float | None = None
+    current_epoch_id: str | None = None
     step_sec = 1.0 / probe_fps if probe_fps > 0 else 1.0
 
     for f in frames:
+        if current_epoch_id is not None and f.epoch_id != current_epoch_id:
+            last_probe_sec = None
+        current_epoch_id = f.epoch_id
+
         t_sec = f.timestamp_seconds
         reasons = []
 
         if f.ordinal == 0:
             reasons.append("first")
-        elif t_sec is not None and last_probe_sec is not None and (t_sec - last_probe_sec) >= step_sec:
+        elif t_sec is not None and last_probe_sec is None:
+            reasons.append(f"grid_{probe_fps:.1f}fps")
+        elif t_sec is not None and (t_sec - last_probe_sec) >= step_sec:
             reasons.append(f"grid_{probe_fps:.1f}fps")
         elif t_sec is None and last_probe_sec is None:
             reasons.append("unindexed")
 
         if f.ordinal in cuts_set:
             reasons.append("shot_cut")
+        if f.ordinal in burst_set:
+            reasons.append("burst_probe")
 
         if reasons:
             pid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}:ocr:{f.ordinal}"))

@@ -113,32 +113,87 @@ def handle_timeline_inspect(args):
 
 
 def handle_sampling_compare(args):
+    from dataclasses import asdict
     from .config.ingestion import SamplingConfig
-    from .sampling.compare import compute_structural_metrics, generate_uniform_baseline
-    from .sampling.hybrid import sample_frames_hybrid
+    from .sampling.compare import compare_sampling_strategies
     from .ingestion.decode import decode_frames
 
     config_data = json.loads(Path(args.config).read_text(encoding="utf-8"))
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # If manifest is given, run comparison across the manifest media; else compare with synthetic/sample
     comparison_results = []
+    aggregate_by_strategy: dict[str, dict[str, float]] = {}
+
     if args.manifest and Path(args.manifest).exists():
         manifest_doc = load_manifest(Path(args.manifest))
         records = manifest_doc["records"]
-    else:
-        records = []
+        resolver = _build_resolver(getattr(args, "asset_roots", None), records)
+        raw_samp = config_data.get("sampling") if isinstance(config_data.get("sampling"), dict) else {}
+        base_cfg = SamplingConfig(**raw_samp) if raw_samp else SamplingConfig()
+        strategies = config_data.get("strategies")
+
+        for rec in records:
+            vid = rec["video_id"]
+            media_path = None
+            if resolver is not None:
+                try:
+                    media_path = resolver.resolve(vid, for_inference=not getattr(args, "audit_mode", False))
+                except Exception:
+                    media_path = None
+            if media_path is None:
+                lp = rec.get("local_path") or rec.get("path")
+                if lp and Path(lp).is_file():
+                    media_path = Path(lp)
+            if media_path is None or not Path(media_path).is_file():
+                continue
+
+            frames = list(decode_frames(media_path, include_pixels=True))
+            metrics_list = compare_sampling_strategies(
+                frames,
+                base_config=base_cfg,
+                strategies=strategies,
+                video_id=vid,
+            )
+            comparison_results.append({
+                "video_id": vid,
+                "strategies": [asdict(m) for m in metrics_list],
+            })
+
+        if comparison_results:
+            by_strat: dict[str, list[dict]] = {}
+            for item in comparison_results:
+                for row in item["strategies"]:
+                    by_strat.setdefault(row["strategy"], []).append(row)
+            for s_name, rows in by_strat.items():
+                n_v = max(1, len(rows))
+                aggregate_by_strategy[s_name] = {
+                    "videos": len(rows),
+                    "mean_selected_count": round(sum(r["selected_count"] for r in rows) / n_v, 3),
+                    "mean_representativeness": round(sum(r["mean_representativeness"] for r in rows) / n_v, 4),
+                    "mean_p10_representativeness": round(sum(r["p10_representativeness"] for r in rows) / n_v, 4),
+                    "mean_sharpness_gain": round(sum(r["sharpness_gain_ratio"] for r in rows) / n_v, 4),
+                    "mean_blank_frame_rate": round(sum(r["blank_frame_rate"] for r in rows) / n_v, 4),
+                    "mean_soft_redundancy_rate": round(sum(r["soft_redundancy_rate"] for r in rows) / n_v, 4),
+                    "total_max_gap_violations": int(sum(r["max_gap_violations"] for r in rows)),
+                    "mean_elapsed_ms": round(sum(r["elapsed_ms"] for r in rows) / n_v, 3),
+                }
 
     report = {
         "experiment_id": config_data.get("experiment_id", "E02"),
         "config": config_data,
         "comparisons": comparison_results,
+        "aggregate_by_strategy": aggregate_by_strategy,
     }
     with open(out_dir / "comparison_report.json", "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
-    return {"status": "complete", "output": str(out_dir), "experiment_id": report["experiment_id"]}
+    return {
+        "status": "complete",
+        "output": str(out_dir),
+        "experiment_id": report["experiment_id"],
+        "videos_compared": len(comparison_results),
+    }
 
 
 def _get_encoder(model_path: str | None, device: str = "cpu", mock: bool = False):
@@ -574,6 +629,8 @@ def main(argv=None):
     compare.add_argument("--config", type=Path, required=True)
     compare.add_argument("--output", type=Path, required=True)
     compare.add_argument("--manifest", type=Path, default=None)
+    compare.add_argument("--asset-roots", type=Path, default=None)
+    compare.add_argument("--audit-mode", action="store_true", default=False)
 
     # index
     index_parser = subs.add_parser("index").add_subparsers(dest="action", required=True)

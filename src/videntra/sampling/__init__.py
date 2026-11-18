@@ -16,6 +16,10 @@ from .compare import (
     generate_uniform_baseline,
     compute_structural_metrics,
     StructuralMetrics,
+    QualityBenchmarkMetrics,
+    evaluate_keyframe_quality,
+    compare_sampling_strategies,
+    precompute_eval_signals,
 )
 
 __all__ = [
@@ -31,4 +35,8 @@ __all__ = [
     "generate_uniform_baseline",
     "compute_structural_metrics",
     "StructuralMetrics",
+    "QualityBenchmarkMetrics",
+    "evaluate_keyframe_quality",
+    "compare_sampling_strategies",
+    "precompute_eval_signals",
 ]

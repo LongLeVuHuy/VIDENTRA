@@ -129,7 +129,8 @@ class IngestionJobManager:
         video_id = media_record["video_id"]
         asset_hash = media_record["sha256"]
         timeline_rev = media_record.get("timeline_revision") or "rev_m1_1"
-        sampler_rev = "videntra_hybrid_v1"
+        strat = self.config.sampling.strategy
+        sampler_rev = "videntra_hybrid_v1" if strat == "hybrid_v1_legacy" else f"videntra_{strat}"
 
         job_key = compute_job_key(asset_hash, "ingest_m1", self.config_hash)
 

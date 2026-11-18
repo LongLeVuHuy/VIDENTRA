@@ -30,9 +30,13 @@ from videntra.storage.database import OfflineMetadataStore, current_iso
 from videntra.storage.grouping import OCREvidenceGrouper, ASREvidenceGrouper
 from videntra.storage.integrity import verify_offline_storage_integrity
 from videntra.ingestion.decode import decode_frames
-from videntra.sampling.hybrid import sample_frames_hybrid
+from videntra.sampling.hybrid import HybridAdaptiveSampler
 from videntra.config.ingestion import SamplingConfig
 from videntra.evidence.normalize import normalize_text, fold_diacritics
+try:
+    from scripts.extract_all_keyframes import extract_video_keyframes
+except ImportError:
+    from extract_all_keyframes import extract_video_keyframes
 
 
 def print_progress(step_idx: int, total_steps: int, step_name: str, step_pct: float, overall_pct: float):
@@ -187,40 +191,41 @@ class OfflineProcessingPipeline:
         # ---------------------------------------------------------------------
         print("\n--- BƯỚC 2/6: Dynamic Keyframe Sampling & Ingestion ---")
         all_keyframes = []
-        samp_cfg = SamplingConfig(max_gap_seconds=2.0)
 
         for idx, v_rec in enumerate(registered_vids):
             vid_id = v_rec["video_id"]
             v_path = Path(v_rec["file_path"])
             out_kf_dir = self.keyframes_dir / vid_id
             out_kf_dir.mkdir(parents=True, exist_ok=True)
+            dur_sec = float(v_rec.get("duration_ms") or 0) / 1000.0
+            samp_cfg = SamplingConfig.for_duration(dur_sec)
 
             try:
-                # Decode frames with pixels using VIDENTRA sequential decoder
-                frames_list = list(decode_frames(v_path, include_pixels=True))
-
-                manifest = sample_frames_hybrid(
-                    frames=frames_list,
+                # Stream frames through HybridAdaptiveSampler with bounded RAM (R04)
+                sampler = HybridAdaptiveSampler(
                     config=samp_cfg,
                     video_id=vid_id,
                     timeline_revision="rev_0",
                 )
+                for f in decode_frames(v_path, include_pixels=True):
+                    sampler.process_frame(f)
+                    f.pixels = None
+                manifest = sampler.finalize()
 
-                # Save real sampled images to disk
-                sampled_set = {s.original_decoded_frame_index for s in manifest.samples}
-                for f in frames_list:
-                    if f.ordinal in sampled_set and f.pixels is not None:
-                        kf_path = out_kf_dir / f"{f.ordinal:06d}.jpg"
-                        if not kf_path.exists():
-                            import cv2
-                            cv2.imwrite(str(kf_path), cv2.cvtColor(f.pixels, cv2.COLOR_RGB2BGR))
+                # Extract & atomically persist selected keyframe JPEGs using PyAV presentation ordinals
+                target_frames = {
+                    s.original_decoded_frame_index: str(out_kf_dir / f"{s.original_decoded_frame_index:06d}.jpg")
+                    for s in manifest.samples
+                }
+                extract_video_keyframes(vid_id, str(v_path), target_frames)
 
                 for k_idx, s in enumerate(manifest.samples):
                     kf_id = f"{vid_id}__kf_{k_idx:05d}"
                     kf_path = out_kf_dir / f"{s.original_decoded_frame_index:06d}.jpg"
                     tb_num = v_rec["time_base_num"]
                     tb_den = v_rec["time_base_den"]
-                    pts = int(s.timestamp_seconds * tb_den / tb_num) if tb_num > 0 else int(s.timestamp_us)
+                    ts_us = int(s.timestamp_us or 0)
+                    pts = int(s.pts) if s.pts is not None else ts_us
 
                     all_keyframes.append({
                         "keyframe_id": kf_id,
@@ -229,7 +234,7 @@ class OfflineProcessingPipeline:
                         "source_frame_index": s.original_decoded_frame_index,
                         "pts": pts,
                         "time_base": f"{tb_num}/{tb_den}",
-                        "timestamp_ms": int(s.timestamp_us // 1000),
+                        "timestamp_ms": int(ts_us // 1000),
                         "keyframe_path": str(kf_path),
                         "thumbnail_path": str(kf_path),
                         "faiss_id": len(all_keyframes),

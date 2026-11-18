@@ -133,6 +133,9 @@ def decode_frames(
         raise DecodeError(f"Video stream {video_stream_idx} not found in container")
 
     stream = streams[0]
+    if cfg.thread_count > 0:
+        stream.thread_count = cfg.thread_count
+        stream.thread_type = "AUTO"
     tb = stream.time_base or Fraction(probe_result.video_stream.time_base_num, probe_result.video_stream.time_base_den)
     tb_num, tb_den = tb.numerator, tb.denominator
 

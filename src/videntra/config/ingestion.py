@@ -51,6 +51,15 @@ class TimelineConfig:
             raise ValueError(f"Unsupported time_unit: {self.time_unit}")
 
 
+VALID_SAMPLING_STRATEGIES = (
+    "uniform_matched",
+    "hybrid_v1_legacy",
+    "sharpness_lookahead",
+    "shot_medoid_submodular",
+    "hybrid_v2_adaptive",
+)
+
+
 @dataclass(frozen=True)
 class SamplingConfig:
     lowres_max_dim: int = 256
@@ -67,6 +76,11 @@ class SamplingConfig:
     phash_min_distance: int = 4
     optical_flow_enabled: bool = False
     max_static_gap_seconds: float | None = None
+    strategy: str = "hybrid_v2_adaptive"
+    lookahead_window_seconds: float = 0.15
+    drift_threshold_c: float = 0.38
+    min_cut_interval_seconds: float = 0.20
+    min_luma_std: float = 8.0
 
     def validate(self) -> None:
         if self.lowres_max_dim < 32:
@@ -89,6 +103,16 @@ class SamplingConfig:
             raise ValueError("ocr_probe_fps must be strictly positive")
         if self.phash_min_distance < 0 or self.phash_min_distance > 64:
             raise ValueError("phash_min_distance must be between 0 and 64")
+        if self.strategy not in VALID_SAMPLING_STRATEGIES:
+            raise ValueError(f"Invalid sampling strategy '{self.strategy}'; expected one of {VALID_SAMPLING_STRATEGIES}")
+        if self.lookahead_window_seconds < 0:
+            raise ValueError("lookahead_window_seconds must be non-negative")
+        if not (0.0 < self.drift_threshold_c <= 1.0):
+            raise ValueError("drift_threshold_c must be in (0, 1]")
+        if self.min_cut_interval_seconds < 0:
+            raise ValueError("min_cut_interval_seconds must be non-negative")
+        if self.min_luma_std < 0:
+            raise ValueError("min_luma_std must be non-negative")
 
     @classmethod
     def for_duration(cls, duration_seconds: float) -> "SamplingConfig":
@@ -159,7 +183,9 @@ class IngestionConfig:
             "lowres_max_dim", "max_gap_seconds", "burst_pre_seconds", "burst_post_seconds",
             "burst_fps", "soft_target_fps", "soft_window_seconds", "ocr_probe_fps",
             "change_threshold_r", "change_threshold_d", "change_threshold_c",
-            "phash_min_distance", "optical_flow_enabled", "max_static_gap_seconds"
+            "phash_min_distance", "optical_flow_enabled", "max_static_gap_seconds",
+            "strategy", "lookahead_window_seconds", "drift_threshold_c",
+            "min_cut_interval_seconds", "min_luma_std",
         })
 
         jobs_data = data.get("jobs", {})

@@ -10,6 +10,7 @@ from .ingestion import (
     TimelineConfig,
     SamplingConfig,
     JobPolicyConfig,
+    VALID_SAMPLING_STRATEGIES,
 )
 
 
@@ -37,4 +38,5 @@ __all__ = [
     "TimelineConfig",
     "SamplingConfig",
     "JobPolicyConfig",
+    "VALID_SAMPLING_STRATEGIES",
 ]

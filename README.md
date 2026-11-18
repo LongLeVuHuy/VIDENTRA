@@ -2,7 +2,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-SigLIP2%20864D%20%2B%20VideoPrism%20%2B%2032D%20LightGBM%20LTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
-[![Test Suite](https://img.shields.io/badge/Pytest-614%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
+[![Test Suite](https://img.shields.io/badge/Pytest-623%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
 [![Hardware](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20%7C%20CPU--Ready-orange.svg)](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 
 ---
@@ -172,6 +172,12 @@ for rank, m in enumerate(response["moments"], 1):
 
 # Đánh giá chính thức đủ 3 tập (dev_150, dev_full_859, heldout_test_201) + ma trận A0..A5
 .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --out-dir work/ref_run_staging --publish-reference
+
+# Benchmark đa phương án trích xuất keyframes (5 chiến lược trên 3 tầng: Synthetic, 30 Real Videos, Validation SigLIP2)
+.\.venv\Scripts\python.exe scripts/benchmark_keyframe_strategies.py
+
+# So sánh chiến lược trích xuất keyframes trực tiếp qua CLI
+.\.venv\Scripts\python.exe -m videntra sampling compare --config configs/experiments/e02.json --manifest manifests/dev_media.jsonl --output work/sampling_compare
 ```
 
 ---
@@ -215,6 +221,18 @@ for rank, m in enumerate(response["moments"], 1):
 | **`A3`** | `+` Truy hồi Lexical (`OCR/ASR/FTS5`) & hợp nhất có cổng | `57.33%` | `74.00%` | `0.6322` | `0.6585` | `4.55%` | `0.0232` | `20.48 ms` |
 | **`A4`** | `+` Mở rộng biên theo tương phản | `57.33%` | `74.00%` | `0.6315` | `0.6578` | `63.64%` | `0.4364` | `22.84 ms` |
 | **`A5`** | `+ VideoPrism-LvT-B` + P2 Calibrated RRF + **P3 32d LightGBM LTR** + P4 Spatial/Action + P5 Soft-NMS + Consensus | **`65.33%`** | **`81.33%`** | **`0.7122`** | **`0.7372`** | **`72.73%`** | **`0.5443`** | `31.57 ms` |
+
+### 6.4. Benchmark Đa Phương án Trích xuất Keyframes (`HybridAdaptiveSampler`, `18/11/2026`)
+
+> Sau kiểm toán toàn bộ luồng lấy keyframes ([hybrid.py](file:///C:/Users/DELL/Desktop/VIDENTRA/src/videntra/sampling/hybrid.py), [extract_all_keyframes.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/extract_all_keyframes.py), [offline_processor.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/offline_processor.py)), đã vá lỗi use-after-free ring buffer, nâng cấp `63-AC pHash` + `INTER_AREA`, vector hóa C++ SIMD, lọc motion-blur/flash cut giả + pre-fade `last_content`, và thử nghiệm **5 chiến lược** trên 3 tầng (Synthetic Pathology, **30 video thật / `49,977` frames**, và **18 validation queries / `2,522` frames SigLIP2 CPU**; lưu tại [results.json](file:///C:/Users/DELL/Desktop/VIDENTRA/work/experiments/keyframe_strategy_benchmark/results.json)):
+
+| Chiến lược (`SamplingConfig.strategy`) | T2 Mean Samples | T2 Rep (`p10`) | T2 Cut Recall | T2 Redundancy | T3 `SigLIP2` Hit@1 | T3 MRR | T3 Peak Cosine | Violations | Đánh giá |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`hybrid_v2_adaptive` (Mặc định mới)** | `67.6` | **`0.9351`** (`0.8729`) | **`100.0%`** | **`1.62%`** | **`66.67%`** | **`0.7944`** | **`0.1335`** | **`0`** | **Winner #1 (`0.63070`)**, giảm `24x` trùng lặp |
+| `sharpness_lookahead` | `66.8` | `0.9341` (`0.8698`) | `100.0%` | `1.53%` | `66.67%` | `0.7944` | `0.1334` | `0` | Hạng #2 (`0.63053`) |
+| `shot_medoid_submodular` | **`38.6`** | `0.9129` (`0.8253`) | `100.0%` | **`0.00%`** | `66.67%` | `0.7913` | `0.1301` | `0` | Hạng #3 (`0.62509`), nén tối đa (`-43%` ảnh) |
+| `hybrid_v1_legacy` *(đã vá bug)* | `73.4` | `0.9280` (`0.8596`) | `100.0%` | `39.28%` | `61.11%` | `0.7648` | `0.1334` | `0` | Hạng #4 (`0.61622`) |
+| `uniform_matched` / `_matched_budget` | `62.1` / `67.6` | `0.9289` / `0.9427` | `32.4%` / `46.5%` | `35.1%` / `36.4%` | `77.8%` / `72.2%` | `0.837` / `0.813` | `0.1318` / `0.1319` | `0` | Baseline không bắt chuyển cảnh (`QVH-WinCos=0.1491`) |
 
 ---
 

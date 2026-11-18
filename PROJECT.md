@@ -38,13 +38,13 @@
 | :--- | :--- |
 | `videntra.api` | `app.py` (`/health` telemetry đa nhánh), `search.py` (`POST /v1/search`, `POST /v1/search/similar`, dataset preset filtering), `media.py` (HTTP 206 Range), `frames.py` (PyAV LRU cache & `GET /v1/videos/{video_id}/neighbors`), `exports.py` (xuất `aic_kis`, `vbs_csv` chống formula injection), `ui_html.py` (UI VBS/AIC Inspector) |
 | `videntra.asr` | `vad.py`, `transcription.py` (`PhoWhisperTranscriber` / `Faster-Whisper`), `alignment.py` (`TimelineAligner`) |
-| `videntra.config` | Cấu hình Ingestion, Sampling và thiết lập runtime `VIDENTRA_*` |
+| `videntra.config` | Cấu hình Ingestion, Timeline và Sampling (`SamplingConfig` 5 chiến lược `VALID_SAMPLING_STRATEGIES`, tham số lookahead/drift/flash guard) cùng thiết lập runtime `VIDENTRA_*` |
 | `videntra.contracts` | `schemas/` và validator cho `dataset`, `media_asset`, `frame_record`, `query_graph`, `result` |
 | `videntra.encoders` | `siglip2.py` (`SigLIP2Encoder`, `MockSigLIP2Encoder`) |
 | `videntra.evaluation` | `evaluator.py`, `provenance.py` (`load_ltr_model_info` 32d/24d, `assign_connected_source_groups`, `resolve_oof_fold_for_query`, `resolve_a5_preset`, `compute_code_sha256` & media leakage gate), `split_lock.py`, `corpus_gate.py` |
 | `videntra.evidence` | `store.py`, `normalize.py` (đọc/ghi `OCR`/`ASR` & chuẩn hóa văn bản) |
 | `videntra.indexing` | `augmented_vector.py` (`deduplicate_and_filter_frame_objects` NMS, vector `864d`, bbox dims `10/11/15`), `text_store.py` (FTS5 + precompiled regexes), `visual_store.py`, `snapshot.py` |
-| `videntra.ingestion` | `probe.py`, `jobs.py` (`IngestionJobManager` atomic resume) |
+| `videntra.ingestion` | `probe.py`, `decode.py` (`DecodeConfig.thread_count` + presentation-order PyAV), `jobs.py` (`IngestionJobManager` atomic resume, chiến lược động `sampler_rev`) |
 | `videntra.localization` | `refine.py` (`expand_boundary_contrast`, `snap_boundaries_to_shot_cuts`, vectorized `_optimal_contrast_segment`, `localize_moments_multimodal_dp`, `propose_soft_nms_secondary_windows`) |
 | `videntra.ocr` | `detection.py`, `recognition.py` (`GeneralOCRRecognizer`, `VietOCRRecognizer`), `routing.py`, `tracking.py` |
 | `videntra.query` | `schemas.py`, `rules.py`, `canonicalize.py`, `llm.py` (`AdaptiveQueryDecomposer`, `LocalSmallLLMBackend` Qwen2.5-1.5B, `SemanticDecomposerValidator`) |
@@ -52,14 +52,15 @@
 | `videntra.relations` | `spatial_action_verifier.py` (`SpatialActionVerifier` 2D geometry + monotonic DP), `matcher.py`, `predicates.py`, `entities.py`, `attributes.py`, `temporal.py` |
 | `videntra.retrieval` | `unified_pipeline.py` (SSOT 7-stage), `videoprism_branch.py` (`VideoPrismClipRetriever`, `_VideoScoreMap`, CSLS + sub-clip curve), `clip_branch.py` (`ClipBranchIndex` v2 + `consensus_only_a5_vid` fast path), `alignment.py` (`viterbi_subevent_localization`, `shot_aware_graph_diffusion`, `query_guided_temporal_attention_score`, `temporal_sinkhorn_alignment_score`), `visual.py`, `branches.py`, `fusion.py`, `union.py` |
 | `videntra.runtime` | `AdmissionController`, `DeadlineBudget` |
-| `videntra.sampling` | Hybrid Adaptive Sampling |
+| `videntra.sampling` | `hybrid.py` (`HybridAdaptiveSampler` hỗ trợ 5 chiến lược `hybrid_v2_adaptive` mặc định, `sharpness_lookahead`, `shot_medoid_submodular`, `hybrid_v1_legacy`, `uniform_matched`; `_FrameSignalEntry` tách biệt pixels, `63-AC pHash`, C++ SIMD `cv2`, Composite Quality lookahead & chống cut giả motion-blur/flash), `probes.py` (`select_ocr_probes` reset theo `epoch_id` + `burst_ordinals`), `compare.py` (`QualityBenchmarkMetrics`, `evaluate_keyframe_quality`, `compare_sampling_strategies`) |
 | `videntra.storage` | `database.py` (kết nối SQLite `finally: conn.close()` an toàn), Parquet snapshot I/O |
 | `videntra.timeline` | `ledger.py` (presentation-order PTS ledger) |
 
 ---
 
 ## 4. Các Công cụ Vận hành & Kiểm toán (`scripts/`)
-- **Benchmark & Ablation:** `run_validation_benchmark.py` (đánh giá 3 splits, `--publish-reference`, đo `non_neural_latency`, `cold_latency`, `ram_peak_mb`, cố định provenance SHA-256), `evaluate_multimodal_ablations.py`, `evaluate.py`, `profile_text_encoder.py`.
+- **Benchmark & Ablation:** `run_validation_benchmark.py` (đánh giá 3 splits, `--publish-reference`, đo `non_neural_latency`, `cold_latency`, `ram_peak_mb`, cố định provenance SHA-256), `benchmark_keyframe_strategies.py` (benchmark 3 tầng so sánh 5 chiến lược lấy keyframes kèm `SigLIP2` trên `validation/`), `evaluate_multimodal_ablations.py`, `evaluate.py`, `profile_text_encoder.py`.
+- **Trích xuất Keyframes & Offline Ingestion:** `extract_all_keyframes.py` (giải mã PyAV đúng presentation-order, kiểm tra `_is_valid_jpeg` tự phục hồi file hỏng & ghi atomic `.jpg`), `offline_processor.py` (streaming `HybridAdaptiveSampler`, `SamplingConfig.for_duration`, bảo toàn `pts` gốc).
 - **VideoPrism Kaggle Extraction & Ingestion:** `build_videoprism_corpus_index.py` (package/push Kaggle `2 × Tesla T4` + `ingest` vào `data/processed` & `data/cache`), `kaggle_videoprism_worker.py`, `prepare_clip_vp_kaggle_bundle.py`, `ingest_kaggle_offline_results.py` (`?mode=ro` preflight).
 - **LTR Training & Replay:** `train_ltr_ranker_cv.py` (hỗ trợ `--model-type {lightgbm,pairwise_logistic}`, `--extract-from-val`, ràng buộc đơn điệu 32d, native `lgb.train` + OOF CV), `capture_msr_candidate_pools.py`, `run_clip_vp_replay.py`, `compare_msr_runs.py`, `export_to_aic_format.py` (mặc định ghi `work/aic_export`, có guard chống ghi đè).
 - **Kaggle Offline OCR/ASR/P8-5 & Kiểm toán:** `package_kaggle_inputs.py`, `kaggle_multimodal_offline_worker.py`, `build_e5_text_index.py`, `prewarm_llm_query_cache.py`, `audit_*.py`, `verify_asset_roots.py`.
@@ -75,3 +76,4 @@
 | **P3–P4 (Evaluation Suite)** | E1–E5 (Multi-split `dev_150` / `dev_full_859` / `heldout_test_201`, Bootstrap CI, Taxonomy F1–F5, A0–A5 Ablations) | **DONE** (báo cáo tại [benchmark_report.md](file:///C:/Users/DELL/Desktop/VIDENTRA/benchmark/benchmark_report.md)) |
 | **Phase 5–9 & P9-MSRVTT** | De-overfitting, Monotonic LTR 24d, Real `VietOCR`/`PhoWhisper`, Canonical OOF, `ClipBranchIndex` v2 Consensus Boost, Stage 2 `exact` blended selection | **DONE** |
 | **Upgrade Toàn diện P0–P6 (18/11/2026)** | **P0** Audit/WAL/Replay fixes; **P1** VideoPrism-LvT-B toàn corpus (`1,324` videos, `866` sub-clips); **P2** Confidence-Calibrated RRF + Visual Guardrail; **P3** 32d 5-fold OOF LightGBM (`bw=0.08`) + vector hóa 1D tree traversal; **P4** YOLO NMS + `SpatialActionVerifier`; **P5** Contrast + Percentile Soft-NMS (`Moment nDCG@5 0.5443`); **P6** UI/API tương tác + AIC/VBS export + vector hóa latency | **DONE (`614/614` tests PASS, Run `6999d992`)** (`dev_150` Hit@1 **`65.33%`**, MRR **`0.7122`**, nDCG@10 **`0.7372`**, Moment Hit@1@0.5 **`72.73%`**, Moment nDCG@5 **`0.5443`**; `dev_full_859` Hit@1 **`49.13%`**, MRR **`0.5863`**; `heldout_test_201` Hit@1 **`45.27%`**, MRR **`0.5452`**, `clean_disjoint`, `Pure-ASR FP = 0`) |
+| **Keyframe Extraction Audit & 5-Strategy Upgrade (18/11/2026)** | Vá ring-buffer use-after-free, `63-AC pHash` + `INTER_AREA` + C++ SIMD vector hóa, lọc motion-blur/flash cut giả & fade tail, chuyển `extract_all_keyframes.py` / `offline_processor.py` sang PyAV atomic streaming + `pts` gốc; thử nghiệm 5 chiến lược & chọn **`hybrid_v2_adaptive`** | **DONE (`623/623` tests PASS)** — `hybrid_v2_adaptive` hạng #1 (`composite=0.6307`, `0` vi phạm max-gap, `T2 Rep=0.9351`, `Cut Recall=100%`, `Redundancy=1.62%` giảm 24x vs v1, `T3 SigLIP2 Hit@1=66.67%`, `MRR=0.7944`, `PeakCos=0.1335`) |

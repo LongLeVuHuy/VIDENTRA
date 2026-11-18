@@ -79,14 +79,18 @@ def _cached_decode_frame_from_media(media_path_str: str, mtime_ns: int, target_o
             raise ValueError("No video stream found")
         stream = video_streams[0]
         tb = stream.time_base
+        origin_pts: int | None = None
         for ordinal, frame in enumerate(container.decode(video=0)):
+            if origin_pts is None and frame.pts is not None:
+                origin_pts = int(frame.pts)
             if ordinal == target_ordinal:
                 img = Image.fromarray(frame.to_ndarray(format="rgb24"))
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=85)
                 ts_us = ""
                 if frame.pts is not None and tb is not None:
-                    sec = float(Fraction(frame.pts, 1) * tb)
+                    rel_pts = int(frame.pts) - (origin_pts if origin_pts is not None else int(frame.pts))
+                    sec = float(Fraction(rel_pts, 1) * tb)
                     ts_us = str(int(round(sec * 1_000_000)))
                 return buf.getvalue(), frame.pts, ts_us
     finally:
@@ -139,13 +143,7 @@ def get_exact_frame(video_id: str, index: int, request: Request):
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85)
 
-            ts_us = ""
-            if decoded.pts is not None:
-                try:
-                    sec = float(Fraction(decoded.pts, 1) * Fraction(decoded.time_base_num, decoded.time_base_den))
-                    ts_us = str(int(round(sec * 1_000_000)))
-                except Exception:
-                    pass
+            ts_us = str(decoded.timestamp_us) if decoded.timestamp_us is not None else ""
 
             return _encode_jpeg_response(
                 buf.getvalue(),
