@@ -1,342 +1,224 @@
 # VIDENTRA — Hệ Thống Truy Xuất Video Đa Phương Thức & Định Vị Khoảnh Khắc Chính Xác Cao
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
-[![Architecture](https://img.shields.io/badge/Architecture-864D%20Subspace%20%2B%20Small--LLM%20%2B%2024D%20Residual%20CrossLTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
-[![Test Suite](https://img.shields.io/badge/Pytest-604%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
+[![Architecture](https://img.shields.io/badge/Architecture-SigLIP2%20864D%20%2B%20VideoPrism%20%2B%2032D%20LightGBM%20LTR-success.svg)](#2-kiến-trúc-pipeline-chi-tiết)
+[![Test Suite](https://img.shields.io/badge/Pytest-614%20passed-brightgreen.svg)](#6-kết-quả-benchmark-thực-nghiệm)
 [![Hardware](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20%7C%20CPU--Ready-orange.svg)](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 
 ---
 
 ## Mục Lục Theo Luồng Tài Liệu
-1. [Giới Thiệu Dự Án & Điểm Mới Đột Phá So Với Các Hệ Thống Cùng Thể Loại](#1-giới-thiệu-dự-án--điểm-mới-đột-phá-so-với-các-hệ-thống-cùng-thể-loại)
+1. [Giới Thiệu Dự Án & 7 Hạng Mục Nâng Cấp Cốt Lõi (P0–P6)](#1-giới-thiệu-dự-án--7-hạng-mục-nâng-cấp-cốt-lõi-p0p6)
 2. [Kiến Trúc Pipeline Chi Tiết](#2-kiến-trúc-pipeline-chi-tiết)
 3. [Các Bộ Datasets Dự Án Đang Sử Dụng](#3-các-bộ-datasets-dự-án-đang-sử-dụng)
 4. [Hướng Dẫn Cài Đặt, Tạo Vector Embedding & Huấn Luyện Học Máy](#4-hướng-dẫn-cài-đặt-tạo-vector-embedding--huấn-luyện-học-máy)
 5. [Cách Để Chạy Chương Trình (CLI, Web UI Inspector, FastAPI & Python SDK)](#5-cách-để-chạy-chương-trình-cli-web-ui-inspector-fastapi--python-sdk)
-6. [Kết Quả Benchmark Thực Nghiệm](#6-kết-quả-benchmark-thực-nghiệm)
-7. [Khẳng Định Lại Tính Mới & Định Hướng Nghiên Cứu Tiếp Theo](#7-khẳng-định-lại-tính-mới--định-hướng-nghiên-cứu-tiếp-theo)
+6. [Kết Quả Benchmark Thực Nghiệm (`Run 6999d992`)](#6-kết-quả-benchmark-thực-nghiệm)
+7. [Giới Hạn Hệ Thống & Định Hướng Nghiên Cứu Tiếp Theo](#7-giới-hạn-hệ-thống--định-hướng-nghiên-cứu-tiếp-theo)
 
 ---
 
-## 1. Giới Thiệu Dự Án & Điểm Mới Đột Phá So Với Các Hệ Thống Cùng Thể Loại
+## 1. Giới Thiệu Dự Án & 7 Hạng Mục Nâng Cấp Cốt Lõi (P0–P6)
 
-**VIDENTRA** là một hệ thống tìm kiếm video đa phương thức (**Multimodal Video Retrieval**) kết hợp định vị khoảnh khắc theo thời gian (**Temporal Moment Localization**), cho phép người dùng nhập một câu truy vấn tự nhiên (ngắn, vừa hoặc phức hợp nhiều mệnh đề) để tìm ra **đúng video** và **đúng khoảng thời gian `[start_sec, end_sec]`** diễn ra sự kiện đó trên một kho dữ liệu video hỗn hợp.
+**VIDENTRA** là hệ thống tìm kiếm video đa phương thức (**Multimodal Video Retrieval**) kết hợp định vị khoảnh khắc theo thời gian (**Temporal Moment Localization**). Với nguyên tắc thiết kế **"Chỉ dùng LLM (`Qwen2.5-1.5B`) ở Stage 1 tách/định tuyến truy vấn; toàn bộ các bước truy xuất, hợp nhất, kiểm chứng, xếp hạng và định vị phía sau đều dùng mô hình embedding chuyên dụng, thuật toán truy xuất vector/từ vựng và ranker học máy chuyên biệt"**, VIDENTRA đạt độ chính xác cao, minh bạch provenance và tốc độ phản hồi nhanh trên cả GPU lẫn CPU.
 
-### Điểm mới và cải tiến đột phá so với các dự án truyền thống cùng thể loại
+### Tổng quan 7 hạng mục nâng cấp đã hoàn thiện (`P0` $\to$ `P6`)
 
-Hầu hết các hệ thống tìm kiếm video hiện nay (như các hệ thống thuần CLIP/SigLIP hoặc ghép nối BM25 đơn giản) thường gặp 5 hạn chế lớn: **(1)** Nhúng toàn bộ khung hình thành 1 vector duy nhất nên mất thông tin số lượng và vị trí không gian của vật thể; **(2)** Đổ chung câu truy vấn dài vào cùng một bộ mã hóa cho cả hình ảnh, OCR và ASR gây nhiễu chéo; **(3)** Sai lệch thời gian khi giải mã video có tốc độ khung hình biến thiên (VFR); **(4)** Dễ bị đánh lừa bởi các video có lời thoại trùng ngẫu nhiên từ khóa (Pure-ASR False Positives); và **(5)** Chỉ trả về cả video hoặc 1 đoạn cắt cố định.
-
-**VIDENTRA giải quyết triệt để các hạn chế trên bằng 6 cải tiến kiến trúc cốt lõi:**
-
-| Hạn chế của các dự án cùng thể loại | Điểm mới & Cải tiến đột phá của VIDENTRA |
-| :--- | :--- |
-| **1. Vector nhúng thị giác thuần túy (`512d`/`768d`) bị mù số lượng & vị trí không gian** | **Không gian Vector Mở rộng Trực giao 864 Chiều (`864d Augmented Subspace`)**: Ghép nối có kiểm soát năng lượng giữa ngữ nghĩa toàn cục `SigLIP2` (`768d`) + biểu đồ 80 lớp đối tượng `YOLOv11n` có trọng số IDF (`80d`) + lưới bố cục không gian $3\times 3$ (`16d`). |
-| **2. Đưa nguyên câu truy vấn dài vào mọi nhánh gây nhiễu (Cross-Modal Pollution)** | **Phân rã & Định tuyến Truy vấn bằng Small-LLM (`Qwen2.5-1.5B-Instruct` GGUF)**: Tự động bóc tách câu truy vấn thành các phần riêng biệt cho `Visual`, `OCR`, `ASR`, `Spatial` và thứ tự thời gian (`before`/`after`/`then`), kèm cơ chế cache JSONL và fallback `< 1ms`. |
-| **3. OCR & ASR đơn ngữ thường sai dấu tiếng Việt** | **Kiến Trúc Chuyên Gia Song Ngữ Thực Chiến (`VietOCR` + `PaddleOCR`/`RapidOCR` + `PhoWhisper`/`Faster-Whisper`)**: Gỡ bỏ toàn bộ stub giả; `OCRRouter` tự động định tuyến văn bản tiếng Việt/độ tin cậy thấp sang `VietOCR` (`vgg_transformer.pth`), `ASR` hỗ trợ cả `Faster-Whisper` và `PhoWhisper-small` kèm tự nhận diện ngôn ngữ và Kaggle GPU `--mode ocr_asr` offload. Văn bản được chuẩn hóa kép có dấu / không dấu (`fold_diacritics`). |
-| **4. Tính thời gian theo công thức xấp xỉ `frame_idx / FPS` (sai lệch nặng trên video VFR)** | **Sổ cái Thời gian Giải mã Chính xác (`Presentation-Order PTS Ledger`)**: Mọi khung hình và bằng chứng OCR/ASR đều được neo trực tiếp vào `PTS / time_base` thực tế từ luồng giải mã PyAV, không dùng phép nhân FPS xấp xỉ. |
-| **5. Hợp nhất điểm bằng trọng số cộng tay tĩnh (dễ bị nhiễu lời thoại ASR cướp hạng 1)** | **Bộ Xếp Hạng Phần Dư 24 Chiều Có Ràng Buộc Đơn Điệu (`24d Base-Anchored Residual CrossLTR`) + Cổng Chặn Nhiễu**: Học trọng số bằng 5-Fold GroupKFold OOF Cross-Validation trên margin phần dư quanh `base_video_score`, kết hợp `vis_lexical_synergy`, `temporal_attention_coherence` (#23), `rrf_vis_caption` (#24) và cổng kiểm chứng hình ảnh, giữ `Pure-ASR False Positive Top-1 = 0`. |
-| **6. So khớp từng mệnh đề độc lập, bỏ qua thứ tự trước – sau của hành động** | **Đối sánh Tập Mệnh đề `MV-SetSim`, `SE-Viterbi` & Partial Optimal Transport (`T-SOT`)**: Ép ứng viên phải thỏa mãn mệnh đề yếu nhất (`subclause_weakest_link`), căn chỉnh chuỗi sự kiện theo khoảng cách thời gian thực $\Delta t$ và đánh giá độ đồng thuận đa khung hình qua `Query-Guided Temporal Attention Pooler`. |
-| **7. Cắt đoạn thời gian theo cửa sổ trượt cố định (Sliding Window cứng nhắc)** | **Mở Rộng Biên Tương Phản Thích Ứng (`Adaptive Boundary Expansion`) & Đa Đỉnh `NMS-MultiPeak`**: Tự động co giãn biên `[start_sec, end_sec]` theo độ dốc tương đồng thực tế của từng video và trích xuất đa khoảnh khắc (`_win1`, `_win2`, `_win3`). |
+| Ưu tiên | Hạng mục | Nội dung nâng cấp cốt lõi | Kết quả thực tế |
+| :---: | :--- | :--- | :--- |
+| **P0** | **Chuẩn hóa Pipeline & Chống Rò Rỉ** | Siết chặt contract `VLM` replay (`(query_text_sha256, video_id)` + ordinal/PTS, gỡ fallback `by_qid` dễ rò rỉ), xóa danh sách từ đồng nghĩa/domain hack thủ công, tắt VLM caption theo mặc định khi thiếu artifact, sửa rò rỉ file handle SQLite WAL (`finally: conn.close()`) & guard ghi đè `export_to_aic_format.py`. | **614/614 tests PASS**, zero leakage (`heldout_source_leakage=False`). |
+| **P1** | **Visual & Video Retrieval (`SigLIP2 + VideoPrism`)** | Giữ khung `SigLIP2` 768d/864d song song với **VideoPrism-LvT-B (`768d`)** (`1,324` toàn video + `866` sub-clips `16s/8s` trích trên Kaggle `2 × Tesla T4`), nạp vào FAISS + `_VideoScoreMap` O(1). | Union Recall đạt **`86.26%`** (`dev_full_859`), Shortlist Recall **`93.02%`**. |
+| **P2** | **Confidence-Calibrated Fusion & Guardrails** | Hiệu chuẩn độ tin cậy `OCR` và `calibrate_asr_confidence` (`ASRSegments`), nhân trọng số IDF toàn corpus & `lex_reliability_score` vào RRF, áp dụng **Visual Consensus Guardrail** giảm `0.35×` cho match 1 token phổ biến yếu lệch thị giác. | **Pure-ASR FP Top-1 = `0`** trên cả 3 tập đánh giá. |
+| **P3** | **VideoPrism CSLS Rerank & 32d Monotonic LightGBM** | Step H **VideoPrism Top-20 Reranking** (kèm CSLS anti-hubness + `clause_order_score`), nâng cấp vector đặc trưng lên **32 chiều (`LTR_FEATURE_NAMES_V2`)** và huấn luyện **5-Fold GroupKFold OOF LightGBM** (`tree_ensemble`, ràng buộc đơn điệu dương, trọng số hard-negative, `blend_weight = 0.08`, suy luận NumPy phẳng không đệ quy). | **`dev_full_859` Hit@1: `43.77% -> 49.13%` (`+5.36 pp`)**; **`heldout_test_201`: `39.80% -> 45.27%` (`+5.47 pp`)**. |
+| **P4** | **Spatial & Action Understanding** | Lọc trùng NMS theo `(frame, class)` (`IoU > 0.65`) cho YOLO `FrameObjects` khi dựng vector 864d, bổ sung `SpatialActionVerifier` (`src/videntra/relations/spatial_action_verifier.py`) kiểm tra cardinality từng frame (`detector_ran` guard), quan hệ hình học 2D (`left_of`, `right_of`, `above`, `below`, `inside`, `near`), DP đơn điệu tiến/lùi thứ tự hành động và biên độ chuyển động. | Phân biệt chính xác video cùng bối cảnh nhưng khác số lượng, vị trí hoặc thứ tự hành động. |
+| **P5** | **Temporal Localization** | Giữ đường cong `SigLIP2` sắc nét (`float64`), ràng buộc an toàn `SE-Viterbi`, tinh chỉnh plateau rộng bằng `_optimal_contrast_segment` vector hóa 2D NumPy (`O(T^2)` không vòng lặp Python) và nâng cấp `propose_soft_nms_secondary_windows` dùng ngưỡng nền phân vị 15% + suy giảm cộng tính bất biến thang điểm LTR/VideoPrism. | `dev_150` **Moment Hit@1@0.5 = `72.73%`**, **Moment nDCG@5 = `0.5443`** (`>= 0.5300` PASS). |
+| **P6** | **Competition Web UI, API & CLI** | Lọc `dataset` (`all`/`msrvtt`/`avc`/`qvhighlights`), tìm video/khoảnh khắc tương tự (`POST /v1/search/similar`), dải keyframe lân cận (`GET /v1/videos/{video_id}/neighbors` với PyAV LRU cache), `/health` telemetry, và xuất chuẩn **AIC KIS CSV / VBS CSV** chống CSV-injection (`exports.py`). | Sẵn sàng tác chiến VBS/AIC + 47 API tests PASS. |
 
 ---
 
 ## 2. Kiến Trúc Pipeline Chi Tiết
 
-Toàn bộ hệ thống vận hành qua một luồng hợp nhất duy nhất (**Single Source of Truth — `UnifiedMultimodalSearchPipeline`**) gồm **6 tầng (Stages)** nối tiếp nhau:
-
 ```mermaid
 flowchart TD
-    Q["Truy vấn người dùng (Ngắn / Vừa / Dài)"] --> S1["Stage 1: Query Canonicalization & Small-LLM Decomposition<br/>(Qwen2.5-1.5B GGUF / JSONL Cache / Rule Fallback < 1ms)"]
-    S1 --> S2["Stage 2: Multi-Representation Query Encoding & MV-SetSim<br/>(SigLIP2 768d + COCO-IDF 80d + Spatial 16d = 864d + SE-Viterbi)"]
-    S1 --> S3A["Nhánh OCR & ASR Lexical<br/>(SQLite FTS5 BM25 + Bigram/Prefix)"]
-    S1 --> S3B["Nhánh Dense Text Fallback<br/>(Multilingual-E5-Small 384d FAISS + Intent Gate)"]
-    S2 --> S3C["Nhánh Visual Retrieval<br/>(FAISS 864d Inner-Product + Multi-Clause Ensemble)"]
-    S3A & S3B & S3C --> S4["Stage 3 & 4: Query-Adaptive RRF Fusion & Temporal Clustering<br/>(Cross-Modal Consensus + True Visual Disk-Mmap Rescoring)"]
-    S4 --> S5["Stage 5: 24-Feature Residual CrossLTR & Visual-Floor Guardrails<br/>(Base-Anchored Pairwise LTR + Attention Coherence #23 + VLM Caption #24)"]
-    S5 --> S6["Stage 6: Temporal Moment Localization & Multi-Peak NMS<br/>(Adaptive Boundary Contrast + NMS-MultiPeak _win1.._win3)"]
+    A["User Query"] --> B["Qwen2.5-1.5B: Query Decomposition"]
+    B --> C["SigLIP2: Frame Retrieval"]
+    B --> D["VideoPrism: Clip Retrieval"]
+    B --> E["OCR / ASR / E5 / FTS5"]
+    C --> F["Candidate Union + RRF"]
+    D --> F
+    E --> F
+    F --> G["A5 Fusion + Visual Guardrails"]
+    G --> H["VideoPrism Reranking Top-20"]
+    H --> I["LightGBM / Pairwise Ranker + Spatial & Action Verification"]
+    I --> J["Temporal Localization"]
+    J --> K["Top-K Videos + Exact Moments"]
+    classDef llm fill:#fff1cc,stroke:#c99625,color:#6d4b00
+    classDef improved fill:#ddf4e8,stroke:#28885c,color:#14583a
+    class B llm
+    class D,H,I,J improved
 ```
 
-### Giải thích chi tiết từng tầng trong Pipeline
-
-1. **Stage 1 — Chuẩn hóa & Phân rã Truy vấn (`Query Canonicalization & Small-LLM Decomposition`)**:
-   - Chuẩn hóa bảng mã Unicode NFC, nhận diện cụm từ trong ngoặc kép (`quoted_phrases`), danh từ riêng (`proper_nouns`), con số (`q_numbers`) và yêu cầu đối tượng COCO.
-   - Đưa câu truy vấn qua `AdaptiveQueryDecomposer` (`src/videntra/query/llm.py`): nếu truy vấn phức hợp, mô hình `Qwen2.5-1.5B-Instruct` (hoặc bộ đệm `query_decomposition_cache.jsonl` / `RuleBasedQueryParser` `< 1ms`) sẽ tách thành kế hoạch định tuyến `ModalityRoutingPlan` gồm: mệnh đề hình ảnh (`visual_clauses`), từ khóa chữ trên màn hình (`ocr_phrases`), từ khóa lời thoại (`asr_phrases`), ràng buộc không gian và quan hệ thời gian (`has_temporal_constraints`).
-2. **Stage 2 — Mã hóa Đa Biểu diễn 864 Chiều & Truy xuất Thị giác Exact Blended (`864d Visual Retrieval & MV-SetSim`)**:
-   - Mã hóa truy vấn bằng cơ chế Dual-Prompt Ensemble (`0.75 * raw_query + 0.25 * frame_prompt`) qua `SigLIP2` (`768d`), sau đó ghép nối trực giao với vector đối tượng `COCO-IDF` (`80d`) và vector bố cục lưới $3\times 3$ (`16d`) để tạo thành vector `864d`.
-   - Truy xuất theo chế độ **`stage2_selection_mode="exact"`** (tính ma trận pha trộn `0.70*768d + 0.30*864d` trên mọi frame hợp lệ qua filter trước khi chọn Top-K với tie-break `(-score, fid)` ổn định; tùy chọn cờ `--video-proposal-mode`), kết hợp tính điểm bao phủ mệnh đề **`MV-SetSim`** (`subclause_weakest_link`) và căn chỉnh thứ tự sự kiện bằng quy hoạch động **`SE-Viterbi`** (`viterbi_subevent_localization`).
-3. **Stage 3 — Truy xuất Từ vựng (`VietOCR`/`PaddleOCR`/`RapidOCR` & `PhoWhisper`/`Faster-Whisper` → `FTS5`), `Dense E5` & `VLM Captions` (`P8-5`)**:
-   - Hệ thống hỗ trợ trích xuất OCR thật bằng `OCRRouter` (`PaddleOCR_en`/`RapidOCR` → `VietOCR`) tại [scripts/update_real_ocr.py](scripts/update_real_ocr.py) và ASR thật bằng `Faster-Whisper` / `PhoWhisper-small` kèm tự nhận diện ngôn ngữ tại [scripts/update_real_asr.py](scripts/update_real_asr.py) (cùng chế độ offload GPU `--mode ocr_asr` trên Kaggle).
-   - Tìm kiếm độc lập trên `ocr_fts`, `asr_fts` và bảng mô tả cảnh `fts_vlm_caption` trong `SQLite FTS5` (lưu song song văn bản nguyên dấu và `fold_diacritics`) với bộ lọc độ đặc hiệu từ khóa (`high_spec_tokens`), gốc từ hình thái học và ghép cặp từ liền kề (`compound_tokens` chống lỗi dính chữ OCR).
-   - Tách riêng cổng mã hóa `Dense E5` (`intfloat/multilingual-e5-small` 384d FAISS) cho văn bản (`need_e5_text`: kích hoạt khi kết quả FTS5 thưa và có ý định lexical) và cho `VLM Captions` (`need_e5_caption`: kích hoạt khi có `faiss_e5_caption_384.bin` khớp SHA-256 trên `p85_receipt.json`).
-4. **Stage 4 — Hợp nhất RRF Tách Bạch Provenance & Gom cụm Thời gian (`Cross-Modal RRF & Temporal Clustering`)**:
-   - Hợp nhất các ứng viên từ các nhánh (`Visual`, `OCR`, `ASR`, `VLM Caption`) với **tách bạch provenance** (`rrf_vis` độc lập khỏi `rrf_caption`; caption-only seeds không gắn nhãn `visual` và giới hạn $\le 2$ anchors/video/nguồn) và Reciprocal Rank Fusion có cổng kiểm chứng chéo (`True Visual Rescoring` đọc trực tiếp từ mảng memory-mapped trên đĩa để mọi ứng viên OCR/ASR đều được chấm điểm hình ảnh thật), kèm xuất `stage_traces` (`before_base_fusion`, `before_rerank`, `after_rerank`).
-   - Gom các khung hình lân cận thành các cụm sự kiện theo thời gian (Temporal Clusters) và tính thưởng mật độ (`density_bonus`) cho các video có nhiều khung hình liên tiếp đồng thuận.
-5. **Stage 5 — Xếp hạng Phần dư 24 Chiều & Cổng Chặn Nhiễu (`24d Residual CrossLTR & Guardrails`)**:
-   - Rút trích **24 đặc trưng liên tục** cho **toàn bộ** video ứng viên (bao gồm điểm đỉnh thị giác, Z-score, độ sụt đỉnh đơn lẻ `spike_drop_ratio`, độ mạch lạc ngữ cảnh `s_vis_ctx_coherence`, điểm RRF từng nhánh, `vis_lexical_synergy`, `subclause_weakest_link`, `window_energy_concentration` theo mật độ đồng thuận cục bộ, `temporal_attention_coherence` #23 tính trên chuỗi khung hình không chuẩn hóa lại, và `rrf_vis_caption` #24).
-   - Chấm điểm qua mô hình `LearnedRankerLTR` ([models/ranking/videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json), hỗ trợ đánh giá **Out-Of-Fold** chống rò rỉ) kết hợp cổng chặn `Pure-ASR Suppression` để loại bỏ các video chỉ khớp lời thoại ngẫu nhiên nhưng sai cảnh hình ảnh.
-6. **Stage 6–7 — Định vị Khoảnh khắc Thời gian & Đề xuất Đa Đỉnh (`Adaptive Boundary Contrast`, `Consensus Boost` & `NMS-MultiPeak`)**:
-   - Áp dụng **SigLIP2 Dual-Rank Frame+Clip Consensus Boost** (`_apply_clip_consensus_boost`, bật/tắt tách biệt với LTR qua `--a5-preset {a5_full,a5_lite,a5_no_consensus,a5_no_ltr}`) để thăng hạng ứng viên đồng thuận đứng đầu cả `rank_frame` và `rank_clip` trong biên an toàn trên `ClipBranchIndex` v2 (kiểm tra SHA-256 toàn phần & snapshot invalidation an toàn).
-   - Trên các video đứng đầu, nội suy đường cong tương đồng theo mốc thời gian thực `PTS`, mở rộng biên `[start_sec, end_sec]` bằng thuật toán tương phản thích ứng (`expand_boundary_contrast`).
-   - Áp dụng thuật toán **`NMS-MultiPeak`** (`temporal_iou < 0.30`) để phát hiện thêm các phân đoạn highlight thứ hai và thứ ba (`_win2`, `_win3`) trong các video dài.
+### Luồng xử lý và công thức toán học cốt lõi
+1. **Stage 1 — Tách Query (`Qwen2.5-1.5B-Instruct` / Rules Fallback) & Vector Truy vấn (`768d` + `864d`):**
+   - Bộ phân rã `AdaptiveQueryDecomposer` bóc tách truy vấn thành các cụm `visual_clauses`, trích xuất `ocr_phrases`, `asr_phrases`, yêu cầu đối tượng (`extract_object_requirements`) và ý định không gian/thứ tự.
+   - Vector câu truy vấn chính là tổ hợp chuẩn hóa `0.75 · e_raw + 0.25 · e_prompt("a video frame showing ...")`, sau đó mở rộng sang không gian trực giao **864 chiều** (gồm `768d SigLIP2` + `80d` biểu đồ 80 lớp COCO theo trọng số IDF + `16d` mật độ đối tượng, tọa độ tâm/diện tích bounding box và ngữ cảnh lưới $3 \times 3$).
+2. **Stage 2a & 2b — Truy hồi Song Song Frame (`SigLIP2`) & Clip/Sub-clip (`VideoPrism-LvT-B`):**
+   - Nhánh frame tính đồng thời dot-product pha trộn `0.70 · s_768 + 0.30 · s_864` ở chế độ `exact`, áp dụng `align_sequential_keyframe_clauses` và `temporal_sinkhorn_alignment_score` cho câu đa mệnh đề.
+   - Nhánh clip (`VideoPrismClipRetriever`) kết hợp điểm toàn video (`whole_cos`) và cực đại cửa sổ `16s/8s` (`subclip_max_cos`), kèm bonus tối đa/trung bình đa mệnh đề khi query có $\ge 2$ sự kiện.
+3. **Stage 3–5 — Truy hồi Lexical (`OCR / ASR / E5 / FTS5`), Confidence-Calibrated RRF & Visual Guardrails:**
+   - Truy vấn SQLite FTS5 (`fts_ocr`, `fts_asr`, chỉ đọc `?mode=ro`) với token đặc hiệu hóa và `Dense E5 384d` (`faiss_text_e5_384.bin`) khi có ý định lexical rõ rệt mà FTS5 thưa.
+   - Mỗi cụm lexical nhận hệ số tin cậy:
+     $$\text{lex\_reliability} = \text{clip}\!\left(\text{raw\_conf} \cdot \overline{\text{IDF}}_{\text{tokens}} \cdot \text{len\_spec},\ 0.15,\ 1.50\right)$$
+     từ xác suất OCR / hiệu chuẩn `calibrate_asr_confidence(logprob)` và từ điển IDF toàn corpus.
+   - Hợp nhất RRF đa nhánh (bất biến thứ tự cho cụm OCR/ASR, `0.85 × rrf_vp` cho VideoPrism) cùng cổng tương thích thị giác $\gamma_{\text{vis}} = \exp(-\max(0, \Delta_{\text{vis}} - 0.012)\cdot 35)$, **Pure-ASR Gate** và **Visual Consensus Guardrail** (giảm `0.35×` match 1 token IDF thấp `&lt; 0.65` lệch đỉnh thị giác).
+4. **Stage 6a–6b — VideoPrism Top-20 CSLS Rerank, Spatial/Action Verification & 32d Monotonic LightGBM LTR:**
+   - **Step H (`rerank_top_candidates`):** Tính $\text{CSLS}(q, v) = 2\cos(q, v_{\text{whole}}) - \bar{\mu}_{10}(v)$, $z$-score VideoPrism toàn corpus (`vp_z`) và tỷ lệ cặp mệnh đề đúng thứ tự thời gian trên các sub-clip (`clause_order_score`).
+   - **P4 (`SpatialActionVerifier`):** Trên Top-25 ứng viên, chấm điểm tuyến tính phần bù `0.012 × sa_graph_score` tổng hợp từ kiểm tra số lượng từng frame (có cờ `detector_ran`), đối chiếu 2D bounding box trên cùng keyframe và biên độ DP đơn điệu tiến trừ lùi (`fwd - rev`).
+   - **P3 (`LearnedRankerLTR` 32d `tree_ensemble`):** Vector **32 đặc trưng** (`24d` cơ bản + `vp_whole_cos`, `vp_subclip_max`, `vp_z`, `vp_csls`, `rrf_vp`, `lex_reliability_score`, `spatial_predicate_score`, `action_order_score`) đi qua **70 cây LightGBM** đã biên dịch thành bảng 1D NumPy phẳng (`score_base + 0.08 · tanh(score_tree)`), có **SigLIP2 Frame+Clip Consensus Boost** ở bước cuối.
+5. **Stage 7 — Temporal Localization & Soft-NMS Đa Đỉnh:**
+   - Trên đường cong `SigLIP2` sắc nét (`float64`), neo đỉnh đại diện (hoặc `SE-Viterbi` hữu hạn `<= 0.35 · duration`) mở rộng biên tương phản hai chiều (`expand_boundary_contrast`); các plateau dài `>= 60s` được siết lại bằng `_optimal_contrast_segment` (vector hóa 2D NumPy).
+   - `propose_soft_nms_secondary_windows` dùng ngưỡng nền phân vị 15% + valley gate + suy giảm cộng tính trích tối đa 3 cửa sổ phụ không chồng lấn (`tIoU < 0.30`).
 
 ---
 
 ## 3. Các Bộ Datasets Dự Án Đang Sử Dụng
 
-VIDENTRA được xây dựng và đánh giá trên một kho dữ liệu đa phương thức hợp nhất (**Global Unified Video Pool** gồm **1,324 videos** đã trích xuất đầy đủ đặc trưng trong cơ sở dữ liệu active benchmark, mở rộng từ 5 bộ dữ liệu chuẩn quốc tế):
+VIDENTRA đánh giá trên kho video hợp nhất (**1,324 videos** trong database active benchmark):
 
-| Tên Bộ Dữ Liệu | Đặc trưng phương thức chính | Vai trò kiểm thử trong VIDENTRA | Quy mô trong tập Đánh giá (`Validation 80%` / `Test 20%`) |
+| Bộ dữ liệu | Đặc trưng phương thức | Vai trò đánh giá | Chia tách chuẩn (`80% val` / `20% test`) |
 | :--- | :--- | :--- | :--- |
-| **1. QVHighlights** | Video dài (~150s), đa sự kiện, có cả cảnh hành động + hội thoại ASR + phụ đề/banner OCR + nhãn khoảng thời gian `[start, end]` đa đoạn | Kiểm thử đồng thời khả năng **Video Retrieval** và **Temporal Moment Localization (`tIoU >= 0.5 / 0.7`, `Moment nDCG@5`)** | `22` queries (`dev`) / `6` queries (`test`) trên kho video tin tức & vlog |
-| **2. MSRVTT** | Video ngắn (10–30s), mô tả hành động, con người, vật thể và bối cảnh thị giác đa dạng | Kiểm thử độ phân giải ngữ nghĩa tinh (**Fine-Grained Visual Retrieval**) trên kho 1,000 videos cạnh tranh cao | `809` queries (`dev_full_859`, lấy `100` câu đại diện trong `dev_150`) / `191` queries (`heldout_test_201`) |
-| **3. AVC (Audio-Visual / Educational Corpus)** | Video bài giảng, thuyết trình, công thức toán/khoa học trên bảng (`OCR`) và lời giảng chuyên sâu (`ASR`) | Kiểm thử khả năng kết hợp **OCR + ASR + Visual** và tra cứu thuật ngữ/danh từ riêng đặc hiệu cao | `28` queries (`dev`) / `4` queries (`test`) trên `300` videos |
-| **4. TextVR** | Video chứa chữ viết trên biển hiệu, màn hình, phụ đề, logo thương hiệu (Scene Text) | Kiểm thử chuyên sâu nhánh nhận diện và truy xuất chữ trên khung hình (**OCR Retrieval**) | Đã chia tách chuẩn 80% `validation/textvr` & 20% `test_queries/textvr` |
-| **5. TVR (TVQA+ Retrieval)** | Phim truyền hình có hội thoại nhân vật dày đặc kết hợp hành động | Kiểm thử chuyên sâu khả năng suy luận kết hợp lời thoại (**ASR**) và hành động nhân vật | Đã chia tách chuẩn 80% `validation/tvr` & 20% `test_queries/tvr` |
+| **QVHighlights** | Video dài (~150s), hành động + hội thoại + banner OCR + nhãn khoảng thời gian `[start, end]` | Đánh giá đồng thời **Video Retrieval** & **Temporal Moment Localization** | `22` queries (`validation/qvhighlights`) / `6` (`test_queries/qvhighlights`, 2 khớp DB active) |
+| **MSR-VTT** | Video ngắn (10–30s), mô tả hành động/vật thể/bối cảnh thị giác đa dạng | Đo độ phân giải ngữ nghĩa (**Fine-Grained Visual Retrieval**) trên 1,000 videos | `809` queries (`dev_full_859`, lấy 100 trong `dev_150`) / `191` (`heldout_test_201`) |
+| **AVC** | Video bài giảng/thuyết trình, bảng chữ OCR và lời giảng ASR | Kiểm thử **OCR + ASR + Visual** và thuật ngữ đặc hiệu | `28` queries (`validation/avc`) / `4`–`8` (`test_queries/avc` / active) |
+| **TextVR & TVR** | Chữ viết cảnh tự nhiên (TextVR) và hội thoại phim nhiều nhân vật (TVR) | Kiểm thử bổ sung OCR & ASR trên phân vùng `validation/` & `test_queries/` | Đã chia 80% / 20% theo đúng quy tắc chống rò rỉ |
 
-### Giao thức phân chia dữ liệu chống rò rỉ (`Zero Data Leakage Protocol`)
-- Toàn bộ dữ liệu truy vấn được chia cứng theo tỷ lệ **80% Validation** (nằm tại thư mục [validation/](file:///C:/Users/DELL/Desktop/VIDENTRA/validation)) và **20% Held-out Test** (nằm tại thư mục [test_queries/](file:///C:/Users/DELL/Desktop/VIDENTRA/test_queries)) thông qua kịch bản [scripts/split_groundtruth.py](file:///C:/Users/DELL/Desktop/VIDENTRA/scripts/split_groundtruth.py), phân tầng theo nguồn video gốc (`source_video_id` disjoint).
-- Mọi tệp Ground Truth đều được khóa mã băm SHA-256 trong `manifests/` và được kiểm tra tự động bởi `Provenance Gate` trước và sau mỗi lần chạy benchmark (`inputs_unchanged=True`).
+- **Zero Data Leakage Protocol:** Nhãn đánh giá chỉ được `evaluator` đọc; mọi đường dẫn ground truth bị chặn khỏi runtime qua `MediaResolver`; toàn bộ trọng số 32d `videntra_ltr_v1.json` được huấn luyện **chỉ trên `validation/`** theo **5-Fold GroupKFold** (`canonical source_group` nối liên thông), đảm bảo **`heldout_test_201` có `overlap = 0` và `heldout_source_leakage = False`**.
 
 ---
 
 ## 4. Hướng Dẫn Cài Đặt, Tạo Vector Embedding & Huấn Luyện Học Máy
 
-### 4.1. Cài đặt môi trường và thư viện từ đầu
-
-**Yêu cầu hệ thống:** Python `3.12+`, Windows PowerShell (hoặc Linux/macOS), RAM $\ge 16\text{GB}$ (chạy tốt trên cả **CPU** hoặc **GPU NVIDIA RTX 3060 6GB VRAM**).
+### 4.1. Cài đặt môi trường & kiểm tra tài nguyên
+- **Phần cứng mục tiêu:** `NVIDIA RTX 3060 6GB VRAM`, `32GB RAM`, hoặc chạy hoàn toàn trên **CPU** (`Python 3.12+`).
 
 ```powershell
-# 1. Di chuyển vào thư mục dự án
 cd C:\Users\DELL\Desktop\VIDENTRA
-
-# 2. Tạo và kích hoạt môi trường ảo Python (.venv)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# 3. Cài đặt toàn bộ các gói thư viện đã ghim phiên bản chuẩn
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install -e .
-
-# 4. Kiểm tra trạng thái đường dẫn và tài nguyên hệ thống
 .\.venv\Scripts\python.exe scripts/verify_asset_roots.py
 ```
 
----
+### 4.2. Các thư mục mô hình & chỉ mục (`models/`, `data/`)
+- `models/siglip2/`: `google/siglip2-base-patch16-224` (`768d`).
+- `models/llm/`: `qwen2.5-1.5b-instruct-q4_k_m.gguf` hoặc thư mục HF `qwen2.5-1.5b-instruct/` (tùy chọn bật ở Stage 1 qua `VIDENTRA_LLM_ENABLED=1`).
+- `models/ocr/`, `models/asr/`, `models/detection/`: `VietOCR` (`vgg_transformer.pth`), `PaddleOCR`, `PhoWhisper-small`/`Faster-Whisper`, `YOLOv11n`.
+- `models/ranking/videntra_ltr_v1.json`: Mô hình **32d LightGBM `tree_ensemble`** (70 cây depth-3, `blend_weight = 0.08`, kèm 5-fold `fold_weights` phục vụ OOF evaluation và danh sách `trained_query_ids`).
+- `data/processed/`: `metadata.db`, `faiss_index.bin` (`864d`), `faiss_text_e5_384.bin`, cùng bộ chỉ mục **VideoPrism-LvT-B** (`faiss_videoprism_clip_768.bin`, `videoprism_clip_manifest.json`, `videoprism_subclips_768.npy`, `videoprism_subclips_map.jsonl`) và cache vector truy vấn `data/cache/query_videoprism_768d.npz`.
 
-### 4.2. Cấu hình các thư mục Trọng số Mô hình (`models/`) và Dữ liệu (`data/`)
-
-Hệ thống sử dụng các mô hình cục bộ nằm trong thư mục `models/` (đã được cấu hình tự động):
-- `models/siglip2/`: Trọng số mô hình thị giác – ngôn ngữ `google/siglip2-base-patch16-224` (`768d`).
-- `models/llm/`: Trọng số mô hình phân rã truy vấn `qwen2.5-1.5b-instruct-q4_k_m.gguf` (chạy trên CPU/GPU qua `llama-cpp-python`) hoặc thư mục HuggingFace `qwen2.5-1.5b-instruct/`.
-- `models/ocr/`: checkpoint `vietocr/vgg_transformer.pth` và `paddleocr_en/` (đã nối qua `VietOCRRecognizer`, `GeneralOCRRecognizer` và `OCRRouter`).
-- `models/asr/`: `phowhisper_small/` (`vinai/PhoWhisper-small`) và `faster_whisper_small.pointer.json` (chọn qua `--backend {faster_whisper,phowhisper}`).
-- `models/detection/`: Trọng số phát hiện 80 lớp đối tượng COCO `YOLOv11n`.
-- `models/ranking/videntra_ltr_v1.json`: Trọng số bộ xếp hạng học máy 24 chiều (`LearnedRankerLTR`, kèm `trained_query_ids` và 5-fold `fold_weights` phục vụ OOF evaluation).
-
----
-
-### 4.3. Hướng dẫn tạo Vector Embedding & Xây dựng Chỉ mục (Local & Kaggle GPU)
-
-#### A. Nạp video mới, trích xuất Keyframes và tạo Vector 864 chiều (`864d FAISS`)
-- **Trích xuất keyframes và xử lý offline trên máy cục bộ:**
-  ```powershell
-  # Trích xuất keyframes từ video gốc trong data/raw/
-  .\.venv\Scripts\python.exe scripts/extract_all_keyframes.py
-
-  # Chỉ mục thị giác thật được tạo bằng worker SigLIP2 trên Kaggle (xem bước Kaggle bên dưới).
-  # scripts/offline_processor.py đã được khóa an toàn (mặc định ghi ra work/offline_scratch/faiss_index.bin,
-  # chặn ghi đè file thật nếu thiếu --i-understand-overwrite).
-  # OCR/ASR thật trên local hoặc offload lên Kaggle GPU (--mode ocr_asr):
-  .\.venv\Scripts\python.exe scripts/update_real_ocr.py
-  .\.venv\Scripts\python.exe scripts/update_real_asr.py --backend faster_whisper --model-size small
-  ```
-
-- **Đóng gói đưa lên Kaggle Dual-T4 GPU để trích xuất OCR/ASR & embedding nặng (`--mode ocr_asr` cho `VietOCR`/`PaddleOCR_en`/`PhoWhisper-small`/`Faster-Whisper`; `--mode p85` cho `spatial_patches_fp16.npy`, `Florence-2` Captions & `SigLIP2`):**
-  ```powershell
-  # Bước 1 (Local): Đóng gói danh sách 11,581 keyframes từ metadata.db
-  .\.venv\Scripts\python.exe scripts/package_kaggle_inputs.py `
-    --mode db `
-    --output-dir work/kaggle/p85_inputs
-
-  # Bước 2a (Kaggle GPU): Cào OCR/ASR thật trên GPU
-  # python scripts/kaggle_multimodal_offline_worker.py --mode ocr_asr --keyframes-manifest /kaggle/input/videntra-p85-inputs/keyframes_manifest.jsonl --out-dir /kaggle/working/ocr_asr_outputs --device cuda
-
-  # Bước 2b (Kaggle GPU): Trích xuất Spatial Patches 3x3 + Florence-2 Captions + E5 Caption FAISS
-  # python scripts/kaggle_multimodal_offline_worker.py --mode p85 --input-dir /kaggle/input/videntra-p85-inputs --output-dir /kaggle/working/p85_outputs --device cuda
-
-  # Bước 3 (Local): Nạp kết quả từ Kaggle về metadata.db & data/processed/ một cách an toàn
-  .\.venv\Scripts\python.exe scripts/ingest_kaggle_offline_results.py `
-    --mode ocr_asr `
-    --outputs-dir work/kaggle/ocr_asr_outputs `
-    --db-path data/processed/metadata.db
-
-  .\.venv\Scripts\python.exe scripts/ingest_kaggle_offline_results.py `
-    --mode p85 `
-    --kaggle-output-dir work/kaggle/p85_outputs
-  ```
-
-#### B. Tạo Vector Embedding Ngữ nghĩa Văn bản `Dense E5` (`384d FAISS`) cho OCR & ASR
-```powershell
-.\.venv\Scripts\python.exe scripts/build_e5_text_index.py
-```
-Lệnh này sẽ mã hóa toàn bộ các đoạn chữ `OCR` và lời thoại `ASR` trong `metadata.db` bằng mô hình `intfloat/multilingual-e5-small` và lưu chỉ mục vector tại `data/processed/faiss_text_e5_384.bin`.
-
-#### C. Tạo Cache Phân rã Truy vấn bằng Small-LLM (`query_decomposition_cache.jsonl`)
-```powershell
-# Tạo cache rules riêng trên CPU
-.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py --split all_1060 --no-enable-llm --cache-path work/experiments/query_rules_cache.jsonl
-
-# Chế độ đầy đủ bằng Qwen2.5-1.5B-Instruct (GGUF hoặc GPU)
-$env:VIDENTRA_LLM_ENABLED="1"
-$env:VIDENTRA_LLM_DEADLINE_MS="30000"
-.\.venv\Scripts\python.exe scripts/prewarm_llm_query_cache.py --split all_1060
-```
-
----
-
-### 4.4. Hướng dẫn Huấn luyện Học máy Bộ Xếp hạng Phần Dư 24 Chiều (`LearnedRankerLTR`)
-
-Để huấn luyện bộ trọng số xếp hạng **24 đặc trưng** đa phương thức ([models/ranking/videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json)) trên tập `validation` (`dev_full_859`) bằng phương pháp **5-Fold GroupKFold Cross-Validation** với hàm mất mát **Base-Anchored Residual Pairwise Logistic Loss + Monotonic Sign Projection**:
+### 4.3. Trích xuất embedding nặng trên Kaggle GPU & Huấn luyện lại 32d LightGBM LTR
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/train_ltr_ranker_cv.py --extract-from-val --l2-reg 250000.0 --blend-weight 0.015
+# 1. Đóng gói manifest trích xuất VideoPrism-LvT-B cho 1,324 videos + sub-clips + queries lên Kaggle Dual-T4 GPU:
+.\.venv\Scripts\python.exe scripts/build_videoprism_corpus_index.py package --out-dir work/kaggle/videoprism_full_1324
+# Sau khi Kaggle kernel lvhuylong/videntra-videoprism-full-1324 hoàn tất và tải về out_dir:
+.\.venv\Scripts\python.exe scripts/build_videoprism_corpus_index.py ingest --kaggle-out-dir work/kaggle/videoprism_full_1324_out --processed-dir data/processed --cache-dir data/cache
+
+# 2. Huấn luyện lại LightGBM 32d 5-Fold GroupKFold OOF CHỈ trên validation/ (dev_full_859):
+.\.venv\Scripts\python.exe scripts/train_ltr_ranker_cv.py --extract-from-val --extract-out work/ltr_dev859_32d.jsonl --model-type lightgbm --blend-weight 0.08 --out-model models/ranking/videntra_ltr_v1.json
 ```
-- **Đầu vào:** 859 câu truy vấn trong `validation/` (tạo ra ~40,877 dòng ứng viên x 24 đặc trưng kèm `base_video_score` ở Stage 5).
-- **Đầu ra:** File trọng số [models/ranking/videntra_ltr_v1.json](file:///C:/Users/DELL/Desktop/VIDENTRA/models/ranking/videntra_ltr_v1.json) (lưu kèm `trained_query_ids` và 5-fold `fold_weights` để hỗ trợ đánh giá Out-Of-Fold chống rò rỉ).
 
 ---
 
 ## 5. Cách Để Chạy Chương Trình (CLI, Web UI Inspector, FastAPI & Python SDK)
 
-### 5.1. Chạy tìm kiếm trực tiếp qua dòng lệnh (CLI)
-
+### 5.1. Tìm kiếm qua CLI
 ```powershell
 .\.venv\Scripts\python.exe -m videntra search --backend unified `
-  --query "A woman in a white blouse speaks to the camera while a news banner appears at the bottom" `
+  --query "A woman in a white blouse speaks to the camera while a news banner appears" `
   --top-k 5
 ```
 
-Nếu muốn bật suy luận trực tiếp mô hình `Qwen2.5-1.5B-Instruct` (`GGUF`) cho một câu truy vấn mới chưa có trong cache:
-```powershell
-$env:VIDENTRA_LLM_ENABLED="1"
-$env:VIDENTRA_LLM_DEADLINE_MS="15000"
-.\.venv\Scripts\python.exe -m videntra search --backend unified `
-  --query "First a chef chops vegetables on a wooden board, then he pours them into a boiling pot" `
-  --top-k 5
-```
-
----
-
-### 5.2. Chạy Giao diện Web UI Inspector & Máy chủ FastAPI
-
-Khởi động máy chủ web để sử dụng giao diện tìm kiếm trực quan trên trình duyệt (nhập truy vấn, lọc dataset/backend, xem cảnh báo `degradedBanner`, badge bằng chứng `Visual`/`OCR`/`ASR`, trình phát video HTTP `206` Range streaming mượt mà kèm nút tua `-5s`/`+5s`, chỉnh tốc độ `0.75x–1.5x` và phím tắt `Space`/`←`/`→`/`R`/`Esc`):
-
+### 5.2. Khởi động Web UI Inspector & FastAPI Server (`P6`)
 ```powershell
 .\.venv\Scripts\python.exe -m videntra serve --backend unified --host 127.0.0.1 --port 8000
 ```
-- **Giao diện Web UI Inspector:** Mở trình duyệt tại **`http://127.0.0.1:8000/`**
-- **Tài liệu REST API (Swagger UI):** Mở tại **`http://127.0.0.1:8000/docs` (endpoint tìm kiếm: `POST /v1/search`, media streaming HTTP 206: `GET/HEAD /v1/media/{video_id}`)**
+- **Web UI (`http://127.0.0.1:8000/`):** Hỗ trợ chọn preset bộ dữ liệu (`Tất cả`, `MSRVTT`, `AVC`, `QVHighlights`), badge phương thức (`Visual`/`VideoPrism`/`OCR`/`ASR`), trình phát video HTTP `206` Range (`-5s`/`+5s`, tốc độ, theater mode), nút **Tương tự (`POST /v1/search/similar`)**, dải ảnh **Frame lân cận (`GET /v1/videos/{video_id}/neighbors`)**, và xuất kết quả chuẩn thi đấu **AIC KIS / VBS CSV** (`POST /v1/export` định dạng `aic_kis` / `vbs_csv`).
+- **Tài liệu API & Telemetry:** Swagger UI tại `http://127.0.0.1:8000/docs`, kiểm tra trạng thái các nhánh & chỉ số tại `GET /health`.
 
----
-
-### 5.3. Tích hợp vào code Python qua SDK (`UnifiedMultimodalSearchPipeline`)
-
+### 5.3. Tích hợp Python SDK
 ```python
 from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
 
-# Khởi tạo pipeline (tự động nạp chỉ mục 864d, SQLite FTS5, Dense E5, VLM Captions và 24d LearnedRankerLTR)
 pipeline = UnifiedMultimodalSearchPipeline()
-
-query = 'A man in a dark suit talks in an interview after a title card reading "BREAKING NEWS"'
-
-# Truy xuất Top-5 khoảnh khắc video phù hợp nhất kèm metadata
-response = pipeline.search_with_metadata(snapshot_id="corpus_current", query=query, top_k=5)
-for rank, moment in enumerate(response["moments"], start=1):
-    print(
-        f"Hạng #{rank} | Video: {moment.video_id} "
-        f"| Khoảnh khắc: [{moment.moment_start_seconds:.1f}s -> {moment.moment_end_seconds:.1f}s] "
-        f"| Điểm: {moment.ranking_score:.4f} | Nhánh đóng góp: {moment.match_status}"
-    )
+response = pipeline.search_with_metadata(
+    snapshot_id="corpus_current",
+    query='A chef makes pizza and cuts it into slices',
+    top_k=5,
+)
+for rank, m in enumerate(response["moments"], 1):
+    print(f"#{rank} {m.video_id} [{m.moment_start_seconds:.2f}s - {m.moment_end_seconds:.2f}s] score={m.ranking_score:.4f} ({m.match_status})")
 ```
 
----
-
-### 5.4. Chạy Kiểm thử Tự động (`pytest`) và Chạy Đánh giá Benchmark
-
+### 5.4. Chạy bộ kiểm thử và tái lập Benchmark
 ```powershell
-# 1. Chạy toàn bộ 604 bài kiểm thử đơn vị và tích hợp
-.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+# Kiểm thử tự động toàn dự án
+.\.venv\Scripts\python.exe -m pytest -q
 
-# 2. Chạy đánh giá nhanh trên tập dev_150
-.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --single-split-only --max-msrvtt 100
+# Đánh giá chỉ trên tập validation (không đụng test_queries/)
+.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits dev_150,dev_full_859 --out-dir work/val_check
 
-# 3. Chạy đánh giá đầy đủ trên cả 3 tập (dev_150, dev_full_859, heldout_test_201) hoặc trỏ tới snapshot staging
-.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --a5-preset a5_full
-# .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --db-path work/staging/metadata.db --faiss-path work/staging/faiss_index.bin --a5-preset a5_full
-
-# 4. Chạy đối chứng Consensus / LTR tách biệt (a5_lite, a5_no_consensus, a5_no_ltr, a5_full) hoặc Temporal Rerank / P0.2-P0.3
-.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits heldout_test_201 --a5-preset a5_lite --no-ltr
-.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits dev_150,dev_full_859 --temporal-rerank-mode mean_top2 --temporal-rerank-lambda 0.10
-
-# 5. Replay nhánh SigLIP 2 Clip Reserve, VideoPrism-LvT-B & Qwen3-VL Top-M Cascade (CPU replay + flip_precision)
-.\.venv\Scripts\python.exe -B scripts/capture_msr_candidate_pools.py --split dev_full_859 --max-k 20 --out-dir work/experiments/clip_vp_pools_dev
-.\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool a5 --k 20 --alpha 0 --out-dir work/experiments/clip_vp_k20_baseline
-.\.venv\Scripts\python.exe -B scripts/run_clip_vp_replay.py --pools-dir work/experiments/clip_vp_pools_dev --pool clip --k 20 --alpha 0 --out-dir work/experiments/clip_vp_k20_reserve
-.\.venv\Scripts\python.exe -B scripts/compare_msr_runs.py --baseline work/experiments/clip_vp_k20_baseline --challenger work/experiments/clip_vp_k20_reserve --labels work/evaluation-only/clip_vp_dev_full_859_labels.jsonl --split-lock work/evaluation-only/clip_vp_dev_full_859_split_lock.json --out-dir work/experiments/clip_vp_k20_compare
+# Đánh giá chính thức đủ 3 tập (dev_150, dev_full_859, heldout_test_201) + ma trận A0..A5
+.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --out-dir work/ref_run_staging --publish-reference
 ```
 
 ---
 
 ## 6. Kết Quả Benchmark Thực Nghiệm
 
-> **Run tham chiếu** `0ee1a4317b97474a8dda740f8c7bc5a1` (`2026-11-17 01:42:03`, preset `a5_full`, `stage2_selection_mode="exact"`, gồm **SigLIP2 Dual-Rank Frame+Clip Consensus Boost** và LTR `0.015`). Dev dùng OOF theo canonical `source_group` nối liên thông cho các query thuộc tập train LTR (`742/859`); `heldout_test_201` chạy `clean_disjoint` (`source_group_overlap=0`, `leakage_free=True`, `gate_passed=True`). Kênh dense caption và spatial patches thiếu artifact trong run này (`temporal_rerank` ở trạng thái `disabled_by_config` với `lambda=0.0`). Bảng ablation `A0..A5` được đo đồng bộ trong cùng run `0ee1a431`. [Báo cáo benchmark](benchmark/benchmark_report.md) · [Số liệu JSON](benchmark/benchmark_summary.json)
+> **Run tham chiếu chính thức:** `6999d9928b5247a292555d84152aff1e` (`2026-11-18 14:18:27`, commit codebase `24fbfcc`, preset `a5_full`, `32d LightGBM tree_ensemble` với `blend_weight = 0.08`, VideoPrism-LvT-B bật mặc định). Toàn bộ số liệu lấy trực tiếp từ [benchmark/benchmark_summary.json](file:///C:/Users/DELL/Desktop/VIDENTRA/benchmark/benchmark_summary.json) và [benchmark/benchmark_report.md](file:///C:/Users/DELL/Desktop/VIDENTRA/benchmark/benchmark_report.md). Phần cứng đo thực tế: Windows 10 AMD64, CPU **4 luồng** (`torch_num_threads=2`, `faiss_omp_max_threads=4`), RAM `31.89 GB`, suy luận trên CPU (`device="cpu"`).
 
-### 6.1. Bảng Kết Quả Tổng Hợp Đa Tập Dữ Liệu (`dev_150`, `dev_full_859`, `heldout_test_201`)
+### 6.1. Bảng kết quả tổng hợp đa tập dữ liệu (So sánh trước và sau nâng cấp P0–P6)
 
-| Tập Đánh Giá | Số Queries | Chế Độ Đánh Giá | Video Hit@1 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 | Non-Neural Latency (`p50 / p95`) | Pure-ASR FP Top-1 |
+| Tập Đánh Giá | N | Chế Độ Đánh Giá | Video Hit@1 | Video MRR | Video nDCG@10 | Moment Hit@1 ($\text{tIoU}\ge 0.5$) | Moment nDCG@5 | Non-Neural (`p50 / p95`) | Pure-ASR FP |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`dev_150` (Validation Core)** | 150 | **OOF** (129/150) | **`62.00%`** (`[54.00%, 69.33%]`) | **`0.6571`** (`[0.5854, 0.7249]`) | **`0.6770`** | **`72.73% (16/22)`** | **`0.5121`** | **`50.19 / 114.07 ms`** | **`0/2`** |
-| **`dev_full_859` (Full Validation)** | 859 | **OOF** (742/859) | **`43.77%`** (`[40.51%, 47.03%]`) | **`0.5146`** | **`0.5561`** | **`72.73% (16/22)`** | **`0.5121`** | **`49.68 / 108.41 ms`** | **`0/2`** |
-| **`heldout_test_201` (held-out lịch sử)** | 201 | **`clean_disjoint`** (0 source group trùng train LTR) | **`39.80%`** (`[33.33%, 46.28%]`) | **`0.4805`** | **`0.5291`** | **`50.00% (1/2)`** | **`0.5000`** | **`50.89 / 102.06 ms`** | **`0/1`** |
+| **`dev_150`** *(cũ `0ee1a431`)* | 150 | OOF (`129/150`) | `62.00%` | `0.6571` | `0.6770` | `72.73%` | `0.5121` | `50.19 / 114.07 ms` | `0` |
+| **`dev_150` (`P0–P6` Mới)** | 150 | **OOF (`138/150`)** | **`65.33%`** (`[58.00%, 72.67%]`) | **`0.7122`** | **`0.7372`** | **`72.73% (16/22)`** | **`0.5443`** | **`31.57 / 79.69 ms`** | **`0`** |
+| **`dev_full_859`** *(cũ)* | 859 | OOF (`742/859`) | `43.77%` | `0.5146` | `0.5561` | `72.73%` | `0.5121` | `49.68 / 108.41 ms` | `0` |
+| **`dev_full_859` (`P0–P6` Mới)** | 859 | **OOF (`781/859`)** | **`49.13%`** (`+5.36 pp`) | **`0.5863`** | **`0.6318`** | **`72.73%`** | **`0.5443`** | **`27.56 / 69.50 ms`** | **`0`** |
+| **`heldout_test_201`** *(cũ)* | 201 | `clean_disjoint` | `39.80%` | `0.4805` | `0.5291` | `50.00% (1/2)` | `0.5000` | `50.89 / 102.06 ms` | `0` |
+| **`heldout_test_201` (`P0–P6` Mới)** | 201 | **`clean_disjoint` (`overlap=0`)** | **`45.27%`** (`+5.47 pp`) | **`0.5452`** | **`0.5944`** | **`50.00% (1/2)`** | **`0.5000`** | **`26.64 / 46.34 ms`** | **`0`** |
+
+- **Bộ nhớ tiến trình khi benchmark:** RSS `2,844.0 MB` / Peak RAM **`3,104.7 MB`** (`PASS < 4,000 MB`).
+- **Độ trễ giai đoạn (`dev_150` `p50`):** `faiss = 4.26 ms`, `fts5 = 5.67 ms`, `fusion = 18.85 ms`, `boundary = 1.75 ms`. Cold query latency trên CPU (gồm SigLIP2 text encoder): `319.74 ms p50 / 613.13 ms p95`.
+
+### 6.2. Phân rã chi tiết theo Dataset
+
+| Tập | Dataset | Queries | Global Hit@1 | Within-DS Hit@1 | Hit@5 | Hit@10 | Global MRR | Union Recall | Shortlist@k Recall |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`dev_150`** | **QVHighlights** | 22 | **`90.91%`** | **`100.00%`** | `100.00%` | `100.00%` | **`0.9545`** | `100.00%` | `100.00%` |
+| **`dev_150`** | **AVC** | 28 | **`89.29%`** | **`92.86%`** | `92.86%` | `96.43%` | **`0.9069`** | `96.43%` | `96.43%` |
+| **`dev_150`** | **MSR-VTT** | 100 | **`53.00%`** | **`55.00%`** | `72.00%` | `73.00%` | **`0.6043`** | `79.00%` | `91.00%` |
+| **`dev_full_859`** | **MSR-VTT** | 809 | **`46.60%`** | **`49.44%`** | `69.96%` | `76.14%` | **`0.5651`** | `85.54%` | `92.71%` |
+| **`heldout_test_201`** | **MSR-VTT** | 191 | **`43.46%`** | **`44.50%`** | `65.45%` | `74.35%` | **`0.5301`** | `85.86%` | `92.67%` |
+| **`heldout_test_201`** | **AVC / QVH** | 8 / 2 | **`87.50%` / `50.00%`** | `87.50%` / `100.00%` | `87.50%` / `100.00%` | `87.50%` / `100.00%` | `0.8750` / `0.6667` | `100%` / `100%` | `100%` / `100%` |
+
+### 6.3. Ma trận Ablation `A0` $\to$ `A5` trên `dev_150` (`Run 6999d992`)
+
+| Cấu hình | Thành phần kích hoạt | Video Hit@1 | Video Hit@10 | MRR | Video nDCG@10 | Moment Hit@1@0.5 | Moment nDCG@5 | Non-Neural `p50` |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`A0`** | Thuần `SigLIP2 768d` | `46.67%` | `70.00%` | `0.5398` | `0.5784` | `4.55%` | `0.0143` | `8.69 ms` |
+| **`A1`** | `+ 864d Augmented Subspace` (`YOLO NMS` + Spatial 16d) | `47.33%` | `68.00%` | `0.5432` | `0.5765` | `4.55%` | `0.0167` | `11.12 ms` |
+| **`A2`** | `+` Phân rã đa mệnh đề & căn chỉnh chuỗi | `47.33%` | `68.00%` | `0.5432` | `0.5765` | `4.55%` | `0.0167` | `13.39 ms` |
+| **`A3`** | `+` Truy hồi Lexical (`OCR/ASR/FTS5`) & hợp nhất có cổng | `57.33%` | `74.00%` | `0.6322` | `0.6585` | `4.55%` | `0.0232` | `20.48 ms` |
+| **`A4`** | `+` Mở rộng biên theo tương phản | `57.33%` | `74.00%` | `0.6315` | `0.6578` | `63.64%` | `0.4364` | `22.84 ms` |
+| **`A5`** | `+ VideoPrism-LvT-B` + P2 Calibrated RRF + **P3 32d LightGBM LTR** + P4 Spatial/Action + P5 Soft-NMS + Consensus | **`65.33%`** | **`81.33%`** | **`0.7122`** | **`0.7372`** | **`72.73%`** | **`0.5443`** | `31.57 ms` |
 
 ---
 
-### 6.2. Kết Quả Phân Rã Theo Từng Bộ Dữ Liệu Trên `dev_150`
+## 7. Giới Hạn Hệ Thống & Định Hướng Nghiên Cứu Tiếp Theo
 
-| Bộ Dữ Liệu (Dataset) | Số Queries | Global Video Hit@1 | Within-Dataset Hit@1 | Video Hit@5 | Video Hit@10 | Global MRR | Within-Dataset MRR | Visual Recall@120 | Lexical Recall@30 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **QVHighlights** | 22 | **`86.36%`** | **`95.45%`** | `90.91%` | `95.45%` | **`0.8864`** | **`0.9773`** | `95.45%` | `27.27%` |
-| **AVC (Educational/AV)** | 28 | **`92.86%`** | **`92.86%`** | `92.86%` | `92.86%` | **`0.9286`** | **`0.9375`** | `82.14%` | `75.00%` |
-| **MSR-VTT** | 100 | **`48.00%`** | **`50.00%`** | `60.00%` | `64.00%` | **`0.5306`** | **`0.5519`** | `78.00%` | `20.00%` |
-
-Khi tìm trên toàn corpus, MSR-VTT đạt **40,91% Hit@1 (331/809)** và **60,44% Hit@5 (`489/809`, tăng `+1` Hit@5 từ `exact`)** ở dev đầy đủ (phân tách `tune`: `238/566 = 42,05%`, `confirm`: `93/243 = 38,27%`), và **37,70% (72/191)** ở held-out (`Within-DS 38,74%`, `Hit@10 67,54%`). Ở held-out `201`, video đích vào `Visual Recall@120` đạt `83,08%`, `Union Recall` đạt `87,06%`. Thử nghiệm P0 trên CPU xác nhận **`stage2_selection_mode="exact"`** tăng Hit@5 (`534 -> 535/859`) và MRR (`0.5142 -> 0.5146`) với `0` tụt guardrail, trong khi các biến thể `video_proposal_mode` (`v_max/v_top2/v_rrf`) và `disable_pure_visual_lexical_bonus` làm tụt Hit@1 & `QVH`/`AVC` nên tiếp tục được giữ sau cờ nghiên cứu. Các pilot GPU nặng (`C1` VideoPrism-LvT-B, `C2` P8-5 Florence-2/patches, `C3` Qwen3-VL-Reranker-2B) đã sẵn sàng công cụ cục bộ để chạy trên Kaggle GPU. [Số liệu theo dataset](benchmark/benchmark_summary.json) · [Kế hoạch Hit@1](VIDENTRA_HIT_AT_1_RESEARCH_AND_IMPLEMENTATION_PLAN.md)
-
----
-
-### 6.3. Ma trận ablation 6 bước (`A0` $\to$ `A5` trên `dev_150`, Run `0ee1a431`)
-
-| Cấu Hình Ablation | Thành Phần Kỹ Thuật Được Kích Hoạt | Video Hit@1 | Video Hit@10 | Video MRR | Video nDCG@10 | Moment Hit@1 (tIoU $\ge 0.5$) | Moment nDCG@5 |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`A0`** | Thuần vector `768d SigLIP2` tiêu chuẩn (Zero-shot) | `46.67%` | `70.00%` | `0.5394` | `0.5781` | `4.55%` | `0.0143` |
-| **`A1`** | `+` Không gian mở rộng trực giao **`864d Augmented Subspace`** (`COCO-IDF 80d` + `Spatial 16d`) | `49.33%` | `68.00%` | `0.5543` | `0.5848` | `4.55%` | `0.0175` |
-| **`A2`** | `+` Phân rã đa mệnh đề và căn chỉnh chuỗi thời gian | `49.33%` | `68.00%` | `0.5543` | `0.5848` | `4.55%` | `0.0175` |
-| **`A3`** | `+` Truy hồi lexical và hợp nhất đa phương thức có cổng | `61.33%` | `74.00%` | `0.6537` | `0.6746` | `4.55%` | `0.0240` |
-| **`A4`** | `+` Mở rộng biên theo tương phản | `61.33%` | `74.00%` | `0.6537` | `0.6746` | **`72.73%`** | **`0.4986`** |
-| **`A5`** | `+` Đề xuất đa đỉnh, residual LTR 24d & Consensus Boost (`stage2_exact`) | **`62.00%`** | `74.00%` | **`0.6571`** | **`0.6770`** | **`72.73%`** | **`0.5121`** |
-
-> Trên `dev_150`, `A0 -> A5` tăng Video Hit@1 từ **70 lên 93/150** và MRR tăng **0,1177**. Bước `A3 -> A4` tăng Moment Hit@1 từ **1 lên 16/22** ở `tIoU ≥ 0,5`. Toàn bộ 6 cấu hình `A0..A5` được đo đồng nhất trong cùng run `0ee1a431`.
-
----
-
-## 7. Khẳng Định Lại Tính Mới & Định Hướng Nghiên Cứu Tiếp Theo
-
-### 7.1. Khẳng định lại giá trị đóng góp & tính mới của VIDENTRA
-1. **Truy hồi đa phương thức.** Nhánh visual và các nhánh OCR/ASR tìm ứng viên độc lập. `Visual-Anchored Lexical Gating` điều chỉnh phần tăng điểm do tín hiệu chữ hoặc lời thoại tùy truy vấn. Bước A2 → A3 tăng Hit@1 từ 74 lên 92/150 trên `dev_150`.
-2. **Định vị khoảnh khắc.** Pipeline dựa trên timestamp từ ledger và mở rộng biên theo tương phản. Kết quả định vị hiện có 22 query dev và 2 query held-out có nhãn thời gian.
-
-### 7.2. Định hướng nghiên cứu phát triển tiếp theo
-1. **Rerank thị giác trên shortlist MSR-VTT.** Giữ cùng tập ứng viên. So A5 hiện tại với context pooling nhiều frame, spatial patches và caption trong các run riêng. Dùng Kaggle `--mode p85` để tạo patches và captions. Đo Hit@1, Hit@5 và p95 trên dev đầy đủ.
-2. **Đo độ phủ ứng viên theo từng bước.** Ghi Recall@K của visual, union và shortlist thực tế theo dataset. Nếu video đúng còn nằm ngoài shortlist, thử thêm embedding theo clip hoặc lấy mẫu dày hơn quanh chuyển cảnh. Đối chiếu ở cùng số ứng viên để tách hiệu quả coverage khỏi reranking.
-3. **Thử OCR/ASR và LTR theo lát cắt.** Dùng `--mode ocr_asr` cho pilot truy vấn tiếng Việt có nhãn riêng. So có/không LTR khi cùng snapshot. Chọn cấu hình trên dev khóa theo nguồn và đánh giá cấu hình đã chốt trên split mới. [Kế hoạch sửa lỗi và tune MSR‑VTT](VIDENTRA_MSRVTT_ACCURACY_AND_TUNING_PLAN.md)
-
+1. **Giới hạn phần cứng & độ trễ CPU 4 luồng:** Toàn bộ chỉ số chất lượng (`Video Hit@1`, `MRR`, `nDCG@10`, `Moment Hit@1@0.5`, `Moment nDCG@5 >= 0.5300`, `Peak RAM = 3,104.7 MB`) đều **PASS** với biên độ lớn, tuy nhiên trên máy CPU 4 luồng (`torch_num_threads=2`), `non_neural_latency p50/p95` của toàn pipeline `A5` đạt **`31.57 / 79.69 ms`** (`dev_full_859`: `27.56 / 69.50 ms`, `heldout_test_201`: `26.64 / 46.34 ms`), nhanh hơn ~40% so với baseline trước nâng cấp (`50.19 / 114.07 ms`) nhưng vẫn chưa đạt ngưỡng cứng `20 / 45 ms` do chi phí OpenBLAS GEMM + Stage 4–6 hợp nhất 5 nhánh. Cold latency (`319.74 ms p50`) đo suy luận SigLIP2 text encoder trực tiếp trên CPU.
+2. **Định hướng mở rộng:** Nạp video mới qua pipeline Kaggle VideoPrism-LvT-B cho các tập ngoài `1,324` video nền tảng, bật GPU CUDA (`RTX 3060 6GB`) khi chạy phục vụ Web UI để hạ `cold_latency`, và bổ sung thêm dữ liệu có nhãn thời gian bên cạnh 22 query `QVHighlights` dev và 2 query `heldout`.
