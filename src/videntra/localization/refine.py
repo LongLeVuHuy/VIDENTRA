@@ -405,6 +405,9 @@ def expand_boundary_contrast(
         left = min(left, min(cov_indices))
         right = max(right, max(cov_indices))
 
+    avg_step = v_dur_f / max(float(n), 1.0)
+    max_consec = max(4, min(14, int(math.ceil(max_gap_sec / max(0.35, avg_step)))))
+
     # Hysteresis expansion to the left
     curr = left - 1
     consec = 0
@@ -415,7 +418,7 @@ def expand_boundary_contrast(
         else:
             consec += 1
             gap = ts_list[left] - ts_list[curr]
-            if consec > 4 or gap > max_gap_sec:
+            if consec > max_consec or gap > max_gap_sec:
                 break
         curr -= 1
 
@@ -429,7 +432,7 @@ def expand_boundary_contrast(
         else:
             consec += 1
             gap = ts_list[curr] - ts_list[right]
-            if consec > 4 or gap > max_gap_sec:
+            if consec > max_consec or gap > max_gap_sec:
                 break
         curr += 1
 

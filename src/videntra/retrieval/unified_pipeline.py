@@ -2832,6 +2832,37 @@ class UnifiedMultimodalSearchPipeline:
         sel_scores = [float(s) for s in scores[valid_fids[order]].tolist()]
         return sel_fids, sel_scores
 
+    @staticmethod
+    def _deduplicate_burst_visual_hits(
+        vis_hits: Sequence[tuple[int, float]],
+        keyframe_map: Mapping[int, Mapping[str, Any]],
+        target_depth: int,
+        min_pts_gap: float = 0.55,
+    ) -> list[tuple[int, float]]:
+        """Deduplicate sub-second same-video visual hits up to target_depth, backfilling if sparse."""
+        if len(vis_hits) <= target_depth:
+            return list(vis_hits)
+        dedup_hits: list[tuple[int, float]] = []
+        skipped_hits: list[tuple[int, float]] = []
+        per_vid_ts: dict[str, list[float]] = defaultdict(list)
+        for fid_hit, sc_hit in vis_hits:
+            info_hit = keyframe_map.get(fid_hit)
+            if info_hit is None:
+                continue
+            vid_hit = str(info_hit["video_id"])
+            t_hit = float(info_hit.get("pts_time", 0.0))
+            if all(abs(t_hit - prev_t) >= min_pts_gap for prev_t in per_vid_ts[vid_hit]):
+                per_vid_ts[vid_hit].append(t_hit)
+                dedup_hits.append((int(fid_hit), float(sc_hit)))
+                if len(dedup_hits) >= target_depth:
+                    return dedup_hits
+            else:
+                skipped_hits.append((int(fid_hit), float(sc_hit)))
+        if len(dedup_hits) < target_depth and skipped_hits:
+            need = target_depth - len(dedup_hits)
+            dedup_hits.extend(skipped_hits[:need])
+        return dedup_hits
+
     def _build_video_level_visual_proposals(
         self,
         frame_scores: np.ndarray | Sequence[tuple[int, float]],
@@ -3190,7 +3221,9 @@ class UnifiedMultimodalSearchPipeline:
         # Stage 2: FAISS IP Retrieval & Multi-Clause Sequential Alignment (B4, B11)
         # =========================================================================
         ntotal_aug = int(self.aug_index.ntotal) if self.aug_index is not None else len(self.augmented_embeddings)
-        search_depth = min(self.search_depth, ntotal_aug)
+        avg_kf_per_vid = float(ntotal_aug) / max(1.0, float(len(self.video_keyframes)))
+        density_scale = min(2.5, max(1.0, avg_kf_per_vid / 10.0))
+        search_depth = min(ntotal_aug, int(round(self.search_depth * density_scale)))
         visual_candidates: list[dict[str, Any]] = []
         video_anchor_windows: dict[str, tuple[float, float]] = {}
         video_min_clause_sim: dict[str, float] = {}
@@ -3556,6 +3589,14 @@ class UnifiedMultimodalSearchPipeline:
                         )
                     else:
                         vis_hits = scored_visual[:search_depth]
+
+        if self.video_proposal_mode == "frame_topk" and len(vis_hits) > self.search_depth:
+            vis_hits = self._deduplicate_burst_visual_hits(
+                vis_hits,
+                self.keyframe_map,
+                self.search_depth,
+                min_pts_gap=0.55,
+            )
 
         for fid, raw_score in vis_hits:
             info = self.keyframe_map[fid]
@@ -4036,6 +4077,12 @@ class UnifiedMultimodalSearchPipeline:
                         primary_q_768=primary_q_768,
                         curve_cache=video_curve_cache,
                     )
+                    vp_pts, vp_sims = video_curve_cache.get(vp_vid, ([], np.zeros(0, dtype=np.float32)))
+                    if len(vp_sims) > 0:
+                        pk_i = int(np.argmax(vp_sims))
+                        if float(vp_sims[pk_i]) > v_sim_vp:
+                            v_sim_vp = float(vp_sims[pk_i])
+                            rep_t_vp = float(vp_pts[pk_i])
                 else:
                     kf_list_vp = self.video_keyframes.get(vp_vid, [])
                     rep_t_vp = float(kf_list_vp[len(kf_list_vp) // 2]["pts_time"]) if kf_list_vp else 0.0
@@ -4532,7 +4579,9 @@ class UnifiedMultimodalSearchPipeline:
             effective_s_max = max(0.0, s_max)
             ratio = adjacent_pairs / max(1.0, float(n_kf - 1))
             density_bonus = (0.060 * effective_s_max) * min(adjacent_pairs, 3) + 0.015 * effective_s_max * ratio
-            if n_kf > 30 and s_max < 0.225 and (m_count / float(n_kf)) < 0.12:
+            v_dur_norm = float(self.video_durations.get(vid, max(10.0, float(n_kf) * 1.5)))
+            eff_n_kf = min(float(n_kf), max(1.0, v_dur_norm / 2.0))
+            if eff_n_kf > 30.0 and s_max < 0.225 and (m_count / eff_n_kf) < 0.12:
                 density_bonus *= 0.50
 
             best_sc, best_st, best_et, best_rep_t, best_branch = vid_items[0]
@@ -4873,7 +4922,12 @@ class UnifiedMultimodalSearchPipeline:
             and self.videoprism_retriever.available
             and pre_rerank_video_ids
         ):
-            vp_top_k_vids = pre_rerank_video_ids[: self.videoprism_rerank_top_k]
+            vp_union_vids = (
+                [v for v, _ in vp_retrieval_res.ranked_videos[: self.videoprism_rerank_top_k] if v in cand_ltr_features]
+                if vp_retrieval_res is not None
+                else []
+            )
+            vp_top_k_vids = list(dict.fromkeys([*pre_rerank_video_ids[: self.videoprism_rerank_top_k], *vp_union_vids]))
             vp_rerank_sigs = self.videoprism_retriever.rerank_top_candidates(
                 query=query,
                 clauses=sub_clauses,
