@@ -17,6 +17,9 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Install CPU PyTorch and VIDENTRA editable dependencies
         run: |
           python -m pip install --upgrade pip
