@@ -698,6 +698,12 @@ class UnifiedMultimodalSearchPipeline:
         self._last_primary_q_768: np.ndarray | None = None
         self._all_embeddings_unit_norm: bool = False
         self._active_query_sims: dict[str, Any] | None = None
+        self._rank1_864_ready: bool = False
+        self._rank1_864_sig: tuple[int, tuple[int, ...], int, tuple[int, ...], float, float, float] | None = None
+        self._rank1_mu_768: np.ndarray | None = None
+        self._rank1_h: np.ndarray | None = None
+        self._rank1_gamma: np.ndarray | None = None
+        self._rank1_aug_96: np.ndarray | None = None
         self._video_kf_fids_arr: dict[str, np.ndarray] = {}
         self._unfiltered_stage2_mask: np.ndarray | None = None
         self._unfiltered_stage2_sig: tuple[int, int] | None = None
@@ -1002,6 +1008,7 @@ class UnifiedMultimodalSearchPipeline:
                 )
             self.augmented_embeddings = np.ascontiguousarray(self.augmented_embeddings, dtype=np.float32)
             self.all_embeddings = np.ascontiguousarray(self.all_embeddings, dtype=np.float32)
+            self._ensure_rank1_864_cache()
             self.aug_index = faiss.IndexFlatIP(864)
             self.aug_index.add(self.augmented_embeddings)
             if self.keyframe_map:
@@ -1468,13 +1475,13 @@ class UnifiedMultimodalSearchPipeline:
                 scored_pairs.sort(key=lambda pair: pair[0], reverse=True)
                 moments = [pair[1] for pair in scored_pairs]
                 relation_assessments = [pair[2] for pair in scored_pairs]
-            timings = deepcopy(self.last_timings)
+            timings = dict(self.last_timings)
             if verify_relations:
                 timings["t_relation_ms"] = (time.perf_counter() - verify_start) * 1000.0
             cand_moments = self.last_diagnostics.get("all_candidate_moments", ())
             top_k = int(kwargs.get("top_k", 10))
             ranked_videos = self._build_ranked_videos(moments, cand_moments, top_k=top_k)
-            diagnostics = deepcopy(self.last_diagnostics)
+            diagnostics = dict(self.last_diagnostics)
             diagnostics["ranked_videos"] = ranked_videos
             if self.last_diagnostics:
                 diagnostics["ranked_video_ids"] = [m.video_id for m in ranked_videos]
@@ -2051,7 +2058,120 @@ class UnifiedMultimodalSearchPipeline:
                     self.detector_covered_videos.update(str(v) for v in video_objects.keys())
             if detector_covered_videos is not None:
                 self.detector_covered_videos = {str(v) for v in detector_covered_videos}
+            if all_embeddings is not None or augmented_embeddings is not None:
+                self._rank1_864_sig = None
+                self._rank1_864_ready = False
+                self._ensure_rank1_864_cache()
             return self.invalidate_clip_branch_index()
+
+    def _ensure_rank1_864_cache(self) -> bool:
+        """Cache rank-1 hubness decomposition parameters for exact 864d similarity without a second full GEMM."""
+        all_e = self.all_embeddings
+        aug_e = self.augmented_embeddings
+        if (
+            all_e is None
+            or aug_e is None
+            or all_e.ndim != 2
+            or aug_e.ndim != 2
+            or all_e.shape[0] == 0
+            or all_e.shape[1] != 768
+            or aug_e.shape != (all_e.shape[0], 864)
+        ):
+            self._rank1_864_ready = False
+            return False
+
+        sig = (
+            id(all_e),
+            tuple(all_e.shape),
+            id(aug_e),
+            tuple(aug_e.shape),
+            float(self.beta_hub),
+            float(self.alpha_obj),
+            float(self.alpha_meta),
+        )
+        if self._rank1_864_sig == sig:
+            return self._rank1_864_ready
+
+        n = int(all_e.shape[0])
+        mean_raw = np.mean(all_e, axis=0, keepdims=True)
+        norm_mean = float(np.linalg.norm(mean_raw)) + 1e-8
+        mu = (mean_raw / norm_mean).astype(np.float32).reshape(-1)
+        h = (all_e @ mu).astype(np.float32)
+        z_const = float(math.sqrt(1.0 + float(self.alpha_obj) ** 2 + float(self.alpha_meta) ** 2))
+        row_sq = np.einsum("ij,ij->i", all_e, all_e, dtype=np.float64)
+        h_f64 = h.astype(np.float64)
+        bh = float(self.beta_hub) * h_f64
+        dehub_sq = np.maximum(0.0, row_sq - 2.0 * bh * h_f64 + bh * bh)
+        sem_norms = (np.sqrt(dehub_sq) + 1e-8).astype(np.float32)
+        gamma = (1.0 / (sem_norms * z_const)).astype(np.float32)
+
+        sample_idx = np.linspace(0, n - 1, min(64, n), dtype=np.int64)
+        dehub_s = all_e[sample_idx] - float(self.beta_hub) * np.outer(h[sample_idx], mu)
+        recon_s = gamma[sample_idx, None] * dehub_s
+        max_err = (
+            float(np.max(np.abs(aug_e[sample_idx, :768] - recon_s)))
+            if np.isfinite(recon_s).all() and np.isfinite(aug_e[sample_idx, :768]).all()
+            else float("inf")
+        )
+        self._rank1_864_sig = sig
+        if math.isfinite(max_err) and max_err <= 1e-4:
+            self._rank1_mu_768 = mu
+            self._rank1_h = h
+            self._rank1_gamma = gamma
+            self._rank1_aug_96 = np.ascontiguousarray(aug_e[:, 768:], dtype=np.float32)
+            self._rank1_864_ready = True
+        else:
+            self._rank1_mu_768 = None
+            self._rank1_h = None
+            self._rank1_gamma = None
+            self._rank1_aug_96 = None
+            self._rank1_864_ready = False
+        return self._rank1_864_ready
+
+    def _compute_768_and_864_sims(
+        self,
+        q_768_rows: np.ndarray,
+        q_864_rows: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute exact 768d and 864d similarities reusing the 768d GEMM via rank-1 identity when exact."""
+        q7_arr = np.asarray(q_768_rows, dtype=np.float32)
+        q8_arr = np.asarray(q_864_rows, dtype=np.float32)
+        if q7_arr.ndim == 1:
+            q7 = q7_arr.reshape(-1)
+            q8 = q8_arr.reshape(-1)
+            s768 = (self.all_embeddings @ q7).astype(np.float32)
+            if self._ensure_rank1_864_cache():
+                assert self._rank1_mu_768 is not None and self._rank1_aug_96 is not None
+                assert self._rank1_gamma is not None and self._rank1_h is not None
+                c_q = float(np.dot(q8[:768], q7))
+                if float(np.max(np.abs(q8[:768] - c_q * q7))) <= 1e-4:
+                    mu_dot = float(np.dot(q8[:768], self._rank1_mu_768))
+                    s96 = (self._rank1_aug_96 @ q8[768:]).astype(np.float32)
+                    s864 = (
+                        self._rank1_gamma * (c_q * s768 - (float(self.beta_hub) * mu_dot) * self._rank1_h) + s96
+                    ).astype(np.float32)
+                    return s768, s864
+            s864 = (self.augmented_embeddings @ q8).astype(np.float32)
+            return s768, s864
+
+        q7_t = np.ascontiguousarray(q7_arr.T, dtype=np.float32)
+        q8_t = np.ascontiguousarray(q8_arr.T, dtype=np.float32)
+        s768 = (self.all_embeddings @ q7_t).T.astype(np.float32)
+        if self._ensure_rank1_864_cache():
+            assert self._rank1_mu_768 is not None and self._rank1_aug_96 is not None
+            assert self._rank1_gamma is not None and self._rank1_h is not None
+            c_qs = np.sum(q8_t[:768, :] * q7_t, axis=0)
+            if float(np.max(np.abs(q8_t[:768, :] - q7_t * c_qs[None, :]))) <= 1e-4:
+                mu_dots = (self._rank1_mu_768 @ q8_t[:768, :]).astype(np.float32)
+                s96 = (self._rank1_aug_96 @ q8_t[768:, :]).T.astype(np.float32)
+                s864 = (
+                    (c_qs[:, None] * s768 - (float(self.beta_hub) * mu_dots)[:, None] * self._rank1_h[None, :])
+                    * self._rank1_gamma[None, :]
+                    + s96
+                ).astype(np.float32)
+                return s768, s864
+        s864 = (self.augmented_embeddings @ q8_t).T.astype(np.float32)
+        return s768, s864
 
     def _rebuild_dedup_video_objects(self) -> None:
         """Precompute deduplicated sorted frame objects and PTS arrays per video."""
@@ -2243,6 +2363,12 @@ class UnifiedMultimodalSearchPipeline:
         base_diag["a5_gap"] = round(a5_gap, 6)
         base_diag["f_diff"] = round(f_diff, 6)
         base_diag["c_diff"] = round(c_diff, 6)
+
+        dur_a5 = float(self.video_durations.get(a5_v1, 0.0))
+        dur_b = float(self.video_durations.get(b_v1, 0.0))
+        if dur_a5 > 0.0 and dur_b > 0.0 and dur_a5 > 1.5 * dur_b:
+            base_diag["reason"] = "duration_mismatch_guard"
+            return cand_moments, score_res, base_diag
 
         cond1 = rf_b == 1 and rc_b == 1 and f_diff >= 0.008 and c_diff >= 0.0 and 0.0 < a5_gap <= 0.045
         cond2 = rf_b <= 2 and rc_b == 1 and f_diff >= 0.005 and c_diff >= 0.015 and 0.0 < a5_gap <= 0.030
@@ -2863,6 +2989,25 @@ class UnifiedMultimodalSearchPipeline:
             dedup_hits.extend(skipped_hits[:need])
         return dedup_hits
 
+    @staticmethod
+    def _count_spaced_adjacent_pairs(
+        vid_items: Sequence[tuple[float, float, float, float, str]],
+        min_spacing_sec: float = 1.5,
+        max_gap_sec: float = 6.0,
+    ) -> int:
+        """Count temporally distinct adjacent hit pairs without rewarding sub-second burst density."""
+        if len(vid_items) <= 1:
+            return 0
+        sorted_by_time = sorted(vid_items, key=lambda x: x[1])
+        spaced = [sorted_by_time[0]]
+        last_rep = float(sorted_by_time[0][3])
+        for item in sorted_by_time[1:]:
+            rep_t = float(item[3])
+            if (rep_t - last_rep) >= min_spacing_sec:
+                spaced.append(item)
+                last_rep = rep_t
+        return sum(1 for i in range(len(spaced) - 1) if (spaced[i + 1][1] - spaced[i][2]) <= max_gap_sec)
+
     def _build_video_level_visual_proposals(
         self,
         frame_scores: np.ndarray | Sequence[tuple[int, float]],
@@ -3255,15 +3400,16 @@ class UnifiedMultimodalSearchPipeline:
                 and len(self.augmented_embeddings) > 0
             )
             # Vectorized OpenBLAS GEMM across all query clauses with C-contiguous corpus layout
-            all_sims_864 = (self.augmented_embeddings @ np.ascontiguousarray(all_864_vecs.T, dtype=np.float32)).T
-            active_sims_864_all = all_sims_864[0]
             if has_matched_768:
                 all_768_vecs = np.vstack([primary_q_768] + [sv.reshape(1, -1) for sv in sub_vecs_768])
-                all_sims_768 = (self.all_embeddings @ np.ascontiguousarray(all_768_vecs.T, dtype=np.float32)).T
+                all_sims_768, all_sims_864 = self._compute_768_and_864_sims(all_768_vecs, all_864_vecs)
                 active_sims_768_all = all_sims_768[0]
+                active_sims_864_all = all_sims_864[0]
                 all_sims_mat = (0.70 * all_sims_768 + 0.30 * all_sims_864).astype(np.float32)
                 active_sims_comb_all = all_sims_mat[0]
             else:
+                all_sims_864 = (self.augmented_embeddings @ np.ascontiguousarray(all_864_vecs.T, dtype=np.float32)).T
+                active_sims_864_all = all_sims_864[0]
                 all_sims_mat = all_sims_864
                 active_sims_comb_all = active_sims_864_all
             clause_sims_all = all_sims_mat[1:] if len(all_sims_mat) > 1 else None
@@ -3484,8 +3630,10 @@ class UnifiedMultimodalSearchPipeline:
                 and len(self.augmented_embeddings) > 0
             )
             if has_matched_768_single:
-                sims_768_all = (self.all_embeddings @ primary_q_768.reshape(-1)).astype(np.float32)
-                sims_864_all = (self.augmented_embeddings @ primary_q_864_mat.reshape(-1)).astype(np.float32)
+                sims_768_all, sims_864_all = self._compute_768_and_864_sims(
+                    primary_q_768.reshape(-1),
+                    primary_q_864_mat.reshape(-1),
+                )
                 active_sims_768_all = sims_768_all
                 active_sims_864_all = sims_864_all
                 valid_mask = self._build_stage2_valid_mask(len(sims_864_all), filters)
@@ -4546,6 +4694,46 @@ class UnifiedMultimodalSearchPipeline:
                     key=lambda kv: (-kv[1], kv[0]),
                 )[:25]
             }
+        tc_score_by_vid: dict[str, float] = {}
+        tc_mat = self.temporal_context_768
+        if tc_mat is not None and len(tc_mat) > 0 and primary_q_768 is not None and by_video_raw:
+            tc_n = len(tc_mat)
+            tc_vids: list[str] = []
+            tc_fids: list[int] = []
+            for vid_tc, v_items_tc in by_video_raw.items():
+                b_cl_tc = vid_best_cluster.get(vid_tc)
+                rf_tc = b_cl_tc.get("faiss_id") if b_cl_tc is not None else None
+                if rf_tc is None:
+                    b_item_tc = max(v_items_tc, key=lambda x: x[0])
+                    b_t_tc = (
+                        float(b_cl_tc.get("rep_timestamp", b_item_tc[3]))
+                        if b_cl_tc is not None
+                        else float(b_item_tc[3])
+                    )
+                    pts_tc = self.video_kf_pts.get(vid_tc)
+                    fids_tc = self._video_kf_fids_arr.get(vid_tc)
+                    if pts_tc is not None and fids_tc is not None and len(pts_tc) == len(fids_tc) and len(pts_tc) > 0:
+                        pos_tc = bisect_left(pts_tc, b_t_tc)
+                        if pos_tc == 0:
+                            n_tc = 0
+                        elif pos_tc >= len(pts_tc):
+                            n_tc = len(pts_tc) - 1
+                        else:
+                            n_tc = pos_tc if (pts_tc[pos_tc] - b_t_tc) < (b_t_tc - pts_tc[pos_tc - 1]) else (pos_tc - 1)
+                        rf_tc = int(fids_tc[n_tc])
+                    else:
+                        kf_v_tc = self.video_keyframes.get(vid_tc, [])
+                        if kf_v_tc:
+                            nearest_tc = min(kf_v_tc, key=lambda k: abs(float(k.get("pts_time", 0.0)) - b_t_tc))
+                            rf_tc = int(nearest_tc["faiss_id"])
+                if rf_tc is not None and 0 <= int(rf_tc) < tc_n:
+                    tc_vids.append(vid_tc)
+                    tc_fids.append(int(rf_tc))
+            if tc_fids:
+                tc_arr = np.asarray(tc_fids, dtype=np.int64)
+                tc_dots = (tc_mat[tc_arr] @ primary_q_768.reshape(-1)).tolist()
+                tc_score_by_vid = dict(zip(tc_vids, (float(x) for x in tc_dots)))
+
         for vid, vid_items in by_video_raw.items():
             if not self._video_passes_filters(vid, filters):
                 continue
@@ -4564,11 +4752,9 @@ class UnifiedMultimodalSearchPipeline:
                 scores = [x[0] for x in vid_items]
                 top3_mean = sum(scores[:min(m_count, 3)]) / min(m_count, 3)
                 top5_mean = sum(scores[:min(m_count, 5)]) / min(m_count, 5)
-                sorted_by_time = sorted(vid_items, key=lambda x: x[1])
-                adjacent_pairs = 0
-                for i in range(len(sorted_by_time) - 1):
-                    if sorted_by_time[i + 1][1] - sorted_by_time[i][2] <= 6.0:
-                        adjacent_pairs += 1
+                adjacent_pairs = self._count_spaced_adjacent_pairs(
+                    vid_items, min_spacing_sec=1.5, max_gap_sec=6.0
+                )
                 best_rep_tmp = vid_items[0][3]
                 local_window_scores = sorted(
                     (x[0] for x in vid_items if abs(x[3] - best_rep_tmp) <= 3.5),
@@ -4577,10 +4763,10 @@ class UnifiedMultimodalSearchPipeline:
                 local_window_mean = (sum(local_window_scores) / len(local_window_scores)) if local_window_scores else s_max
 
             effective_s_max = max(0.0, s_max)
-            ratio = adjacent_pairs / max(1.0, float(n_kf - 1))
-            density_bonus = (0.060 * effective_s_max) * min(adjacent_pairs, 3) + 0.015 * effective_s_max * ratio
             v_dur_norm = float(self.video_durations.get(vid, max(10.0, float(n_kf) * 1.5)))
             eff_n_kf = min(float(n_kf), max(1.0, v_dur_norm / 2.0))
+            ratio = min(1.0, adjacent_pairs / max(1.0, eff_n_kf - 1.0))
+            density_bonus = (0.060 * effective_s_max) * min(adjacent_pairs, 3) + 0.015 * effective_s_max * ratio
             if eff_n_kf > 30.0 and s_max < 0.225 and (m_count / eff_n_kf) < 0.12:
                 density_bonus *= 0.50
 
@@ -4681,33 +4867,7 @@ class UnifiedMultimodalSearchPipeline:
                     else float(best_cl.get("visual_sim", 0.0))
                 )
 
-            vis_ctx_coherence = float(local_vis_coherence)
-            if self.temporal_context_768 is not None and len(self.temporal_context_768) > 0:
-                rep_fid = best_cl.get("faiss_id")
-                if rep_fid is None:
-                    pts_ctx = self.video_kf_pts.get(vid)
-                    fids_ctx = self._video_kf_fids_arr.get(vid)
-                    if pts_ctx is not None and fids_ctx is not None and len(pts_ctx) == len(fids_ctx) and len(pts_ctx) > 0:
-                        pos_ctx = bisect_left(pts_ctx, best_vis_t)
-                        if pos_ctx == 0:
-                            n_ctx = 0
-                        elif pos_ctx >= len(pts_ctx):
-                            n_ctx = len(pts_ctx) - 1
-                        else:
-                            n_ctx = pos_ctx if (pts_ctx[pos_ctx] - best_vis_t) < (best_vis_t - pts_ctx[pos_ctx - 1]) else (pos_ctx - 1)
-                        rep_fid = int(fids_ctx[n_ctx])
-                    else:
-                        kf_list_v = self.video_keyframes.get(vid, [])
-                        if kf_list_v:
-                            nearest_kf = min(
-                                kf_list_v,
-                                key=lambda k: abs(float(k.get("pts_time", 0.0)) - best_vis_t),
-                            )
-                            rep_fid = int(nearest_kf["faiss_id"])
-                if rep_fid is not None and 0 <= int(rep_fid) < len(self.temporal_context_768):
-                    vis_ctx_coherence = float(
-                        np.dot(self.temporal_context_768[int(rep_fid)], primary_q_768.reshape(-1))
-                    )
+            vis_ctx_coherence = tc_score_by_vid.get(vid, float(local_vis_coherence))
 
             if vid in top_heavy_vids and sp_enabled and self.spatial_patches is not None and len(self.spatial_patches) > 0:
                 late_interaction_scored_candidates += 1

@@ -559,9 +559,15 @@ def localize_moments_multimodal_dp(
         d = min(5.0, max(2.5, 0.25 * float(v_dur)))
         return round(max(0.0, r - 0.5 * d), 2), round(min(float(v_dur), r + 0.5 * d), 2), vis_list
 
-    # Preserve unblurred float64 curve for sharp shot-boundary transitions
+    # Light 3-point denoising on dense curves (n >= 100, step <= 1.6s) suppresses isolated 1-frame spikes
     ts_arr = np.asarray(ts_list, dtype=np.float64)
     vis_arr = np.asarray(vis_list, dtype=np.float64)
+    dense_curve = bool(n >= 100 and (float(v_dur) / max(float(n), 1.0)) <= 1.6)
+    if dense_curve:
+        denoised = vis_arr.copy()
+        denoised[1:-1] = 0.20 * vis_arr[:-2] + 0.60 * vis_arr[1:-1] + 0.20 * vis_arr[2:]
+        vis_arr = denoised
+        vis_list = vis_arr.tolist()
 
     eff_win = anchor_window
     if eff_win is not None:
@@ -569,7 +575,11 @@ def localize_moments_multimodal_dp(
         anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - t_mid))
     elif rep_timestamp is not None:
         eff_win = None
-        anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - float(rep_timestamp)))
+        has_lex_anchor = any(abs(float(lt) - float(rep_timestamp)) <= 3.0 for lt in lexical_timestamps)
+        if dense_curve and not has_lex_anchor:
+            anchor_idx = int(np.argmax(vis_arr))
+        else:
+            anchor_idx = min(range(n), key=lambda i: abs(ts_list[i] - float(rep_timestamp)))
     else:
         eff_win = None
         if clause_curves is not None and clause_curves.ndim == 2 and clause_curves.shape[0] >= 2 and clause_curves.shape[1] == n and n >= 3:

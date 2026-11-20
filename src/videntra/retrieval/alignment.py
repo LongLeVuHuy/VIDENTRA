@@ -1,6 +1,7 @@
 """Cross-Keyframe Sequential Temporal Alignment & Research Localization Modules."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Sequence
 import numpy as np
@@ -75,65 +76,88 @@ def align_sequential_keyframe_clauses(
         clause_mat = np.vstack(clause_vectors)
         clause_curves = (cand_matrix @ clause_mat.T).T.astype(np.float32)
 
-    # For 2 clauses: vectorized optimization over valid ordered pairs (a <= b and ts[b] - ts[a] <= max_transition)
+    # For 2 clauses: exact O(K_v) monotonic deque for non-decreasing timestamps, vectorized NumPy fallback
     if m_clauses == 2:
-        s1 = clause_curves[0]
-        s2 = clause_curves[1]
-        best_score = -float("inf")
-        best_pair = None
+        s1 = np.asarray(clause_curves[0], dtype=np.float32)
+        s2 = np.asarray(clause_curves[1], dtype=np.float32)
+        is_nondecreasing = all(ts[i] <= ts[i + 1] for i in range(k_v - 1))
+        if is_nondecreasing and max_transition_sec >= 0.0:
+            best_score = -float("inf")
+            best_pair: tuple[float, float] | None = None
+            dq: deque[int] = deque()
+            right = 0
+            for a in range(k_v):
+                t_a = ts[a]
+                diag_base = 0.5 * (float(s1[a]) + float(s2[a]))
+                diag_score = 0.92 * diag_base if k_v >= 2 else diag_base
+                if diag_score > best_score:
+                    best_score = diag_score
+                    best_pair = (t_a, t_a)
+                if right <= a:
+                    right = a + 1
+                while right < k_v and (ts[right] - t_a) <= max_transition_sec:
+                    val_r = float(s2[right])
+                    while dq and float(s2[dq[-1]]) < val_r:
+                        dq.pop()
+                    dq.append(right)
+                    right += 1
+                while dq and dq[0] <= a:
+                    dq.popleft()
+                if dq:
+                    b_best = dq[0]
+                    cand_score = 0.5 * (float(s1[a]) + float(s2[b_best]))
+                    if cand_score > best_score:
+                        best_score = cand_score
+                        best_pair = (t_a, ts[b_best])
+            if best_pair is not None:
+                return float(best_score), best_pair
 
-        for a in range(k_v):
-            t_a = ts[a]
-            s_a = s1[a]
-            for b in range(a, k_v):
-                t_b = ts[b]
-                diff = t_b - t_a
-                if diff < 0.0 or diff > max_transition_sec:
-                    if diff > max_transition_sec:
-                        break
-                    continue
-                # B11: Apply same-frame penalty 0.92 when both clauses map to the exact same keyframe
-                base_score = (s_a + s2[b]) / 2.0
-                pair_score = 0.92 * base_score if (k_v >= 2 and b == a) else base_score
-                if pair_score > best_score:
-                    best_score = pair_score
-                    best_pair = (t_a, t_b)
+        ts_arr = np.asarray(ts, dtype=np.float64)
+        mat = 0.5 * (s1[:, None].astype(np.float64) + s2[None, :].astype(np.float64))
+        if k_v >= 2:
+            np.fill_diagonal(mat, 0.92 * np.diag(mat))
+        tri = np.triu(np.ones((k_v, k_v), dtype=bool))
+        diffs = ts_arr[None, :] - ts_arr[:, None]
+        valid = tri & (diffs >= 0.0) & (diffs <= max_transition_sec)
+        if bool(np.any(valid)):
+            masked = np.where(valid, mat, -np.inf)
+            ia, ib = divmod(int(np.argmax(masked)), k_v)
+            return float(masked[ia, ib]), (ts[ia], ts[ib])
 
-        if best_pair is not None:
-            return float(best_score), best_pair
+        # Fallback if no pair satisfies max_transition_sec: pick best upper-triangular pair
+        masked_fb = np.where(tri, mat, -np.inf)
+        ia, ib = divmod(int(np.argmax(masked_fb)), k_v)
+        return float(masked_fb[ia, ib]), (ts[ia], ts[ib])
 
-        # Fallback if no pair satisfies max_transition_sec: pick closest temporal pair
-        for a in range(k_v):
-            for b in range(a, k_v):
-                base_score = (s1[a] + s2[b]) / 2.0
-                pair_score = 0.92 * base_score if (k_v >= 2 and b == a) else base_score
-                if pair_score > best_score:
-                    best_score = pair_score
-                    best_pair = (ts[a], ts[b])
-        return float(best_score), best_pair
-
-    # General M >= 3: Dynamic Programming across sequential stages
+    # General M >= 3: vectorized Dynamic Programming across sequential stages
     # dp[m, i] = max sum of scores for clauses 0..m ending at keyframe i
     dp = np.full((m_clauses, k_v), -np.inf, dtype=np.float32)
     parent = np.full((m_clauses, k_v), -1, dtype=np.int32)
-
     dp[0] = clause_curves[0]
 
+    ts_arr = np.asarray(ts, dtype=np.float64)
+    tril = np.tril(np.ones((k_v, k_v), dtype=bool))
+    diffs = ts_arr[:, None] - ts_arr[None, :]
+    valid_dp = tril & (diffs >= 0.0) & (diffs <= max_transition_sec)
+    eye_mask = np.eye(k_v, dtype=bool) if k_v >= 2 else None
+    row_idx = np.arange(k_v, dtype=np.int32)
+
     for m in range(1, m_clauses):
-        for i in range(k_v):
-            t_curr = ts[i]
-            s_curr = clause_curves[m, i]
-            for j in range(i + 1):  # j <= i
-                diff = t_curr - ts[j]
-                if 0.0 <= diff <= max_transition_sec:
-                    prev_sum = dp[m - 1, j]
-                    if prev_sum != -np.inf:
-                        # B11: Apply same-frame penalty 0.92 when step transition stays on same keyframe (j == i)
-                        step_score = (0.92 * s_curr) if (k_v >= 2 and j == i) else s_curr
-                        cand_sum = prev_sum + step_score
-                        if cand_sum > dp[m, i]:
-                            dp[m, i] = cand_sum
-                            parent[m, i] = j
+        prev = dp[m - 1]
+        s_curr = clause_curves[m]
+        step_mat = np.broadcast_to(s_curr[:, None], (k_v, k_v)).copy()
+        if eye_mask is not None:
+            step_mat[eye_mask] *= np.float32(0.92)
+        cand_mat = np.where(
+            valid_dp & (prev[None, :] != -np.inf),
+            prev[None, :] + step_mat,
+            np.float32(-np.inf),
+        )
+        best_j = np.argmax(cand_mat, axis=1)
+        best_val = cand_mat[row_idx, best_j]
+        has_valid = best_val > -np.inf
+        dp[m] = np.where(has_valid, best_val, np.float32(-np.inf))
+        parent[m] = np.where(has_valid, best_j, -1)
 
     last_scores = dp[m_clauses - 1]
     best_last_idx = int(np.argmax(last_scores))

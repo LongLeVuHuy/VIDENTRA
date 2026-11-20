@@ -85,3 +85,20 @@ def test_localize_moments_multimodal_dp_viterbi_multiclause_and_soft_nms() -> No
     assert len(sec) >= 1
     assert sec[0][0] >= 28.0 and sec[0][1] <= 42.0
     assert sec[0][3] < 0.95
+
+
+def test_localize_moments_multimodal_dp_dense_curve_suppresses_single_frame_spike() -> None:
+    n = 150
+    ts = [float(i) for i in range(n)]
+    vis_scores = np.full(n, 0.15, dtype=np.float64)
+    vis_scores[64:83] = 0.72
+    vis_scores[45] = 0.78  # Isolated 1-frame transient spike outside the plateau
+
+    st, et, fused = localize_moments_multimodal_dp(
+        timestamps=ts,
+        visual_scores=vis_scores,
+        v_dur=150.0,
+        rep_timestamp=45.0,
+    )
+    assert len(fused) == n
+    assert _tiou((st, et), (64.0, 82.0)) >= 0.55
