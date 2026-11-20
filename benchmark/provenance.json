@@ -1,12 +1,12 @@
 {
-  "run_id": "2b42562bd2a04d0f9dfe212495cfedbc",
-  "git_sha": "ded80af",
+  "run_id": "1d90b8f9f09f41629f9a500229a47626",
+  "git_sha": "7ead8e0",
   "git_worktree": {
     "git_dirty": false,
     "git_dirty_count": 0,
     "git_dirty_files": []
   },
-  "code_sha256": "12f37d21327c04c1e1d9753e45f3da30bf681065b86b6355443e9b2214294324",
+  "code_sha256": "673103fb56436f5a21e33f44ffce0229cf713080563694da0ea95d56577d5ea9",
   "effective_config_sha256": "d84b84363e9ab3c8843d117745420519d44f73ed9b0ae9cbd46d79aaf0f5703b",
   "cpu_thread_settings": {
     "OMP_NUM_THREADS": null,
@@ -17,7 +17,7 @@
     "faiss_omp_max_threads": 4
   },
   "gallery_coverage_rate": 1.0,
-  "ltr_model_sha256": "4f6b3174348559d8b65e250377aa5259ce3771761d35b4ce868b8b5ea392c47f",
+  "ltr_model_sha256": "7034092de6f91833bfb8e62c67b16eddf2404b9857c2a1c23430e72c3934f1db",
   "ltr_model_resolved_path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\models\\ranking\\videntra_ltr_v1.json",
   "ltr_feature_schema": {
     "model_type": "tree_ensemble",
@@ -860,9 +860,9 @@
     {
       "fold_id": 0,
       "model_type": "tree_ensemble",
-      "num_train_groups": 631,
-      "num_eval_groups": 157,
-      "num_eval_queries": 158
+      "num_train_groups": 632,
+      "num_eval_groups": 156,
+      "num_eval_queries": 157
     },
     {
       "fold_id": 1,
@@ -874,9 +874,9 @@
     {
       "fold_id": 2,
       "model_type": "tree_ensemble",
-      "num_train_groups": 631,
-      "num_eval_groups": 157,
-      "num_eval_queries": 157
+      "num_train_groups": 630,
+      "num_eval_groups": 158,
+      "num_eval_queries": 158
     },
     {
       "fold_id": 3,
@@ -938,57 +938,57 @@
   "ltr_stats": {
     "dev_150": {
       "applied_count": 150,
-      "top1_flipped_count": 27,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079162
+      "top1_flipped_count": 24,
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "ablation_A0": {
       "applied_count": 150,
-      "top1_flipped_count": 4,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079162
+      "top1_flipped_count": 11,
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "ablation_A1": {
       "applied_count": 150,
       "top1_flipped_count": 2,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079162
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "ablation_A2": {
       "applied_count": 150,
       "top1_flipped_count": 4,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079156
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "ablation_A3": {
       "applied_count": 150,
-      "top1_flipped_count": 5,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079156
+      "top1_flipped_count": 4,
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "ablation_A4": {
       "applied_count": 150,
-      "top1_flipped_count": 6,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079156
+      "top1_flipped_count": 3,
+      "max_abs_delta": 0.079306,
+      "p50_max_abs_delta": 0.07921
     },
     "dev_full_859": {
       "applied_count": 859,
-      "top1_flipped_count": 176,
-      "max_abs_delta": 0.079365,
-      "p50_max_abs_delta": 0.079182
+      "top1_flipped_count": 171,
+      "max_abs_delta": 0.079355,
+      "p50_max_abs_delta": 0.079212
     },
     "heldout_test_201": {
       "applied_count": 201,
-      "top1_flipped_count": 37,
-      "max_abs_delta": 0.079344,
-      "p50_max_abs_delta": 0.079293
+      "top1_flipped_count": 43,
+      "max_abs_delta": 0.079376,
+      "p50_max_abs_delta": 0.079295
     }
   },
   "clip_consensus_stats": {
     "dev_150": {
-      "applied_count": 2,
-      "top1_changed_count": 2
+      "applied_count": 1,
+      "top1_changed_count": 1
     },
     "ablation_A0": {
       "applied_count": 0,
@@ -1011,12 +1011,12 @@
       "top1_changed_count": 0
     },
     "dev_full_859": {
-      "applied_count": 22,
-      "top1_changed_count": 22
+      "applied_count": 15,
+      "top1_changed_count": 15
     },
     "heldout_test_201": {
-      "applied_count": 8,
-      "top1_changed_count": 8
+      "applied_count": 7,
+      "top1_changed_count": 7
     }
   },
   "overlap_with_eval": {
@@ -1127,7 +1127,7 @@
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_fp16.npy": null,
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_map.jsonl": null,
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\p85_receipt.json": null,
-    "models\\ranking\\videntra_ltr_v1.json": "4f6b3174348559d8b65e250377aa5259ce3771761d35b4ce868b8b5ea392c47f",
+    "models\\ranking\\videntra_ltr_v1.json": "7034092de6f91833bfb8e62c67b16eddf2404b9857c2a1c23430e72c3934f1db",
     "models\\siglip2\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "models\\siglip2\\config.json": "fe8b5fe6d5734360678fd71c11c21e1ea3364bd8598d34295d9206335973ffd7",
     "models\\siglip2\\model.safetensors": "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031fadee6a0b",
@@ -1189,7 +1189,7 @@
     "src\\videntra\\ingestion\\probe.py": "d8b3ead712c09e7a8a3ffe1365ea2427c748042207101c00a1062d28b2801646",
     "src\\videntra\\localization\\__init__.py": "5e7898c4fb30c9f06d63bb2c48a42f31740b011fbd2e609c235d8f1f92298d99",
     "src\\videntra\\localization\\proposals.py": "0f0460c198b47f5482fc996f22d609ef539194298625428b70f009ffc55c79d9",
-    "src\\videntra\\localization\\refine.py": "0efe0749ed227c0c395441f2bfc67d5f97bb11eda007173036bc6a2b0db1cb32",
+    "src\\videntra\\localization\\refine.py": "63d62f66d2724f9d5ea358fd2a473242eee9eddc35cdd78bcc05d1ea93cd32a8",
     "src\\videntra\\ocr\\__init__.py": "1e0084d6d04d2fd3e03e114f040d266bed568fa607d7900fa668705f627af4e5",
     "src\\videntra\\ocr\\detection.py": "62e31b1b02eed7fb5bcfe8c4867c151d0a7655384ffc806eb663859e1c3b20d9",
     "src\\videntra\\ocr\\recognition.py": "e06a6f382f5779b921cd25709f261ca4cdd527493d97f5cd2106013b92595a1b",
@@ -1217,11 +1217,11 @@
     "src\\videntra\\relations\\spatial_action_verifier.py": "0304128900cc84676498390466cd5bd619f867bec17cb1bb51c10d613ed8dc59",
     "src\\videntra\\relations\\temporal.py": "bdbb7de26534d2b163c8844113d3d04a5fcb5b3f4e060bd448b896d68e7da142",
     "src\\videntra\\retrieval\\__init__.py": "a2e0453e5b7f670367a63ebb0326a34907c4b73e7bcc8536cf6457f1b3360b00",
-    "src\\videntra\\retrieval\\alignment.py": "5a458fdfea91abaa02ff4de160565a94177d41cedc5d32dbbafa56af1162e5a7",
+    "src\\videntra\\retrieval\\alignment.py": "6a8b487d4b2a2a5adbfec38d54a1e7b12dedcb7ffef882af82ca9d4906d7e692",
     "src\\videntra\\retrieval\\branches.py": "923a565e0c7f4a5d179916b321375f22e44dd73a7c540ba6136169700e64266c",
     "src\\videntra\\retrieval\\clip_branch.py": "f971b765b3ed44f7e565b58d081ca19a38d6bc99cb74ba8b82226998afe999b6",
     "src\\videntra\\retrieval\\fusion.py": "0ee384dd7d4d918768782dfc18a6f5ca5a87655cba47275a58a2a8ced385af2a",
-    "src\\videntra\\retrieval\\unified_pipeline.py": "dfde0d412eb03f751cd9fbc56ab5fab2eeb7c5840d2fb7c11f715c688706f9a2",
+    "src\\videntra\\retrieval\\unified_pipeline.py": "148c74569d215257b8a29aeafd7a267d83072bf48d43eb7a5aae5eeff9bbedc3",
     "src\\videntra\\retrieval\\union.py": "ab69c789e207e8728e896e6ee07a7c3318e6385fec0b7562e34522f76704c5c0",
     "src\\videntra\\retrieval\\videoprism_branch.py": "394564ee7db53019210bedb9d776c2e3271bd28f5dc455ed59bac9131cd9a3e8",
     "src\\videntra\\retrieval\\visual.py": "5a24022f5dc89f686373e961dd359b63416c7956e36dc596aa898cc5fbb00884",
@@ -1284,7 +1284,7 @@
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_fp16.npy": null,
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\spatial_patches_map.jsonl": null,
     "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\p85_receipt.json": null,
-    "models\\ranking\\videntra_ltr_v1.json": "4f6b3174348559d8b65e250377aa5259ce3771761d35b4ce868b8b5ea392c47f",
+    "models\\ranking\\videntra_ltr_v1.json": "7034092de6f91833bfb8e62c67b16eddf2404b9857c2a1c23430e72c3934f1db",
     "models\\siglip2\\.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "models\\siglip2\\config.json": "fe8b5fe6d5734360678fd71c11c21e1ea3364bd8598d34295d9206335973ffd7",
     "models\\siglip2\\model.safetensors": "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031fadee6a0b",
@@ -1297,17 +1297,17 @@
     "data\\raw\\avc\\provenance\\data\\processed\\avc_1.8m\\manifests\\pilot_queries_eval_only.json": "f6b16914e958f9aae999ffa4576067e65b9f95bcb250930c4526c8e3ef609bcb"
   },
   "output_sha256": {
-    "work\\ref_run_staging\\ablation_A0_evaluation.jsonl": "d14a3fd5b9591b0c344e84ba9a16faaf3b37ff5cf281b3b072730b3fe0e60b2a",
-    "work\\ref_run_staging\\ablation_A1_evaluation.jsonl": "09d7fc9f582f9ae74cc97eb1b4701214e59ca1f6972fd64fab55094e173736cb",
-    "work\\ref_run_staging\\ablation_A2_evaluation.jsonl": "45593eaa2ebf971fd306ce0b86b2e073a763ebde5d590966d30c9a3523f1718e",
-    "work\\ref_run_staging\\ablation_A3_evaluation.jsonl": "5e096349365d39940b82c9edfb1dc6bee31d6883cba79f2bf6cbb5a5d9a2697c",
-    "work\\ref_run_staging\\ablation_A4_evaluation.jsonl": "70a8aaa9ad7b78ba6eb77d0eca85d4559d182922775729e4db55bb027b8d3529",
-    "work\\ref_run_staging\\benchmark_report.md": "26a89fd4d88ff270db5f0a25db92afe2d5c345d0837bf843e70901a36c734cf2",
-    "work\\ref_run_staging\\benchmark_summary.json": "697f7b1f5cebe9b3fafcc8a6fdeaa1f46f5f04f49e8c011bf733424933e8c6df",
-    "work\\ref_run_staging\\dev_full_evaluation.jsonl": "3a105b5332108b9a7a71da9467e3cf90ad76906a0f680a5311d38ce3d0f3005a",
-    "work\\ref_run_staging\\heldout_test_201_evaluation.jsonl": "2bf90305dbd4ffd0fd10454c85d2a44f82ada480d63a74c26d092574be0b701e",
-    "work\\ref_run_staging\\per_query_evaluation.csv": "7ce90ad2cc66c4531e7a921a76bf96127bd8a4143268020feef2dcbbb24c1b80",
-    "work\\ref_run_staging\\per_query_evaluation.jsonl": "8c2c9c1cd73056c779fa8364301e755a89cb207fa2c37714868baef677bf39db"
+    "work\\ref_run_staging\\ablation_A0_evaluation.jsonl": "293ca0dc2195f9e524c96b31996ae256c0a16cb5fc6a718a9a52b2f23b4ae375",
+    "work\\ref_run_staging\\ablation_A1_evaluation.jsonl": "410e50f08e0a37554b8e87f7bdc9adae967563f6c164c424177a79621b35ea29",
+    "work\\ref_run_staging\\ablation_A2_evaluation.jsonl": "edcf6daaa2c7a43e7cf9abc30d1a67e8619af30372b50d666a78a71451c684ea",
+    "work\\ref_run_staging\\ablation_A3_evaluation.jsonl": "e4816bef341d665f2dd4bf44b05bb2316671335951438ac23c02846b8d2ebe00",
+    "work\\ref_run_staging\\ablation_A4_evaluation.jsonl": "19ae2020c8764796fdf0b13d4aba26b9ec0c597cc1b369a67a19f0a295208eab",
+    "work\\ref_run_staging\\benchmark_report.md": "25a43b5a7b926a75bee0d12c1f4259b6d34362bdf726c26346fe55c8af0a3b57",
+    "work\\ref_run_staging\\benchmark_summary.json": "132388868a22f71c0efe51299f33521155c8010f233db3cc53bb360b7d20da29",
+    "work\\ref_run_staging\\dev_full_evaluation.jsonl": "abf7f6af48ce4c19ec694d67869725ced9b283f685f32a40799034b8a79500e9",
+    "work\\ref_run_staging\\heldout_test_201_evaluation.jsonl": "a785763b72e41355160532f793b81694e950c2c04d16637398d8aff477a9da46",
+    "work\\ref_run_staging\\per_query_evaluation.csv": "b8e528daac17282cb8cd682091b2c79fdf1f478304f95f8c3fa72820e982d8af",
+    "work\\ref_run_staging\\per_query_evaluation.jsonl": "2577bc8c5116006ae7c3fd982e944a72a047d56256467ab7316161954aad9ee1"
   },
   "inputs_unchanged": true,
   "outputs_verified": true,
