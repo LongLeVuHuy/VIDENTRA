@@ -13,6 +13,7 @@
 - **Kiểm thử & Xác minh:**
   - Thêm [`tests/config/test_device_and_doctor.py`](../tests/config/test_device_and_doctor.py) (6 tests cho `resolve_device`, `preferred_cuda_dtype`, FP16 CUDA casting của `SigLIP2Encoder`, thứ tự prune `vision_model` trước `.to("cuda")`, `videntra doctor`, `/health`).
   - Full suite `.\.venv\Scripts\python.exe -m pytest -q`: **`639 passed, 3 warnings in 88.92s`** (`0` failed); `.\.venv\Scripts\python.exe -m videntra doctor`: exit `0`, `ready_for_serving = true`.
+  - **GitHub Actions CI (`159a95e`, `bba8f6f`):** Bổ sung `pythonpath = ["."]` trong `pyproject.toml`, cài `ffmpeg` trên runner Ubuntu, và thêm `skipif` bảo vệ `test_p3_rebuild_augmented_864d_cache_validity` khi không có `data/processed/` trên CI $\to$ GitHub Actions run `#44745056672` **PASS** (`635 passed, 4 skipped, 3 warnings in 26.14s`).
 
 ## 20/11/2026 — Tối ưu Accuracy & Tốc độ CPU trên Corpus `32,739` Keyframes (`7ead8e0`, `Run 1d90b8f9`)
 
