@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from .config.device import collect_environment_report, resolve_device
 from .contracts import validate
 from .registry import Registry
 
@@ -196,10 +197,11 @@ def handle_sampling_compare(args):
     }
 
 
-def _get_encoder(model_path: str | None, device: str = "cpu", mock: bool = False):
+def _get_encoder(model_path: str | None, device: str | None = None, mock: bool = False):
     from .encoders.siglip2 import MockSigLIP2Encoder, SigLIP2Encoder
     if mock:
         return MockSigLIP2Encoder()
+    resolved_device = resolve_device(device, default="auto")
     default_local_model = Path("models/siglip2")
     env_model_dir = os.environ.get("VIDENTRA_MODEL_DIR")
     default_env_model = Path(env_model_dir) if env_model_dir else None
@@ -208,7 +210,7 @@ def _get_encoder(model_path: str | None, device: str = "cpu", mock: bool = False
         else (str(default_env_model) if default_env_model and default_env_model.exists() else None)
     )
     if chosen_path and Path(chosen_path).exists():
-        return SigLIP2Encoder(model_path=chosen_path, device=device)
+        return SigLIP2Encoder(model_path=chosen_path, device=resolved_device)
     return MockSigLIP2Encoder()
 
 
@@ -255,7 +257,8 @@ def handle_index_build(args):
 
     resolver = _build_resolver(args.asset_roots, manifest_doc.get("records", []))
 
-    encoder = _get_encoder(args.model_path, device=args.device, mock=args.mock)
+    resolved_device = resolve_device(getattr(args, "device", None), default="auto")
+    encoder = _get_encoder(args.model_path, device=resolved_device, mock=args.mock)
     engine = VisualRetrievalEngine(encoder=encoder)
 
     ingest_dir = Path(args.ingest_dir)
@@ -313,6 +316,7 @@ def handle_search(args):
     assessments: list[dict] = []
     verify_relations = bool(getattr(args, "verify_relations", False))
     search_warnings: list[str] = []
+    resolved_device = resolve_device(getattr(args, "device", None), default="auto")
 
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
@@ -330,7 +334,7 @@ def handle_search(args):
         elif args.mode != "accurate" and verify_relations:
             search_warnings.append("Relation verifier requires accurate mode and was not run.")
         with UnifiedMultimodalSearchPipeline(db_path=db_path, faiss_path=faiss_path,
-                                             model_dir=model_path, device=args.device,
+                                             model_dir=model_path, device=resolved_device,
                                              use_disk_cache=False) as pipeline:
             response = pipeline.search_with_metadata(snapshot_id=args.snapshot_id,
                                                      verify_relations=run_verifier,
@@ -343,7 +347,7 @@ def handle_search(args):
         from .retrieval.visual import VisualRetrievalEngine
         if args.index_dir is None:
             raise ValueError("Visual backend requires --index-dir")
-        encoder = _get_encoder(args.model_path, device=args.device, mock=args.mock)
+        encoder = _get_encoder(args.model_path, device=resolved_device, mock=args.mock)
         engine = VisualRetrievalEngine.load(args.index_dir, encoder=encoder)
         moments = engine.search(query=args.query, top_k_moments=args.top_k,
             window_duration_seconds=args.window_seconds, nms_iou_threshold=args.nms_iou)
@@ -387,6 +391,7 @@ def handle_serve(args):
 
     engine = None
     pipeline = None
+    resolved_device = resolve_device(getattr(args, "device", None), default="auto")
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
         db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH") or "data/processed/metadata.db"
@@ -398,9 +403,9 @@ def handle_serve(args):
             if not Path(path).exists():
                 raise FileNotFoundError(f"Unified backend input not found: {path}")
         pipeline = UnifiedMultimodalSearchPipeline(db_path=db_path, faiss_path=faiss_path,
-            model_dir=model_path, device=args.device, use_disk_cache=False)
+            model_dir=model_path, device=resolved_device, use_disk_cache=False)
     elif args.index_dir and Path(args.index_dir).exists():
-        encoder = _get_encoder(args.model_path, device=args.device, mock=args.mock)
+        encoder = _get_encoder(args.model_path, device=resolved_device, mock=args.mock)
         engine = VisualRetrievalEngine.load(args.index_dir, encoder=encoder)
 
     resolver = None
@@ -582,7 +587,24 @@ def handle_evaluate(args):
 
 
 
+def handle_doctor(args):
+    return collect_environment_report(
+        db_path=args.db_path,
+        faiss_path=args.faiss_path,
+        model_dir=args.model_dir,
+        ltr_model_path=args.ltr_model_path,
+        asset_roots_path=args.asset_roots,
+    )
+
+
 def main(argv=None):
+    if Path(".env").is_file():
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(override=False)
+        except ImportError:
+            pass
     parser = argparse.ArgumentParser(prog="videntra")
     subs = parser.add_subparsers(dest="command", required=True)
 
@@ -639,7 +661,12 @@ def main(argv=None):
     idx_build.add_argument("--ingest-dir", type=Path, required=True)
     idx_build.add_argument("--output", type=Path, required=True)
     idx_build.add_argument("--model-path", type=str, default=None)
-    idx_build.add_argument("--device", type=str, default="cpu")
+    idx_build.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Target device: auto, cuda, or cpu (defaults to VIDENTRA_DEVICE or auto)",
+    )
     idx_build.add_argument("--mock", action="store_true", default=False)
     idx_build.add_argument("--asset-roots", type=Path, default=Path("configs/local/asset_roots.json"))
     idx_build.add_argument("--audit-mode", action="store_true", default=False)
@@ -659,7 +686,12 @@ def main(argv=None):
     search_parser.add_argument("--window-seconds", type=float, default=2.0)
     search_parser.add_argument("--nms-iou", type=float, default=0.5)
     search_parser.add_argument("--model-path", type=str, default=None)
-    search_parser.add_argument("--device", type=str, default="cpu")
+    search_parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Target device: auto, cuda, or cpu (defaults to VIDENTRA_DEVICE or auto)",
+    )
     search_parser.add_argument("--mock", action="store_true", default=False)
     search_parser.add_argument("--verify-relations", action="store_true", default=False,
                                help="Attach relation graph verification to unified search results (accurate mode)")
@@ -683,7 +715,12 @@ def main(argv=None):
     serve_parser.add_argument("--manifest", type=Path, default=None)
     serve_parser.add_argument("--asset-roots", type=Path, default=Path("configs/local/asset_roots.json"))
     serve_parser.add_argument("--model-path", type=str, default=None)
-    serve_parser.add_argument("--device", type=str, default="cpu")
+    serve_parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Target device: auto, cuda, or cpu (defaults to VIDENTRA_DEVICE or auto)",
+    )
     serve_parser.add_argument("--mock", action="store_true", default=False)
     serve_parser.add_argument("--snapshot-id", type=str, default="corpus_current")
 
@@ -696,6 +733,16 @@ def main(argv=None):
     ev_build.add_argument("--modalities", type=str, default="ocr,asr")
     ev_build.add_argument("--asset-roots", type=Path, default=Path("configs/local/asset_roots.json"))
     ev_build.add_argument("--audit-mode", action="store_true", default=False)
+
+    # doctor
+    doctor_parser = subs.add_parser("doctor", help="Inspect Python, CUDA/GPU, package, and runtime artifact readiness")
+    doctor_parser.add_argument("--db-path", type=Path, default=None)
+    doctor_parser.add_argument("--faiss-path", type=Path, default=None)
+    doctor_parser.add_argument("--model-dir", type=Path, default=None)
+    doctor_parser.add_argument("--ltr-model-path", type=Path, default=None)
+    doctor_parser.add_argument("--asset-roots", type=Path, default=None)
+    doctor_parser.add_argument("--strict", action="store_true", default=False,
+                               help="Exit non-zero if required serving packages or artifacts are missing")
 
     args = parser.parse_args(argv)
     try:
@@ -719,6 +766,10 @@ def main(argv=None):
             output = handle_serve(args)
         elif args.command == "evidence" and args.action == "build":
             output = handle_evidence_build(args)
+        elif args.command == "doctor":
+            output = handle_doctor(args)
+            print(json.dumps(output, indent=2))
+            return 2 if (args.strict and not output["ready_for_serving"]) else 0
         else:
             docs = validate_manifests(args.directory)
             output = {"manifests": len(docs), "records": sum(len(d["records"]) for d in docs)}

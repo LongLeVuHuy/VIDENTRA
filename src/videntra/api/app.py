@@ -11,6 +11,7 @@ from .media import router as media_router
 from .frames import router as frames_router
 from .exports import router as exports_router
 from .ui_html import UI_HTML
+from videntra.config.device import get_device_info
 
 
 def create_app(
@@ -77,12 +78,18 @@ def create_app(
             vp_status = "unavailable"
             ltr_loaded = False
             backend = "visual" if has_engine else "none"
+        active_device = (
+            getattr(pipeline_obj, "device", None)
+            or getattr(getattr(engine_obj, "encoder", None), "device", None)
+        )
         return {
             "status": "ok",
             "service": "videntra",
             "version": "0.1.0",
             "snapshot_id": app.state.snapshot_id,
             "backend": backend,
+            "device": active_device,
+            "cuda_available": bool(get_device_info()["cuda_available"]),
             "engine_active": bool(has_engine or has_pipeline),
             "pipeline_active": has_pipeline,
             "indexed_samples": vec_count,

@@ -1,5 +1,19 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 20/11/2026 — Productionize Repository trên GitHub & Sẵn sàng Di chuyển sang RTX 3060 6GB VRAM
+
+- **Auto-Device, CUDA FP16 Safety & Preflight (`videntra doctor`):**
+  - Thêm [`src/videntra/config/device.py`](../src/videntra/config/device.py) (`resolve_device`, `preferred_cuda_dtype`, `get_device_info`, `collect_environment_report`) và export qua `videntra.config`. Mặc định tự phát hiện CUDA (`auto` $\to$ `cuda` với `torch.float16` trên RTX 3060 6GB, ngược lại fallback `cpu` `float32`).
+  - Cập nhật [`src/videntra/retrieval/unified_pipeline.py`](../src/videntra/retrieval/unified_pipeline.py) (`__init__` mặc định `auto`; `_ensure_text_encoder` xóa `vision_model` trên CPU trước khi chuyển model sang CUDA FP16 tiết kiệm ~1 GB VRAM; ép `.float()` trước chuẩn hóa L2; `_ensure_e5_encoder` theo `preferred_cuda_dtype`), [`src/videntra/encoders/siglip2.py`](../src/videntra/encoders/siglip2.py) (sửa latent bug truyền `pixel_values` `float32` vào model `float16` và dùng `torch.inference_mode()` + `float32` L2 norm), [`src/videntra/api/app.py`](../src/videntra/api/app.py) (`/health` bổ sung `device` & `cuda_available`), [`src/videntra/cli.py`](../src/videntra/cli.py) (`--device` mặc định `auto`, nạp `.env` an toàn nếu tồn tại, thêm lệnh `videntra doctor [--strict]`), và [`scripts/run_validation_benchmark.py`](../scripts/run_validation_benchmark.py) (thêm `--device {auto,cpu,cuda}` và telemetry GPU trong `hardware`).
+- **Đóng gói, CI & Chuẩn hóa Repo GitHub:**
+  - Cập nhật [`pyproject.toml`](../pyproject.toml) (đầy đủ core dependencies, thêm optional extras `[extraction]`, `[llm]`, `[dev]`) và [`requirements.txt`](../requirements.txt) (thêm hướng dẫn cài `torch` CUDA cho RTX 3060 6GB, bổ sung `scipy`, `python-dotenv`, `huggingface-hub`, `PyYAML`, `tqdm`, chuyển `llama-cpp-python` sang optional tránh lỗi build thiếu MSVC trên máy mới).
+  - Thêm [`.env.example`](../.env.example), `models/llm/.gitkeep` và [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) chạy `videntra doctor` + `pytest -q` trên Python 3.12.
+  - Bỏ theo dõi Git với hai tài liệu nháp nội bộ (`git rm --cached` + `.gitignore` nhưng vẫn giữ nguyên file cục bộ trên ổ đĩa).
+  - Viết lại hoàn chỉnh [`README.md`](../README.md) & cập nhật [`PROJECT.md`](../PROJECT.md) theo chuẩn production với toàn bộ liên kết tương đối (xóa liên kết máy cục bộ, không ghi mục hướng nghiên cứu tiếp theo, kèm bảng checklist chuyển dữ liệu/weights sang máy RTX 3060 6GB).
+- **Kiểm thử & Xác minh:**
+  - Thêm [`tests/config/test_device_and_doctor.py`](../tests/config/test_device_and_doctor.py) (6 tests cho `resolve_device`, `preferred_cuda_dtype`, FP16 CUDA casting của `SigLIP2Encoder`, thứ tự prune `vision_model` trước `.to("cuda")`, `videntra doctor`, `/health`).
+  - Full suite `.\.venv\Scripts\python.exe -m pytest -q`: **`639 passed, 3 warnings in 88.92s`** (`0` failed); `.\.venv\Scripts\python.exe -m videntra doctor`: exit `0`, `ready_for_serving = true`.
+
 ## 20/11/2026 — Tối ưu Accuracy & Tốc độ CPU trên Corpus `32,739` Keyframes (`7ead8e0`, `Run 1d90b8f9`)
 
 - **5 nâng cấp kỹ thuật hợp nhất accuracy + tốc độ (`7ead8e0`, zero drift toán học):**

@@ -83,6 +83,7 @@ from videntra.retrieval.videoprism_branch import (
     VideoPrismRetrievalResult,
 )
 from videntra.evidence.normalize import contains_text_phrase
+from videntra.config.device import preferred_cuda_dtype, resolve_device
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.relations.spatial_action_verifier import SpatialActionVerifier
 from videntra.localization.refine import (
@@ -588,7 +589,7 @@ class UnifiedMultimodalSearchPipeline:
         self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
         self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
         self.model_dir = Path(model_dir if model_dir is not None else os.environ.get("VIDENTRA_MODEL_DIR", "models/siglip2"))
-        self.device = device if device is not None else os.environ.get("VIDENTRA_DEVICE", "cpu")
+        self.device = resolve_device(device, default="auto")
         self.use_disk_cache = use_disk_cache
         if memory_cache_size < 0:
             raise ValueError("memory_cache_size must be non-negative")
@@ -1097,14 +1098,20 @@ class UnifiedMultimodalSearchPipeline:
         pass
 
     def _ensure_text_encoder(self) -> None:
-        """Lazy-load SigLIP 2 text encoder only when encountering an uncached query."""
+        """Lazy-load SigLIP 2 text encoder, pruning vision_model on CPU before GPU move."""
         if self.tokenizer is None and self.text_model is None and self.model_dir.exists():
             from transformers import AutoModel, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
-            full_model = AutoModel.from_pretrained(str(self.model_dir)).to(self.device)
-            full_model.eval()
+            full_model = AutoModel.from_pretrained(str(self.model_dir))
+            # Drop image tower before moving to CUDA to save ~1 GB VRAM on 6 GB GPUs
             if hasattr(full_model, "vision_model"):
                 del full_model.vision_model
+            target_dtype = preferred_cuda_dtype(self.device)
+            try:
+                full_model = full_model.to(device=self.device, dtype=target_dtype)
+            except TypeError:
+                full_model = full_model.to(self.device)
+            full_model.eval()
             self.text_model = full_model
 
     def encode_texts(self, texts: list[str]) -> np.ndarray:
@@ -1147,9 +1154,9 @@ class UnifiedMultimodalSearchPipeline:
                         raw = self.text_model.get_text_features(**inputs)
                     else:
                         raw = self.text_model(**inputs)
-                    feats = extract_tensor_features(raw)
+                    feats = extract_tensor_features(raw).float()
                     feats = feats / (feats.norm(p=2, dim=-1, keepdim=True) + 1e-8)
-                    arr = feats.cpu().float().numpy()
+                    arr = feats.cpu().numpy()
 
                 if (arr.shape != (len(missing), 768) or not np.isfinite(arr).all()
                         or np.any(np.linalg.norm(arr, axis=1) < 1e-8)):
@@ -2671,7 +2678,12 @@ class UnifiedMultimodalSearchPipeline:
             e5_id = os.environ.get("VIDENTRA_E5_MODEL_ID", "intfloat/multilingual-e5-small")
             e5_rev = os.environ.get("VIDENTRA_E5_REVISION", "c007d7ef6fd86656326059b28395a7a03a7c5846")
             self.e5_tokenizer = AutoTokenizer.from_pretrained(e5_id, revision=e5_rev, local_files_only=True)
-            model = AutoModel.from_pretrained(e5_id, revision=e5_rev, local_files_only=True).to(self.device)
+            model = AutoModel.from_pretrained(e5_id, revision=e5_rev, local_files_only=True)
+            target_dtype = preferred_cuda_dtype(self.device)
+            try:
+                model = model.to(device=self.device, dtype=target_dtype)
+            except TypeError:
+                model = model.to(self.device)
             model.eval()
             self.e5_model = model
             return True

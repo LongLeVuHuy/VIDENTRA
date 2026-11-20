@@ -42,6 +42,7 @@ try:
 except ImportError:
     psutil = None
 
+from videntra.config.device import get_device_info, resolve_device
 from videntra.retrieval.unified_pipeline import (
     UnifiedMultimodalSearchPipeline,
     analyze_query_lexical_tokens,
@@ -118,20 +119,19 @@ def get_git_worktree_status() -> dict[str, Any]:
 
 
 def get_hardware_info(device: str = "cpu") -> dict[str, Any]:
-    """Collect local CPU/RAM/platform hardware metadata."""
-    ram_total_gb: float | None = None
-    if psutil is not None:
-        try:
-            ram_total_gb = round(psutil.virtual_memory().total / (1024.0 ** 3), 2)
-        except Exception:
-            ram_total_gb = None
+    """Collect local CPU/GPU/VRAM/RAM/platform hardware metadata."""
+    dev_meta = get_device_info(device)
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
         "cpu_count": os.cpu_count(),
-        "ram_total_gb": ram_total_gb,
+        "ram_total_gb": dev_meta.get("ram_total_gb"),
         "device": device,
+        "cuda_available": bool(dev_meta.get("cuda_available", False)),
+        "gpu_name": dev_meta.get("gpu_name"),
+        "cuda_version": dev_meta.get("cuda_version"),
+        "vram_total_mb": dev_meta.get("vram_total_mb"),
     }
 
 
@@ -1316,6 +1316,7 @@ def run_benchmark(
     video_proposal_min_pts_gap: float = 1.0,
     video_proposal_clip_reserve_ratio: float = 0.0,
     disable_pure_visual_lexical_bonus: bool = False,
+    device: str = "cpu",
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Output directory must be empty: {out_dir}")
@@ -1402,12 +1403,14 @@ def run_benchmark(
         Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
     ]
     input_hashes = hash_paths(input_paths)
+    resolved_device = resolve_device(device, default="auto")
     runner = _construct_runner(
         MultimodalBenchmarkRunner,
         {
             "db_path": db_path,
             "faiss_path": faiss_path,
             "model_dir": model_dir,
+            "device": resolved_device,
             "ltr_model_path": ltr_model_path,
             "enable_spatial_patches": bool(enable_spatial_patches),
             "enable_vlm_caption_lexical": bool(enable_vlm_caption_lexical),
@@ -2164,6 +2167,7 @@ if __name__ == "__main__":
     parser.add_argument("--video-proposal-min-pts-gap", type=float, default=1.0)
     parser.add_argument("--video-proposal-clip-reserve-ratio", type=float, default=0.0)
     parser.add_argument("--disable-pure-visual-lexical-bonus", action="store_true")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
 
     run_benchmark(
@@ -2195,4 +2199,5 @@ if __name__ == "__main__":
         video_proposal_min_pts_gap=args.video_proposal_min_pts_gap,
         video_proposal_clip_reserve_ratio=args.video_proposal_clip_reserve_ratio,
         disable_pure_visual_lexical_bonus=args.disable_pure_visual_lexical_bonus,
+        device=args.device,
     )

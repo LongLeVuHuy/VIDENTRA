@@ -1,28 +1,49 @@
 [build-system]
-requires = ["setuptools==80.9.0"]
+requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "videntra"
 version = "0.1.0"
-description = "VIDENTRA media contracts and immutable registry"
+description = "VIDENTRA — Multimodal Video Retrieval and Temporal Moment Localization Engine"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "jsonschema==4.25.1",
-    "av==19.0.2",
-    "pyarrow==26.0.1",
-    "numpy==2.5.4",
-    "torch>=2.15.0",
-    "transformers>=5.22.1",
-    "safetensors>=0.8.0",
-    "pillow>=13.0.0",
-    "faiss-cpu>=1.15.1",
+    "numpy>=2.0",
+    "pyarrow>=18.0",
+    "av>=14.0",
+    "pillow>=10.0",
+    "jsonschema>=4.23",
+    "torch>=2.6.0",
+    "transformers>=4.49.0",
+    "safetensors>=0.4.5",
+    "faiss-cpu>=1.9.0",
+    "lightgbm>=4.5.0",
+    "scipy>=1.14.0",
+    "opencv-python-headless>=4.10.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    "pydantic>=2.10.0",
+    "psutil>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "huggingface-hub>=0.28.0",
+    "PyYAML>=6.0",
+    "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==8.4.2"]
+extraction = [
+    "rapidocr-onnxruntime>=1.4.0",
+    "faster-whisper>=1.1.0",
+    "ultralytics>=8.3.0",
+]
+llm = [
+    "llama-cpp-python>=0.3.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+]
 
 [project.scripts]
 videntra = "videntra.cli:main"

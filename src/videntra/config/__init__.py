@@ -3,6 +3,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
+from .device import (
+    resolve_device,
+    preferred_cuda_dtype,
+    get_device_info,
+    collect_environment_report,
+)
 from .ingestion import (
     IngestionConfig,
     StreamSelectionConfig,
@@ -32,6 +38,10 @@ class Paths:
 
 __all__ = [
     "Paths",
+    "resolve_device",
+    "preferred_cuda_dtype",
+    "get_device_info",
+    "collect_environment_report",
     "IngestionConfig",
     "StreamSelectionConfig",
     "DecodeConfig",

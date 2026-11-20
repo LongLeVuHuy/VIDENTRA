@@ -8,13 +8,15 @@ from typing import Any, Sequence
 import numpy as np
 from PIL import Image
 
+from videntra.config.device import preferred_cuda_dtype, resolve_device
+
 
 @dataclass(frozen=True)
 class SigLIP2Config:
     model_path: str | Path | None = None
     model_revision: str = "siglip2_base_patch16_224"
-    device: str = "cpu"
-    dtype: str = "float32"
+    device: str = "auto"
+    dtype: str = "auto"
     embedding_dim: int = 768
     max_text_length: int = 64
     batch_size: int = 32
@@ -46,14 +48,44 @@ class SigLIP2Encoder:
         self,
         config: SigLIP2Config | None = None,
         model_path: str | Path | None = None,
-        device: str = "cpu",
+        device: str = "auto",
     ):
         if config is not None:
             self.config = config
         else:
             self.config = SigLIP2Config(model_path=model_path, device=device)
+        self.device = resolve_device(self.config.device, default="auto")
         self._model = None
         self._processor = None
+        self._model_dtype = None
+
+    def _resolve_target_dtype(self, target_device: str):
+        import torch
+
+        req = str(self.config.dtype or "auto").strip().lower()
+        if req == "auto":
+            return preferred_cuda_dtype(target_device)
+        if req in ("float16", "fp16", "half") and not target_device.startswith("cpu"):
+            return torch.float16
+        if req in ("bfloat16", "bf16") and not target_device.startswith("cpu"):
+            return torch.bfloat16
+        return torch.float32
+
+    def _move_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        moved: dict[str, Any] = {}
+        for k, v in inputs.items():
+            if self._model_dtype is not None and hasattr(v, "is_floating_point") and v.is_floating_point():
+                moved[k] = v.to(device=self.device, dtype=self._model_dtype)
+            else:
+                moved[k] = v.to(self.device)
+        return moved
+
+    @staticmethod
+    def _l2_normalize_to_numpy(out: Any) -> np.ndarray:
+        emb = out.pooler_output if hasattr(out, "pooler_output") and out.pooler_output is not None else out
+        emb = emb.float()
+        norm_emb = emb / emb.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-12)
+        return norm_emb.cpu().numpy()
 
     def _ensure_loaded(self) -> None:
         if self._model is not None and self._processor is not None:
@@ -66,11 +98,17 @@ class SigLIP2Encoder:
         self._processor = AutoProcessor.from_pretrained(str(model_dir))
         model = AutoModel.from_pretrained(str(model_dir))
 
-        device = torch.device(self.config.device)
-        model = model.to(device)
-        if self.config.dtype == "float16" and self.config.device != "cpu":
-            model = model.half()
+        target_device = resolve_device(self.config.device, default="auto")
+        target_dtype = self._resolve_target_dtype(target_device)
+        try:
+            model = model.to(device=torch.device(target_device), dtype=target_dtype)
+        except TypeError:
+            model = model.to(torch.device(target_device))
+            if target_dtype == torch.float16 and not target_device.startswith("cpu"):
+                model = model.half()
         model.eval()
+        self.device = target_device
+        self._model_dtype = target_dtype
         self._model = model
 
     def encode_images(self, images: Sequence[np.ndarray | Image.Image]) -> np.ndarray:
@@ -95,16 +133,12 @@ class SigLIP2Encoder:
         batch_size = self.config.batch_size
         all_embeddings = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for i in range(0, len(pil_images), batch_size):
                 batch = pil_images[i : i + batch_size]
-                inputs = self._processor(images=batch, return_tensors="pt")
-                inputs = {k: v.to(self.config.device) for k, v in inputs.items()}
+                inputs = self._move_inputs(self._processor(images=batch, return_tensors="pt"))
                 out = self._model.get_image_features(**inputs)
-                emb = out.pooler_output if hasattr(out, "pooler_output") and out.pooler_output is not None else out
-                # L2 normalization
-                norm_emb = emb / emb.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-12)
-                all_embeddings.append(norm_emb.cpu().to(torch.float32).numpy())
+                all_embeddings.append(self._l2_normalize_to_numpy(out))
 
         res = np.concatenate(all_embeddings, axis=0)
         if not np.all(np.isfinite(res)):
@@ -122,22 +156,20 @@ class SigLIP2Encoder:
         batch_size = self.config.batch_size
         all_embeddings = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for i in range(0, len(texts), batch_size):
                 batch = list(texts[i : i + batch_size])
-                inputs = self._processor(
-                    text=batch,
-                    padding="max_length",
-                    max_length=self.config.max_text_length,
-                    truncation=True,
-                    return_tensors="pt",
+                inputs = self._move_inputs(
+                    self._processor(
+                        text=batch,
+                        padding="max_length",
+                        max_length=self.config.max_text_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
                 )
-                inputs = {k: v.to(self.config.device) for k, v in inputs.items()}
                 out = self._model.get_text_features(**inputs)
-                emb = out.pooler_output if hasattr(out, "pooler_output") and out.pooler_output is not None else out
-                # L2 normalization
-                norm_emb = emb / emb.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-12)
-                all_embeddings.append(norm_emb.cpu().to(torch.float32).numpy())
+                all_embeddings.append(self._l2_normalize_to_numpy(out))
 
         res = np.concatenate(all_embeddings, axis=0)
         if not np.all(np.isfinite(res)):

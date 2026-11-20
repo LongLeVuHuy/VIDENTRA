@@ -1,27 +1,43 @@
 # ==============================================================================
 # VIDENTRA - Production Dependencies
 # Python: >=3.12,<3.13
-# Install: pip install -r requirements.txt && pip install --no-build-isolation -e .
+#
+# GPU (NVIDIA RTX 3060 6GB CUDA) Recommended Install Order:
+#   1) pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   2) pip install -r requirements.txt
+#   3) pip install --no-build-isolation --no-deps -e .
+#
+# CPU-Only Install:
+#   pip install -r requirements.txt && pip install --no-build-isolation --no-deps -e .
 # ==============================================================================
 
 # --- Core Data, Schema Contracts & Video Decoding ---
 numpy==2.5.4
+scipy==1.18.1
 pyarrow==26.0.1
 av==19.0.2
 pillow==13.0.0
 jsonschema==4.25.1
+PyYAML==6.0.3
+tqdm==4.70.1
+python-dotenv==1.2.4
 
 # --- Deep Learning, Vision-Language Encoding & Vector Retrieval ---
-# Note: For NVIDIA GPU (CUDA) acceleration, install the matching CUDA build of torch/torchvision first.
+# Install CUDA torch/torchvision before this file if using an NVIDIA GPU.
 torch>=2.6.0
 torchvision>=0.21.0
 transformers==5.22.1
 safetensors==0.8.0
+huggingface-hub==2.4.0
 faiss-cpu==1.15.1
 lightgbm==4.7.0
-# Optional CPU GGUF backend for LocalSmallLLMBackend (install prebuilt wheel via:
-# pip install llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --only-binary=llama-cpp-python)
-llama-cpp-python==0.3.36
+
+# Optional GGUF small-LLM backend (disabled by default via VIDENTRA_LLM_ENABLED=0;
+# uncomment or install a matching prebuilt wheel if enabling Qwen2.5-1.5B GGUF):
+# CPU wheel:
+#   pip install llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --only-binary=llama-cpp-python
+# CUDA 12.x wheel (see https://github.com/abetlen/llama-cpp-python releases):
+# llama-cpp-python==0.3.36
 
 # --- Multimodal Evidence Extraction (OCR, ASR, Object Detection) ---
 rapidocr-onnxruntime==1.4.4
