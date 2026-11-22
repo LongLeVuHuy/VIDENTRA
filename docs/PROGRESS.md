@@ -1,5 +1,10 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 22/11/2026 — Bàn giao kế hoạch benchmark MSR‑VTT 1K‑A cho Antigravity
+
+- Chốt [kế hoạch thực thi](implementation/MSRVTT_HIT_AT_1_ANTIGRAVITY.md) với 4.000 video validation ngoài 1K‑A, test chuẩn 1.000 video/1.000 caption, baseline VideoPrism độc lập và ma trận rerank Top‑20. Chọn cấu hình theo validation trước khi chấm test, giao trích xuất nặng cho Kaggle và yêu cầu manifest dọn dataset ngoài MSR‑VTT trước khi xóa.
+- Kiểm kê read-only thấy 1.000 file video trong thư mục MSR‑VTT local. Lượt này chỉ soạn tài liệu và kiểm tra liên kết. Code, dữ liệu và benchmark chưa được chạy hoặc chỉnh sửa.
+
 ## 20/11/2026 — Chẩn đoán Video Hit@1 trên MSR-VTT và đối chiếu 1K-A
 
 - Đếm lại từ JSONL của run tham chiếu `1d90b8f9`. Trên MSR-VTT, Global Hit@1 là **377/809 (46,60%)** ở dev và **84/191 (43,98%)** ở held-out. Held-out Hit@5/10 là **128/191 (67,02%)** và **147/191 (76,96%)**. Khi lọc kết quả của gallery hỗn hợp theo dataset, Hit@1 held-out là **87/191 (45,55%)**.
