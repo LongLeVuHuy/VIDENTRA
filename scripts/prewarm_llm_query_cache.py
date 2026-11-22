@@ -1,4 +1,4 @@
-"""Prewarm data/cache/query_decomposition_cache.jsonl across validation and/or heldout queries.
+"""Prewarm data/cache/query_plans/query_decomposition_plans.jsonl across validation and/or heldout queries.
 
 Supports:
 - dev_150 (validation with max_msrvtt=100)
@@ -299,7 +299,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Prewarm LLM query decomposition cache across dev_150, dev_full_859, heldout_test_201, or all_1060."
     )
     parser.add_argument("--split", choices=VALID_SPLITS, default="dev_150")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--allow-missing-db", action="store_true", help="Allow loading queries without metadata.db filtering.")
     parser.add_argument("--val-dir", type=Path, default=Path("validation"))
     parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))

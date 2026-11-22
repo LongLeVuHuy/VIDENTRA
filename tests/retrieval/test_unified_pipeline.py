@@ -328,10 +328,12 @@ class TestFrameObjectsSchemaIntegration:
         pipeline.close()
 
     def test_production_metadata_db_schema_compliance(self):
-        """Verify that actual data/processed/metadata.db initializes FrameObjects without errors."""
-        prod_db = Path("data/processed/metadata.db")
+        """Verify that actual data/processed/catalog/corpus_metadata.db initializes FrameObjects without errors."""
+        from videntra.config.paths import resolve_metadata_db_path
+
+        prod_db = resolve_metadata_db_path("data/processed")
         if not prod_db.exists():
-            pytest.skip("data/processed/metadata.db not present in environment")
+            pytest.skip("corpus_metadata.db not present in environment")
 
         pipeline = UnifiedMultimodalSearchPipeline(
             db_path=prod_db,

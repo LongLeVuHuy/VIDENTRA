@@ -204,8 +204,8 @@ class MultimodalBenchmarkRunner:
 
     def __init__(
         self,
-        db_path: Path = Path("data/processed/metadata.db"),
-        faiss_path: Path = Path("data/processed/faiss_index.bin"),
+        db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
+        faiss_path: Path = Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"),
         model_dir: Path = Path("models/siglip2"),
         device: str = "cpu",
         use_disk_cache: bool = False,
@@ -1291,8 +1291,8 @@ def run_benchmark(
     val_dir: Path = Path("validation"),
     test_dir: Path = Path("test_queries"),
     out_dir: Path = Path("benchmark"),
-    db_path: Path = Path("data/processed/metadata.db"),
-    faiss_path: Path = Path("data/processed/faiss_index.bin"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
+    faiss_path: Path = Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"),
     model_dir: Path = Path("models/siglip2"),
     max_msrvtt: int = 100,
     run_all_splits: bool = True,
@@ -1374,10 +1374,12 @@ def run_benchmark(
         "a5_preset": a5_preset,
     }
 
+    from videntra.config.paths import resolve_artifact_path, resolve_processed_root
+
     db_path = Path(db_path)
     faiss_path = Path(faiss_path)
     model_dir = Path(model_dir)
-    processed_dir = db_path.resolve().parent
+    processed_dir = resolve_processed_root(db_path.resolve())
 
     src_videntra_files = [
         p for p in sorted(Path("src/videntra").rglob("*"))
@@ -1391,16 +1393,15 @@ def run_benchmark(
         test_dir,
         db_path,
         faiss_path,
-        processed_dir / "faiss_text_e5_384.bin",
-        processed_dir / "e5_text_manifest.json",
-        processed_dir / "faiss_e5_caption_384.bin",
-        processed_dir / "e5_caption_manifest.json",
+        resolve_artifact_path(processed_dir, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin"),
+        resolve_artifact_path(processed_dir, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json"),
+        resolve_artifact_path(processed_dir, "text_evidence/e5_captions_384d.faiss", "faiss_e5_caption_384.bin"),
+        resolve_artifact_path(processed_dir, "text_evidence/e5_captions_manifest.json", "e5_caption_manifest.json"),
         processed_dir / "spatial_patches_fp16.npy",
         processed_dir / "spatial_patches_map.jsonl",
         processed_dir / "p85_receipt.json",
         *( [ltr_model_path] if ltr_model_path is not None else [] ),
         model_dir,
-        Path("data/raw/avc/provenance/data/processed/avc_1.8m/manifests/pilot_queries_eval_only.json"),
     ]
     input_hashes = hash_paths(input_paths)
     resolved_device = resolve_device(device, default="auto")
@@ -1681,6 +1682,7 @@ def run_benchmark(
         "metadata.db",
         db_path.name,
         faiss_path.name,
+        ".faiss",
         "faiss_",
         "manifest",
         "spatial_patches",
@@ -2137,8 +2139,8 @@ if __name__ == "__main__":
     parser.add_argument("--val-dir", type=Path, default=Path("validation"))
     parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))
     parser.add_argument("--out-dir", type=Path, default=Path("work/experiments") / ("run_" + time.strftime("%Y%m%d_%H%M%S")))
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
+    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"))
     parser.add_argument("--model-dir", type=Path, default=Path("models/siglip2"))
     parser.add_argument("--max-msrvtt", type=int, default=100)
     parser.add_argument("--single-split-only", action="store_true")

@@ -23,6 +23,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
+from videntra.config.paths import (  # noqa: E402
+    DEFAULT_KEYFRAME_FAISS_PATH,
+    DEFAULT_METADATA_DB_PATH,
+    resolve_processed_root,
+)
 from videntra.evidence.normalize import fold_diacritics, normalize_text  # noqa: E402
 from videntra.storage.database import OfflineMetadataStore, PayloadConflictError, current_iso  # noqa: E402
 from videntra.storage.grouping import OCREvidenceGrouper, ASREvidenceGrouper  # noqa: E402
@@ -906,8 +911,8 @@ def validate_worker_outputs(outputs_dir: Path) -> None:
 
 def ingest_kaggle_offline_outputs(
     outputs_dir: Path = Path("work/kaggle/offline_outputs"),
-    db_path: Path = Path("data/processed/metadata.db"),
-    faiss_path: Path = Path("data/processed/faiss_index.bin"),
+    db_path: Path = DEFAULT_METADATA_DB_PATH,
+    faiss_path: Path = DEFAULT_KEYFRAME_FAISS_PATH,
     reset: bool = False,
 ):
     # Never overwrite a previous snapshot or delete a database through an ingest flag.
@@ -1086,16 +1091,22 @@ def ingest_kaggle_offline_outputs(
     print_progress(5, total_steps, "FAISS Index & Sync", 100.0, 90.0)
 
     # 5b. Copy optional E5 text index and ingest P8-5 artifacts if present
-    for opt_name in ("faiss_text_e5_384.bin", "e5_text_manifest.json"):
+    proc_root = resolve_processed_root(faiss_path)
+    for opt_name, rel_dst in (
+        ("faiss_text_e5_384.bin", "text_evidence/e5_ocr_asr_384d.faiss"),
+        ("e5_text_manifest.json", "text_evidence/e5_ocr_asr_manifest.json"),
+    ):
         opt_src = outputs_dir / opt_name
         if opt_src.is_file():
-            _atomic_copy_file(opt_src, faiss_path.parent / opt_name)
+            dst_path = proc_root / rel_dst
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_copy_file(opt_src, dst_path)
 
     if any((outputs_dir / n).is_file() for n in ("spatial_patches_fp16.npy", "keyframe_captions.json", "faiss_e5_caption_384.bin")):
         ingest_p85_artifacts(
             outputs_dir=outputs_dir,
             db_path=db_path,
-            processed_dir=faiss_path.parent,
+            processed_dir=proc_root,
             allow_partial_keyframes=False,
             dry_run=False,
         )
@@ -1128,9 +1139,14 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=("full", "p85", "ocr_asr"), default="full")
     parser.add_argument("--outputs-dir", type=Path, default=Path("work/kaggle/offline_outputs"))
     parser.add_argument("--staging-dir", type=Path, default=None, help="Optional alias/override for --outputs-dir.")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
-    parser.add_argument("--processed-dir", type=Path, default=None, help="Target dir for P8-5 artifacts (defaults to db_path.parent).")
+    parser.add_argument("--db-path", type=Path, default=DEFAULT_METADATA_DB_PATH)
+    parser.add_argument("--faiss-path", type=Path, default=DEFAULT_KEYFRAME_FAISS_PATH)
+    parser.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=None,
+        help="Target dir for P8-5 artifacts (defaults to resolved processed root of --db-path).",
+    )
     parser.add_argument("--allow-partial-keyframes", action="store_true", help="Allow spatial_patches row count != Keyframes count in p85 mode.")
     parser.add_argument("--dry-run", action="store_true", help="Validate artifacts without modifying DB or files.")
     parser.add_argument("--reset", action="store_true")
@@ -1148,7 +1164,7 @@ if __name__ == "__main__":
         res = ingest_p85_artifacts(
             outputs_dir=effective_outputs_dir,
             db_path=args.db_path,
-            processed_dir=args.processed_dir,
+            processed_dir=args.processed_dir or resolve_processed_root(args.db_path),
             allow_partial_keyframes=args.allow_partial_keyframes,
             dry_run=args.dry_run,
         )

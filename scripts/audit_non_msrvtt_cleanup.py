@@ -178,11 +178,17 @@ def _rebuild_flat_ip_index(src_index_path: Path, keep_indices: np.ndarray) -> in
 
 def _prune_processed_to_msrvtt(root: Path) -> dict[str, Any]:
     """Prune all non-MSR-VTT rows from data/processed/* and work/kaggle/offline_outputs/*."""
+    from videntra.config.paths import (
+        resolve_artifact_path,
+        resolve_keyframe_faiss_path,
+        resolve_metadata_db_path,
+    )
+
     proc = root / "data/processed"
-    db_path = proc / "metadata.db"
+    db_path = resolve_metadata_db_path(proc)
     summary: dict[str, Any] = {}
     if not db_path.is_file():
-        return {"skipped": "no data/processed/metadata.db"}
+        return {"skipped": f"missing {db_path}"}
 
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -198,19 +204,19 @@ def _prune_processed_to_msrvtt(root: Path) -> dict[str, Any]:
     keep_kf_arr = np.asarray(keep_kf_pos, dtype=np.int64)
 
     # 1. Prune keyframe vector files
-    aug_path = proc / "augmented_embeddings.npy"
+    aug_path = resolve_artifact_path(proc, "visual_keyframes/siglip2_yolo_augmented_864d.npy", "augmented_embeddings.npy")
     if aug_path.is_file():
         aug = np.load(str(aug_path))
         aug_kept = np.ascontiguousarray(aug[keep_kf_arr], dtype=aug.dtype)
         np.save(str(aug_path), aug_kept)
         summary["augmented_embeddings_rows"] = int(aug_kept.shape[0])
 
-    faiss_kf_path = proc / "faiss_index.bin"
+    faiss_kf_path = resolve_keyframe_faiss_path(proc)
     if faiss_kf_path.is_file():
         summary["faiss_index_ntotal"] = _rebuild_flat_ip_index(faiss_kf_path, keep_kf_arr)
 
     # 2. Prune E5 text manifest & index
-    e5_m_path = proc / "e5_text_manifest.json"
+    e5_m_path = resolve_artifact_path(proc, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json")
     if e5_m_path.is_file():
         e5_rows = json.loads(e5_m_path.read_text(encoding="utf-8"))
         keep_e5_pos = [int(r["faiss_id"]) for r in e5_rows if is_msrvtt_video_id(str(r.get("video_id", "")))]
@@ -221,14 +227,14 @@ def _prune_processed_to_msrvtt(root: Path) -> dict[str, Any]:
             new_e5.append(rc)
         e5_m_path.write_text(json.dumps(new_e5, indent=2, ensure_ascii=False), encoding="utf-8")
         summary["e5_text_manifest_rows"] = len(new_e5)
-        e5_idx_path = proc / "faiss_text_e5_384.bin"
+        e5_idx_path = resolve_artifact_path(proc, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin")
         if e5_idx_path.is_file():
             summary["faiss_text_e5_384_ntotal"] = _rebuild_flat_ip_index(
                 e5_idx_path, np.asarray(keep_e5_pos, dtype=np.int64)
             )
 
     # 3. Prune VideoPrism clip manifest & index
-    vp_m_path = proc / "videoprism_clip_manifest.json"
+    vp_m_path = resolve_artifact_path(proc, "visual_clips/videoprism_whole_clips_manifest.json", "videoprism_clip_manifest.json")
     if vp_m_path.is_file():
         vp_obj = json.loads(vp_m_path.read_text(encoding="utf-8"))
         old_vids = [str(v) for v in vp_obj.get("video_ids", [])]
@@ -244,15 +250,15 @@ def _prune_processed_to_msrvtt(root: Path) -> dict[str, Any]:
         vp_obj["rows"] = new_vp_rows
         vp_m_path.write_text(json.dumps(vp_obj, indent=2, ensure_ascii=False), encoding="utf-8")
         summary["videoprism_clip_manifest_videos"] = len(new_vids)
-        vp_idx_path = proc / "faiss_videoprism_clip_768.bin"
+        vp_idx_path = resolve_artifact_path(proc, "visual_clips/videoprism_whole_clips_768d.faiss", "faiss_videoprism_clip_768.bin")
         if vp_idx_path.is_file():
             summary["faiss_videoprism_clip_768_ntotal"] = _rebuild_flat_ip_index(
                 vp_idx_path, np.asarray(keep_vp_pos, dtype=np.int64)
             )
 
     # 4. Prune VideoPrism subclips
-    sub_map_path = proc / "videoprism_subclips_map.jsonl"
-    sub_npy_path = proc / "videoprism_subclips_768.npy"
+    sub_map_path = resolve_artifact_path(proc, "visual_clips/videoprism_subclips_manifest.jsonl", "videoprism_subclips_map.jsonl")
+    sub_npy_path = resolve_artifact_path(proc, "visual_clips/videoprism_subclips_768d.npy", "videoprism_subclips_768.npy")
     if sub_map_path.is_file() and sub_npy_path.is_file():
         sub_rows = [json.loads(ln) for ln in sub_map_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         keep_sub_pos = [int(r.get("row_id", idx)) for idx, r in enumerate(sub_rows) if is_msrvtt_video_id(str(r.get("video_id", "")))]

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from .config.device import collect_environment_report, resolve_device
+from .config.paths import resolve_env_db_path, resolve_env_faiss_path
 from .contracts import validate
 from .registry import Registry
 
@@ -320,8 +321,8 @@ def handle_search(args):
 
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
-        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH") or "data/processed/metadata.db"
-        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH") or "data/processed/faiss_index.bin"
+        db_path = resolve_env_db_path(args.db_path)
+        faiss_path = resolve_env_faiss_path(args.faiss_path)
         model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR") or "models/siglip2"
         if args.mock:
             raise ValueError("Unified backend does not support --mock; remove --mock to use processed artifacts")
@@ -394,8 +395,8 @@ def handle_serve(args):
     resolved_device = resolve_device(getattr(args, "device", None), default="auto")
     if args.backend == "unified":
         from .retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
-        db_path = args.db_path or os.environ.get("VIDENTRA_DB_PATH") or "data/processed/metadata.db"
-        faiss_path = args.faiss_path or os.environ.get("VIDENTRA_FAISS_PATH") or "data/processed/faiss_index.bin"
+        db_path = resolve_env_db_path(args.db_path)
+        faiss_path = resolve_env_faiss_path(args.faiss_path)
         model_path = args.model_path or os.environ.get("VIDENTRA_MODEL_DIR") or "models/siglip2"
         if args.mock:
             raise ValueError("Unified backend does not support --mock; remove --mock to use processed artifacts")

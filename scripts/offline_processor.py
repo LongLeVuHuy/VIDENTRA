@@ -69,7 +69,7 @@ def _guard_and_backup_path(target_path: Path, i_understand_overwrite: bool, labe
 class OfflineProcessingPipeline:
     def __init__(
         self,
-        db_path: Path = Path("data/processed/metadata.db"),
+        db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
         faiss_path: Path = Path("work/offline_scratch/faiss_index.bin"),
         raw_data_dir: Path = Path("data/datasets"),
         keyframes_dir: Path = Path("data/datasets/msrvtt/keyframes"),
@@ -470,7 +470,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VIDENTRA Offline Processing & Storage Pipeline")
     parser.add_argument("--dataset", type=str, default=None, help="Process specific dataset (e.g. qvhighlights, avc, msrvtt)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of videos for rapid staging")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--faiss-path", type=Path, default=Path("work/offline_scratch/faiss_index.bin"))
     parser.add_argument("--reset", action="store_true", help="Reset existing database and index before running")
     parser.add_argument(

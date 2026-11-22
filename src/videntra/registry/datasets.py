@@ -11,6 +11,13 @@ import shutil
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from videntra.config.paths import (
+    resolve_artifact_path,
+    resolve_keyframe_faiss_path,
+    resolve_metadata_db_path,
+    resolve_processed_root,
+)
+
 
 DATASET_SUBDIRS: tuple[str, ...] = (
     "media",
@@ -230,7 +237,8 @@ def _prune_json_manifest_and_index(
 
 def _prune_processed_for_dataset(processed_dir: Path, dataset_id: str) -> dict[str, Any]:
     """Remove all database rows and vector entries belonging to dataset_id."""
-    db_path = processed_dir / "metadata.db"
+    proc_root = resolve_processed_root(processed_dir)
+    db_path = resolve_metadata_db_path(proc_root)
     if not db_path.is_file():
         return {"skipped": f"missing {db_path}"}
 
@@ -262,16 +270,18 @@ def _prune_processed_for_dataset(processed_dir: Path, dataset_id: str) -> dict[s
             if str(vid) not in remove_vids:
                 keep_kf_pos.append(int(fid))
                 keep_kf_ids.append(str(kfid))
-        aug_path = processed_dir / "augmented_embeddings.npy"
+        aug_path = resolve_artifact_path(
+            proc_root, "visual_keyframes/siglip2_yolo_augmented_864d.npy", "augmented_embeddings.npy"
+        )
         if aug_path.is_file():
             summary["augmented_embeddings_rows"] = _atomic_slice_npy(aug_path, keep_kf_pos)
-        faiss_kf_path = processed_dir / "faiss_index.bin"
+        faiss_kf_path = resolve_keyframe_faiss_path(proc_root)
         if faiss_kf_path.is_file():
             summary["faiss_index_ntotal"] = _rebuild_flat_ip_faiss(faiss_kf_path, keep_kf_pos)
 
     e5_rem = _prune_json_manifest_and_index(
-        processed_dir / "e5_text_manifest.json",
-        processed_dir / "faiss_text_e5_384.bin",
+        resolve_artifact_path(proc_root, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json"),
+        resolve_artifact_path(proc_root, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin"),
         None,
         remove_vids,
         id_key="faiss_id",
@@ -280,8 +290,8 @@ def _prune_processed_for_dataset(processed_dir: Path, dataset_id: str) -> dict[s
         summary["e5_text_manifest_rows"] = e5_rem
 
     vp_rem = _prune_json_manifest_and_index(
-        processed_dir / "videoprism_clip_manifest.json",
-        processed_dir / "faiss_videoprism_clip_768.bin",
+        resolve_artifact_path(proc_root, "visual_clips/videoprism_whole_clips_manifest.json", "videoprism_clip_manifest.json"),
+        resolve_artifact_path(proc_root, "visual_clips/videoprism_whole_clips_768d.faiss", "faiss_videoprism_clip_768.bin"),
         None,
         remove_vids,
         id_key="row_id",
@@ -290,9 +300,9 @@ def _prune_processed_for_dataset(processed_dir: Path, dataset_id: str) -> dict[s
         summary["videoprism_clip_manifest_videos"] = vp_rem
 
     sub_rem = _prune_json_manifest_and_index(
-        processed_dir / "videoprism_subclips_map.jsonl",
+        resolve_artifact_path(proc_root, "visual_clips/videoprism_subclips_manifest.jsonl", "videoprism_subclips_map.jsonl"),
         None,
-        processed_dir / "videoprism_subclips_768.npy",
+        resolve_artifact_path(proc_root, "visual_clips/videoprism_subclips_768d.npy", "videoprism_subclips_768.npy"),
         remove_vids,
         id_key="row_id",
     )
@@ -507,8 +517,8 @@ class DatasetRegistryManager:
     ) -> dict[str, Any]:
         paths = self.dataset_paths(dataset_id)
         fc, tb = _dir_stats(paths.root)
-        proc_dir = Path(processed_dir) if processed_dir is not None else (self.data_root / "processed")
-        db_path = proc_dir / "metadata.db"
+        proc_dir = resolve_processed_root(processed_dir) if processed_dir is not None else (self.data_root / "processed")
+        db_path = resolve_metadata_db_path(proc_dir)
 
         db_videos = 0
         db_keyframes = 0
@@ -567,7 +577,7 @@ class DatasetRegistryManager:
             return {"ok": False, "error": "No datasets registered", "datasets": []}
 
         asset_roots = self._load_asset_roots_doc()["roots"]
-        resolved_db = Path(db_path) if db_path is not None else (self.data_root / "processed" / "metadata.db")
+        resolved_db = Path(db_path) if db_path is not None else resolve_metadata_db_path(self.data_root / "processed")
         base_anchor = self.data_root.parent
 
         results: list[dict[str, Any]] = []

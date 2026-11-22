@@ -454,8 +454,8 @@ def capture_pools(
     eval_dir: Path = Path("work/evaluation-only"),
     val_dir: Path = Path("validation"),
     test_dir: Path = Path("test_queries"),
-    db_path: Path = Path("data/processed/metadata.db"),
-    faiss_path: Path = Path("data/processed/faiss_index.bin"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
+    faiss_path: Path = Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"),
     model_dir: Path = Path("models/siglip2"),
     ltr_model_path: Path | None = Path("models/ranking/videntra_ltr_v1.json"),
     device: str = "cpu",
@@ -900,8 +900,8 @@ def main() -> None:
     parser.add_argument("--eval-dir", type=Path, default=Path("work/evaluation-only"))
     parser.add_argument("--val-dir", type=Path, default=Path("validation"))
     parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/faiss_index.bin"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
+    parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"))
     parser.add_argument("--model-dir", type=Path, default=Path("models/siglip2"))
     parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
     parser.add_argument("--no-ltr", action="store_true")

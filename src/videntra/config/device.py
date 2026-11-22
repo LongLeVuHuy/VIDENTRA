@@ -9,6 +9,13 @@ import platform
 import sys
 from typing import Any
 
+from .paths import (
+    resolve_artifact_path,
+    resolve_env_db_path,
+    resolve_env_faiss_path,
+    resolve_processed_root,
+)
+
 
 _CORE_PACKAGES: tuple[tuple[str, str], ...] = (
     ("numpy", "numpy"),
@@ -152,12 +159,12 @@ def collect_environment_report(
     asset_roots_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Run a comprehensive non-destructive preflight check for serving and evaluation."""
-    resolved_db = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
-    resolved_faiss = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
+    resolved_db = resolve_env_db_path(db_path)
+    resolved_faiss = resolve_env_faiss_path(faiss_path)
     resolved_model_dir = Path(model_dir if model_dir is not None else os.environ.get("VIDENTRA_MODEL_DIR", "models/siglip2"))
     resolved_ltr = Path(ltr_model_path if ltr_model_path is not None else "models/ranking/videntra_ltr_v1.json")
     resolved_roots = Path(asset_roots_path if asset_roots_path is not None else "configs/local/asset_roots.json")
-    processed_dir = resolved_db.parent
+    processed_dir = resolve_processed_root(resolved_db)
     data_root = processed_dir.parent if processed_dir.name == "processed" else Path("data")
     datasets_reg_path = data_root / "datasets.json"
     registered_datasets: list[str] = []
@@ -177,10 +184,22 @@ def collect_environment_report(
         "faiss_index": _path_status(resolved_faiss, required=True),
         "siglip2_weights": _path_status(resolved_model_dir / "model.safetensors", required=True),
         "ltr_model": _path_status(resolved_ltr, required=True),
-        "augmented_embeddings": _path_status(processed_dir / "augmented_embeddings.npy", required=False),
-        "e5_text_index": _path_status(processed_dir / "faiss_text_e5_384.bin", required=False),
-        "videoprism_clip_index": _path_status(processed_dir / "faiss_videoprism_clip_768.bin", required=False),
-        "videoprism_subclips": _path_status(processed_dir / "videoprism_subclips_768.npy", required=False),
+        "augmented_embeddings": _path_status(
+            resolve_artifact_path(processed_dir, "visual_keyframes/siglip2_yolo_augmented_864d.npy", "augmented_embeddings.npy"),
+            required=False,
+        ),
+        "e5_text_index": _path_status(
+            resolve_artifact_path(processed_dir, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin"),
+            required=False,
+        ),
+        "videoprism_clip_index": _path_status(
+            resolve_artifact_path(processed_dir, "visual_clips/videoprism_whole_clips_768d.faiss", "faiss_videoprism_clip_768.bin"),
+            required=False,
+        ),
+        "videoprism_subclips": _path_status(
+            resolve_artifact_path(processed_dir, "visual_clips/videoprism_subclips_768d.npy", "videoprism_subclips_768.npy"),
+            required=False,
+        ),
         "datasets_registry": _path_status(datasets_reg_path, required=False),
         "asset_roots_config": _path_status(resolved_roots, required=False),
     }

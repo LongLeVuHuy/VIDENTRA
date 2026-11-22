@@ -534,7 +534,10 @@ class TestBuildQuery864dVector:
             assert meta[8] > 0.0, f"Query '{query}' failed to trigger OCR text flag (dim 8)!"
 
     @pytest.mark.skipif(
-        not (Path("data/processed/metadata.db").exists() and Path("data/processed/faiss_index.bin").exists()),
+        not (
+            Path("data/processed/catalog/corpus_metadata.db").exists()
+            and Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss").exists()
+        ),
         reason="Local processed FAISS/SQLite corpus not present in CI environment",
     )
     def test_p3_rebuild_augmented_864d_cache_validity(self, tmp_path):

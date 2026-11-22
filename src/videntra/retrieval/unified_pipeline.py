@@ -84,6 +84,16 @@ from videntra.retrieval.videoprism_branch import (
 )
 from videntra.evidence.normalize import contains_text_phrase
 from videntra.config.device import preferred_cuda_dtype, resolve_device
+from videntra.config.paths import (
+    DEFAULT_E5_QUERY_CACHE_PATH,
+    DEFAULT_PROCESSED_DIR,
+    DEFAULT_SIGLIP2_QUERY_CACHE_PATH,
+    DEFAULT_VIDEOPRISM_QUERY_CACHE_PATH,
+    resolve_artifact_path,
+    resolve_env_db_path,
+    resolve_env_faiss_path,
+    resolve_processed_root,
+)
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.relations.spatial_action_verifier import SpatialActionVerifier
 from videntra.localization.refine import (
@@ -473,7 +483,7 @@ def _fast_object_boost_from_summary(
 class TextEmbeddingDiskCache:
     """C1: Deterministic disk cache for 768d text embeddings keyed by SHA256 of NFC-normalized text."""
 
-    def __init__(self, cache_file: Path | str = Path("data/cache/query_text_embeddings_768d.npz")):
+    def __init__(self, cache_file: Path | str = DEFAULT_SIGLIP2_QUERY_CACHE_PATH):
         self.cache_file = Path(cache_file)
         self._memory_cache: dict[str, np.ndarray] = {}
         self._dirty = False
@@ -530,8 +540,8 @@ class UnifiedMultimodalSearchPipeline:
         device: str | None = None,
         use_disk_cache: bool = False,
         memory_cache_size: int = 512,
-        cache_path: Path | str = Path("data/cache/query_text_embeddings_768d.npz"),
-        e5_cache_path: Path | str = Path("data/cache/query_e5_embeddings_384d.npz"),
+        cache_path: Path | str = DEFAULT_SIGLIP2_QUERY_CACHE_PATH,
+        e5_cache_path: Path | str = DEFAULT_E5_QUERY_CACHE_PATH,
         alpha_obj: float = 0.25,
         alpha_meta: float = 0.15,
         beta_hub: float = 0.08,
@@ -586,8 +596,9 @@ class UnifiedMultimodalSearchPipeline:
         videoprism_rerank_top_k: int = 20,
         videoprism_rerank_weight: float = 0.08,
     ):
-        self.db_path = Path(db_path if db_path is not None else os.environ.get("VIDENTRA_DB_PATH", "data/processed/metadata.db"))
-        self.faiss_path = Path(faiss_path if faiss_path is not None else os.environ.get("VIDENTRA_FAISS_PATH", "data/processed/faiss_index.bin"))
+        self.db_path = resolve_env_db_path(db_path)
+        self.faiss_path = resolve_env_faiss_path(faiss_path)
+        self.processed_dir = resolve_processed_root(self.db_path)
         self.model_dir = Path(model_dir if model_dir is not None else os.environ.get("VIDENTRA_MODEL_DIR", "models/siglip2"))
         self.device = resolve_device(device, default="auto")
         self.use_disk_cache = use_disk_cache
@@ -789,12 +800,12 @@ class UnifiedMultimodalSearchPipeline:
         self.videoprism_union_k = max(0, int(videoprism_union_k))
         self.videoprism_rerank_top_k = max(1, int(videoprism_rerank_top_k))
         self.videoprism_rerank_weight = float(videoprism_rerank_weight)
-        self.videoprism_cache_path = Path(videoprism_cache_path) if videoprism_cache_path else Path("data/cache/query_videoprism_768d.npz")
+        self.videoprism_cache_path = Path(videoprism_cache_path) if videoprism_cache_path else DEFAULT_VIDEOPRISM_QUERY_CACHE_PATH
         if videoprism_retriever is not None:
             self.videoprism_retriever: VideoPrismClipRetriever | None = videoprism_retriever
         elif self.enable_videoprism:
             self.videoprism_retriever = VideoPrismClipRetriever(
-                processed_dir=self.db_path.parent,
+                processed_dir=self.processed_dir,
                 cache_path=self.videoprism_cache_path,
             )
         else:
@@ -809,7 +820,7 @@ class UnifiedMultimodalSearchPipeline:
 
         if not lazy_load:
             self._initialize()
-            self.load_optional_phase74_artifacts(self.db_path.parent)
+            self.load_optional_phase74_artifacts(self.processed_dir)
 
     def _initialize(self) -> None:
         """Initialize SQLite, FAISS index, 864d embeddings, and encoder model."""
@@ -1850,11 +1861,11 @@ class UnifiedMultimodalSearchPipeline:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def load_optional_phase74_artifacts(self, base_dir: Path | str = Path("data/processed")) -> dict[str, bool]:
+    def load_optional_phase74_artifacts(self, base_dir: Path | str = DEFAULT_PROCESSED_DIR) -> dict[str, bool]:
         """Load optional Phase 7.4 / P8-5 offline artifacts (spatial patches, E5 text & caption indexes) if present."""
         import json as _json
 
-        root = Path(base_dir)
+        root = resolve_processed_root(base_dir)
         loaded = {"spatial_patches": False, "e5_text_index": False}
         self._spatial_patch_row_by_fid = None
         self.p85_coverage_mode = None
@@ -1948,8 +1959,8 @@ class UnifiedMultimodalSearchPipeline:
                 self._degraded_channels["spatial_patches"] = str(exc)
                 logger.warning("Failed to load spatial patches %s: %s", patches_path, exc, exc_info=True)
 
-        e5_idx_path = root / "faiss_text_e5_384.bin"
-        e5_manifest_path = root / "e5_text_manifest.json"
+        e5_idx_path = resolve_artifact_path(root, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin")
+        e5_manifest_path = resolve_artifact_path(root, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json")
         if e5_idx_path.is_file() and e5_manifest_path.is_file():
             try:
                 self.e5_text_index = faiss.read_index(str(e5_idx_path))
@@ -1961,8 +1972,8 @@ class UnifiedMultimodalSearchPipeline:
                 self._degraded_channels["e5_text_index"] = str(exc)
                 logger.warning("Failed to load E5 text index %s: %s", e5_idx_path, exc, exc_info=True)
 
-        cap_idx_path = root / "faiss_e5_caption_384.bin"
-        cap_manifest_path = root / "e5_caption_manifest.json"
+        cap_idx_path = resolve_artifact_path(root, "text_evidence/e5_captions_384d.faiss", "faiss_e5_caption_384.bin")
+        cap_manifest_path = resolve_artifact_path(root, "text_evidence/e5_captions_manifest.json", "e5_caption_manifest.json")
         if cap_idx_path.is_file() and cap_manifest_path.is_file():
             try:
                 if p85_receipt:

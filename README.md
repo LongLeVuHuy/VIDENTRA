@@ -3,7 +3,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![Architecture](https://img.shields.io/badge/Pipeline-SigLIP2%20%2B%20VideoPrism%20%2B%20PE--Core--L%20%2B%20So400M%20X--Pool%20CSLS-0b7a53.svg)](#3-kiến-trúc-pipeline-7-giai-đoạn)
 [![MSR-VTT 1K-A](https://img.shields.io/badge/MSR--VTT%201K--A%20Hit%401-55.60%25%20(556%2F1000)-0b7a53.svg)](#72-benchmark-chính-thức-msr-vtt-1k-a-jsfusion--vượt-mốc-50-hit1-5560)
-[![Test Suite](https://img.shields.io/badge/Pytest-651%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
+[![Test Suite](https://img.shields.io/badge/Pytest-654%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
 [![GPU Target](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20VRAM%20%7C%20CPU-orange.svg)](#4-phần-cứng-mục-tiêu--ngân-sách-vram-6gb)
 [![CI](https://github.com/LongLeVuHuy/VIDENTRA/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
@@ -59,12 +59,19 @@ VIDENTRA/
 │   ├── datasets/                 # Tổ chức tách biệt từng dataset (<id>/{media,keyframes,annotations,provenance,snapshots})
 │   │   └── msrvtt/               # Dataset MSR-VTT hiện hành (1,000 .mp4, 30,970 .jpg, annotations, provenance, snapshots)
 │   ├── datasets.json             # Registry chỉ mục các dataset đang quản lý (local, gitignored)
-│   ├── processed/                # SQLite metadata.db, FAISS 864d/E5/VideoPrism & .npy (gitignored)
-│   └── cache/                    # Embedding cache truy vấn & hubness radii (gitignored)
+│   ├── processed/                # Chỉ mục & metadata đã xử lý, chia theo nhóm chức năng (gitignored, có .gitkeep)
+│   │   ├── catalog/              # `corpus_metadata.db` (SQLite WAL: Videos, Keyframes, Objects, OCR, ASR, FTS5)
+│   │   ├── visual_keyframes/     # `siglip2_keyframes_768d.faiss` & `siglip2_yolo_augmented_864d.npy`
+│   │   ├── visual_clips/         # `videoprism_whole_clips_768d.faiss`, `videoprism_subclips_768d.npy` & manifests
+│   │   └── text_evidence/        # `e5_ocr_asr_384d.faiss` & `e5_ocr_asr_manifest.json` (ngữ nghĩa OCR/ASR)
+│   └── cache/                    # Cache tính toán trung gian theo vai trò (gitignored, có .gitkeep)
+│       ├── query_embeddings/     # `{siglip2_query_768d,videoprism_query_768d,e5_query_384d}_cache.npz`
+│       ├── query_plans/          # `query_decomposition_plans.jsonl` (kế hoạch tách câu Stage 1)
+│       └── calibration/          # `siglip2_keyframe_hubness_radii.npy` (bán kính chống hubness)
 ├── src/videntra/
 │   ├── api/                      # FastAPI server, HTTP 206 streaming, Web UI Inspector, CSV export
 │   ├── asr/                      # VAD, PhoWhisper / Faster-Whisper, timeline alignment
-│   ├── config/                   # Device auto-resolution (device.py), sampling & ingestion configs
+│   ├── config/                   # SSOT đường dẫn (paths.py), device auto-resolution (device.py) & sampling configs
 │   ├── contracts/                # JSON Schemas & validators
 │   ├── encoders/                 # SigLIP2 vision-language encoder (auto CUDA FP16 / CPU FP32)
 │   ├── evaluation/               # Evaluator, provenance SHA-256, OOF GroupKFold & leakage gate
@@ -82,7 +89,7 @@ VIDENTRA/
 │   ├── storage/                  # SQLite WAL-safe reader & Parquet adapters
 │   └── cli.py                    # CLI (`videntra doctor|dataset|search|serve|index|evaluate|sampling`)
 ├── scripts/                      # Tiện ích đánh giá, retrain LTR 5-fold CV, MSR-VTT 1K-A Kaggle pipeline/matrix/eval & cleanup audit
-├── tests/                        # Suite kiểm thử tự động (651 tests, chạy không cần GPU)
+├── tests/                        # Suite kiểm thử tự động (654 tests, chạy không cần GPU)
 ├── docs/audit/                   # Manifest & receipt kiểm toán dọn dẹp dữ liệu ngoài MSR-VTT (SHA-256)
 ├── validation/ & test_queries/   # Tập query đánh giá 80% / 20% tách biệt hoàn toàn (gitignored JSONL)
 ├── PROJECT.md                    # Kiến trúc kỹ thuật chi tiết theo module & lịch sử cột mốc
@@ -122,7 +129,7 @@ flowchart TD
    - **Frame (`SigLIP2`):** Chấm điểm pha trộn $0.70 \cdot s_{768} + 0.30 \cdot s_{864}$ qua hằng đẳng thức **Rank-1 đại số** (`_compute_768_and_864_sims`, sai số `< 2e-7` giúp loại bỏ phép nhân ma trận `864d` đầy đủ), scaling `search_depth` bất biến mật độ (`min(2.5, max(1.0, avg_kf_per_vid / 10.0))`), chống burst `_deduplicate_burst_visual_hits(min_pts_gap=0.55s)` và căn chỉnh đa mệnh đề bằng $O(K_v)$ deque / DP vector hóa + Sinkhorn alignment.
    - **Clip (`VideoPrismClipRetriever`):** Đối chiếu vector toàn video (`768d`) và cực đại cửa sổ `16s/8s` (`subclip_max_cos`).
 3. **Stage 3 — Truy hồi Lexical (`OCR / ASR / E5 / FTS5`) & Calibration:**
-   - Truy vấn SQLite FTS5 (`fts_ocr`, `fts_asr`, chỉ đọc `?mode=ro`) với token đặc hiệu hóa và `Dense E5 384d` (`faiss_text_e5_384.bin`).
+   - Truy vấn SQLite FTS5 (`fts_ocr`, `fts_asr`, chỉ đọc `?mode=ro`) với token đặc hiệu hóa và `Dense E5 384d` (`data/processed/text_evidence/e5_ocr_asr_384d.faiss`).
    - Hệ số tin cậy lexical:
      $$\text{lex\_reliability} = \text{clip}\!\left(\text{raw\_conf} \cdot \overline{\text{IDF}}_{\text{tokens}} \cdot \text{len\_spec},\ 0.15,\ 1.50\right)$$
 4. **Stage 4 & 5 — Candidate Union, Calibrated RRF & Visual Guardrails:**
@@ -198,9 +205,9 @@ Vì repository GitHub không chứa file nhị phân lớn (raw video, weights, 
 
 | Thư mục / Tệp | Dung lượng tham chiếu | Bắt buộc để chạy Web UI / Search? | Ghi chú |
 | :--- | :---: | :---: | :--- |
-| `data/processed/` | ~`201 MB` | **Có** | Chứa `metadata.db`, `faiss_index.bin`, `augmented_embeddings.npy`, `faiss_text_e5_384.bin`, `faiss_videoprism_clip_768.bin`, `videoprism_subclips_768.npy` |
+| `data/processed/` | ~`201 MB` | **Có** | Chia 4 phân vùng: `catalog/corpus_metadata.db`, `visual_keyframes/{siglip2_keyframes_768d.faiss,siglip2_yolo_augmented_864d.npy}`, `visual_clips/videoprism_*`, `text_evidence/e5_ocr_asr_*` |
 | `models/siglip2/` | ~`1.47 GB` | **Có** | Weights `google/siglip2-base-patch16-224` (`model.safetensors`, tokenizer, config) |
-| `data/cache/` | ~`12.6 MB` | Khuyến nghị | Cache embedding query & `keyframe_hubness_radii.npy` (giúp tăng tốc warm/cold lookup) |
+| `data/cache/` | ~`12.6 MB` | Khuyến nghị | Chia 3 phân vùng: `query_embeddings/*_query_*_cache.npz`, `query_plans/query_decomposition_plans.jsonl`, `calibration/siglip2_keyframe_hubness_radii.npy` |
 | `data/datasets/<id>/` | ~`1.26 GB` (`msrvtt`) | Khi cần xem video/frame | Mỗi dataset độc lập gồm `media/`, `keyframes/`, `annotations/`, `provenance/`, `snapshots/`, `dataset.json` |
 | `models/ocr`, `asr`, `detection` | ~`1.09 GB` | Chỉ khi tái ingest | `VietOCR`, `PaddleOCR`, `PhoWhisper-small`, `YOLOv8n` cho bước trích xuất offline |
 | `validation/` & `test_queries/` | ~`12.8 MB` | Chỉ khi benchmark/train | Bộ câu hỏi & nhãn đánh giá tách riêng (`80% val / 20% test`) |
@@ -253,7 +260,7 @@ Hệ thống quản lý dữ liệu theo từng thư mục `data/datasets/<datas
 # Khởi tạo khung thư mục chuẩn & đăng ký một dataset mới (media, keyframes, annotations, provenance, snapshots)
 .\.venv\Scripts\python.exe -m videntra dataset add --name new_dataset --description "Custom corpus"
 
-# Kiểm tra tính nhất quán đường dẫn giữa dataset.json, asset_roots.json, ổ đĩa và SQLite metadata.db
+# Kiểm tra tính nhất quán đường dẫn giữa dataset.json, asset_roots.json, ổ đĩa và SQLite catalog/corpus_metadata.db
 .\.venv\Scripts\python.exe -m videntra dataset verify
 
 # Xem trước tác động xóa (dry-run an toàn) hoặc xóa hoàn toàn kèm dọn DB/FAISS
@@ -397,7 +404,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 # 1. Kiểm tra cấu hình Python, GPU/CUDA, gói và dữ liệu cục bộ
 .\.venv\Scripts\python.exe -m videntra doctor --strict
 
-# 2. Chạy toàn bộ 651 unit & integration tests
+# 2. Chạy toàn bộ 654 unit & integration tests
 .\.venv\Scripts\python.exe -B -m pytest -q
 
 # 3. Đánh giá ma trận Validation MSR-VTT 1K-A (B0–B4 & R0–R8) và chốt Champion

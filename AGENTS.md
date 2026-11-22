@@ -30,5 +30,6 @@
 - Cập nhật file requirements.txt cho các gói thư viện mới cần dùng
 - Commit github khi đã hoàn thành tự ghi commit message nếu chưa có repo thì tạo repo tên project. Thêm nữa nếu như có chỉnh sửa gì pipeline, công thức, hoặc thêm các chức năng thì cập nhật README.md luôn
 - Mỗi khi chạy benhmark xong thì  luôn cập nhật các file benchmark cũ bằng benchmark vừa chạy rồi cập nhật README.md
+- Tổ chức thư mục và đặt tên file/folder phải gọn gàng, logic và tự mô tả rõ mục đích/nội dung bên trong (`self-documenting`: ví dụ tách `data/datasets/<id>/`, `data/processed/{catalog,visual_keyframes,visual_clips,text_evidence}/`, `data/cache/{query_embeddings,query_plans,calibration}/`) để người mới nhìn vào hiểu ngay file hoặc thư mục đó chứa gì và làm gì.
 
 

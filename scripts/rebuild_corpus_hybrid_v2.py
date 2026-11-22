@@ -49,10 +49,10 @@ SIGLIP_WEIGHTS_SHA256 = "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031
 YOLO_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 YOLO_SHA256 = "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36"
 
-DEFAULT_DB_PATH = Path("data/processed/metadata.db")
-DEFAULT_FAISS_PATH = Path("data/processed/faiss_index.bin")
-DEFAULT_AUGMENTED_PATH = Path("data/processed/augmented_embeddings.npy")
-DEFAULT_HUBNESS_PATH = Path("data/cache/keyframe_hubness_radii.npy")
+DEFAULT_DB_PATH = Path("data/processed/catalog/corpus_metadata.db")
+DEFAULT_FAISS_PATH = Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss")
+DEFAULT_AUGMENTED_PATH = Path("data/processed/visual_keyframes/siglip2_yolo_augmented_864d.npy")
+DEFAULT_HUBNESS_PATH = Path("data/cache/calibration/siglip2_keyframe_hubness_radii.npy")
 DEFAULT_KEYFRAMES_DIR = Path("data/datasets/msrvtt/keyframes")
 DEFAULT_RAW_DIR = Path("data/datasets")
 DEFAULT_STAGING_DIR = Path("work/kaggle/hybrid_v2_staging")
@@ -856,12 +856,14 @@ def _create_backup(
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         conn.close()
 
+    from videntra.config.paths import resolve_artifact_path
+
     candidates = [
         db_path,
         faiss_path,
         augmented_path,
-        db_path.parent / "faiss_text_e5_384.bin",
-        db_path.parent / "e5_text_manifest.json",
+        resolve_artifact_path(db_path, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin"),
+        resolve_artifact_path(db_path, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json"),
         hubness_path,
         Path("models/ranking/videntra_ltr_v1.json"),
     ]

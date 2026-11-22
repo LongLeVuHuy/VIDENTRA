@@ -731,8 +731,8 @@ def extract_dev859_ltr_dataset(
 
     runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
     pipeline = UnifiedMultimodalSearchPipeline(
-        db_path=Path("data/processed/metadata.db"),
-        faiss_path=Path("data/processed/faiss_index.bin"),
+        db_path=Path("data/processed/catalog/corpus_metadata.db"),
+        faiss_path=Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"),
         model_dir=Path("models/siglip2"),
         device=runtime_device,
         use_disk_cache=True,

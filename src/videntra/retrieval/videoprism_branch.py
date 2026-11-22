@@ -12,6 +12,13 @@ import unicodedata
 import faiss
 import numpy as np
 
+from videntra.config.paths import (
+    DEFAULT_PROCESSED_DIR,
+    DEFAULT_VIDEOPRISM_QUERY_CACHE_PATH,
+    resolve_artifact_path,
+    resolve_processed_root,
+)
+
 VIDEOPRISM_DIM = 768
 
 
@@ -122,8 +129,8 @@ class VideoPrismClipRetriever:
 
     def __init__(
         self,
-        processed_dir: Path | str = Path("data/processed"),
-        cache_path: Path | str = Path("data/cache/query_videoprism_768d.npz"),
+        processed_dir: Path | str = DEFAULT_PROCESSED_DIR,
+        cache_path: Path | str = DEFAULT_VIDEOPRISM_QUERY_CACHE_PATH,
         clip_faiss_path: Path | str | None = None,
         clip_manifest_path: Path | str | None = None,
         subclip_vecs_path: Path | str | None = None,
@@ -136,12 +143,28 @@ class VideoPrismClipRetriever:
         subclip_rows: Sequence[dict[str, Any]] | None = None,
         query_cache_map: Mapping[str, np.ndarray] | None = None,
     ) -> None:
-        self.processed_dir = Path(processed_dir)
+        self.processed_dir = resolve_processed_root(processed_dir)
         self.cache_path = Path(cache_path)
-        self.clip_faiss_path = Path(clip_faiss_path) if clip_faiss_path else self.processed_dir / "faiss_videoprism_clip_768.bin"
-        self.clip_manifest_path = Path(clip_manifest_path) if clip_manifest_path else self.processed_dir / "videoprism_clip_manifest.json"
-        self.subclip_vecs_path = Path(subclip_vecs_path) if subclip_vecs_path else self.processed_dir / "videoprism_subclips_768.npy"
-        self.subclip_map_path = Path(subclip_map_path) if subclip_map_path else self.processed_dir / "videoprism_subclips_map.jsonl"
+        self.clip_faiss_path = (
+            Path(clip_faiss_path)
+            if clip_faiss_path
+            else resolve_artifact_path(self.processed_dir, "visual_clips/videoprism_whole_clips_768d.faiss", "faiss_videoprism_clip_768.bin")
+        )
+        self.clip_manifest_path = (
+            Path(clip_manifest_path)
+            if clip_manifest_path
+            else resolve_artifact_path(self.processed_dir, "visual_clips/videoprism_whole_clips_manifest.json", "videoprism_clip_manifest.json")
+        )
+        self.subclip_vecs_path = (
+            Path(subclip_vecs_path)
+            if subclip_vecs_path
+            else resolve_artifact_path(self.processed_dir, "visual_clips/videoprism_subclips_768d.npy", "videoprism_subclips_768.npy")
+        )
+        self.subclip_map_path = (
+            Path(subclip_map_path)
+            if subclip_map_path
+            else resolve_artifact_path(self.processed_dir, "visual_clips/videoprism_subclips_manifest.jsonl", "videoprism_subclips_map.jsonl")
+        )
         self.query_encoder = query_encoder
 
         self.available: bool = False

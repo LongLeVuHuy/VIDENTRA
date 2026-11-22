@@ -1,13 +1,14 @@
 """Unit tests for UnifiedSearchEngine storage adapter."""
 from pathlib import Path
 import pytest
+from videntra.config.paths import resolve_keyframe_faiss_path, resolve_metadata_db_path
 from videntra.storage.adapter import UnifiedSearchEngine
 
 
 def test_unified_search_engine_auto_detection():
     # If production DB exists, it detects sqlite_faiss
-    db_p = Path("data/processed/metadata.db")
-    faiss_p = Path("data/processed/faiss_index.bin")
+    db_p = resolve_metadata_db_path("data/processed")
+    faiss_p = resolve_keyframe_faiss_path("data/processed")
 
     if db_p.exists() and faiss_p.exists():
         engine = UnifiedSearchEngine(db_path=db_p, faiss_path=faiss_p)

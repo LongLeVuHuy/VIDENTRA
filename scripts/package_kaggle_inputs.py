@@ -411,7 +411,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-samples-per-video", type=int, default=100)
     parser.add_argument("--gt-output-dir", type=str, default="work/benchmark/smoke")
     parser.add_argument("--skip-gt", action="store_true")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--limit", type=int, default=None, help="Optional keyframe limit for --mode db.")
     parser.add_argument("--stratified-pilot", action="store_true", help="Sample balanced keyframes across datasets/videos when --limit is set.")
     parser.add_argument("--dry-run", action="store_true")

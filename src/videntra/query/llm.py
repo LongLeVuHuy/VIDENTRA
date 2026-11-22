@@ -1450,7 +1450,7 @@ class SemanticDecomposerValidator:
 class AdaptiveQueryDecomposer:
     """Adaptive query decomposer with RAM + disk JSONL cache, ComplexityGate, Small-LLM, and <1ms fallback."""
 
-    DEFAULT_CACHE_PATH = Path("data/cache/query_decomposition_cache.jsonl")
+    DEFAULT_CACHE_PATH = Path("data/cache/query_plans/query_decomposition_plans.jsonl")
 
     def __init__(
         self,

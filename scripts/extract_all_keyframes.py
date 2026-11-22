@@ -119,7 +119,7 @@ def _discover_video_paths(conn: sqlite3.Connection, raw_dir: Path) -> dict[str, 
 
 
 def extract_all_keyframes(
-    db_path: Path = Path("data/processed/metadata.db"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
     raw_dir: Path = Path("data/datasets"),
     max_workers: int = 6,
 ) -> None:
@@ -211,7 +211,7 @@ def extract_all_keyframes(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--raw-dir", type=Path, default=Path("data/datasets"))
     parser.add_argument("--workers", type=int, default=6)
     args = parser.parse_args()

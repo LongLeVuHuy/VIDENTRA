@@ -69,10 +69,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def collect_corpus_manifests(
     *,
-    db_path: Path = Path("data/processed/metadata.db"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
     val_dir: Path = Path("validation"),
     test_dir: Path = Path("test_queries"),
-    llm_plan_cache_path: Path | None = Path("data/cache/query_decomposition_cache.jsonl"),
+    llm_plan_cache_path: Path | None = Path("data/cache/query_plans/query_decomposition_plans.jsonl"),
     min_subclip_video_ms: int = 20_000,
     subclip_window_sec: float = SUBCLIP_WINDOW_SEC,
     subclip_stride_sec: float = SUBCLIP_STRIDE_SEC,
@@ -561,7 +561,7 @@ print("DONE! Elapsed:", receipt["elapsed_seconds"], "s", flush=True)
 def prepare_kaggle_bundle(
     *,
     out_dir: Path = Path("work/kaggle/videoprism_full_1324"),
-    db_path: Path = Path("data/processed/metadata.db"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
     val_dir: Path = Path("validation"),
     test_dir: Path = Path("test_queries"),
     kernel_id: str = DEFAULT_KAGGLE_SLUG,
@@ -650,7 +650,7 @@ def ingest_kaggle_output(
     *,
     kaggle_out_dir: Path,
     processed_dir: Path = Path("data/processed"),
-    cache_path: Path = Path("data/cache/query_videoprism_768d.npz"),
+    cache_path: Path = Path("data/cache/query_embeddings/videoprism_query_768d_cache.npz"),
     expected_video_count: int = 1324,
 ) -> dict[str, Any]:
     """Verify SHA-256 Kaggle VideoPrism receipt and build local FAISS index & query cache."""
@@ -703,10 +703,13 @@ def ingest_kaggle_output(
     proc = Path(processed_dir)
     proc.mkdir(parents=True, exist_ok=True)
 
+    clips_dir = proc / "visual_clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
     # 1. Build VideoPrism Whole-Clip FAISS Index (768d)
     index = faiss.IndexFlatIP(VIDEOPRISM_EMBEDDING_DIM)
     index.add(np.ascontiguousarray(v_vecs, dtype=np.float32))
-    faiss_out = proc / "faiss_videoprism_clip_768.bin"
+    faiss_out = clips_dir / "videoprism_whole_clips_768d.faiss"
     _atomic_write_bytes(faiss_out, lambda p: faiss.write_index(index, str(p)))
 
     clip_manifest = {
@@ -718,12 +721,12 @@ def ingest_kaggle_output(
         "rows": v_rows,
         "source_receipt_sha256": sha256_file(receipt_path),
     }
-    manifest_out = proc / "videoprism_clip_manifest.json"
+    manifest_out = clips_dir / "videoprism_whole_clips_manifest.json"
     _atomic_write_bytes(manifest_out, lambda p: p.write_text(json.dumps(clip_manifest, indent=2), encoding="utf-8"))
 
     # 2. Save Sub-clip Vectors + Map
-    subclip_npy_out = proc / "videoprism_subclips_768.npy"
-    subclip_map_out = proc / "videoprism_subclips_map.jsonl"
+    subclip_npy_out = clips_dir / "videoprism_subclips_768d.npy"
+    subclip_map_out = clips_dir / "videoprism_subclips_manifest.jsonl"
     def _save_npy(p: Path) -> None:
         with p.open("wb") as fh:
             np.save(fh, np.ascontiguousarray(s_vecs, dtype=np.float32))
@@ -777,11 +780,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.add_argument("--out-dir", type=Path, default=Path("work/kaggle/videoprism_full_1324"))
     parser.add_argument("--kaggle-out-dir", type=Path, default=Path("work/kaggle/videoprism_full_1324_out"))
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--val-dir", type=Path, default=Path("validation"))
     parser.add_argument("--test-dir", type=Path, default=Path("test_queries"))
     parser.add_argument("--processed-dir", type=Path, default=Path("data/processed"))
-    parser.add_argument("--cache-path", type=Path, default=Path("data/cache/query_videoprism_768d.npz"))
+    parser.add_argument("--cache-path", type=Path, default=Path("data/cache/query_embeddings/videoprism_query_768d_cache.npz"))
     parser.add_argument("--kernel-id", type=str, default=DEFAULT_KAGGLE_SLUG)
     args = parser.parse_args(argv)
 

@@ -1,5 +1,29 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 23/11/2026 — Chuẩn Hóa Cấu Trúc `data/processed/` & `data/cache/` Tự Mô Tả + SSOT `videntra.config.paths` & Cập Nhật `AGENTS.md`
+
+- **Quy tắc Tổ chức & Đặt tên Tự Mô Tả ([`AGENTS.md`](../AGENTS.md)):**
+  - Bổ sung quy tắc yêu cầu mọi thư mục và tên tệp (đặc biệt trong `data/datasets/<id>/`, `data/processed/{catalog,visual_keyframes,visual_clips,text_evidence}/`, `data/cache/{query_embeddings,query_plans,calibration}/`) phải phản ánh rõ mục đích và nội dung bên trong để người mới nhìn vào hiểu ngay.
+- **SSOT Đường Dẫn Mới ([`src/videntra/config/paths.py`](../src/videntra/config/paths.py), [`src/videntra/config/__init__.py`](../src/videntra/config/__init__.py)):**
+  - Tái cấu trúc `data/processed/` thành 4 phân vùng theo miền chức năng (`PROCESSED_SUBDIRS`):
+    - `catalog/`: `corpus_metadata.db` (`33.59 MB`, thay cho `metadata.db`).
+    - `visual_keyframes/`: `siglip2_keyframes_768d.faiss` (`71.08 MB`, thay cho `faiss_index.bin`) và `siglip2_yolo_augmented_864d.npy` (`79.96 MB`, thay cho `augmented_embeddings.npy`).
+    - `visual_clips/`: `videoprism_whole_clips_768d.faiss` (`2.93 MB`, thay cho `faiss_videoprism_clip_768.bin`), `videoprism_whole_clips_manifest.json` (thay cho `videoprism_clip_manifest.json`), `videoprism_subclips_768d.npy` (`1.27 MB`), `videoprism_subclips_manifest.jsonl` (thay cho `videoprism_subclips_map.jsonl`).
+    - `text_evidence/`: `e5_ocr_asr_384d.faiss` (`10.23 MB`, thay cho `faiss_text_e5_384.bin`), `e5_ocr_asr_manifest.json` (thay cho `e5_text_manifest.json`).
+  - Tái cấu trúc `data/cache/` thành 3 phân vùng theo vai trò (`CACHE_SUBDIRS`):
+    - `query_embeddings/`: `siglip2_query_768d_cache.npz`, `videoprism_query_768d_cache.npz`, `e5_query_384d_cache.npz` (thay cho `query_text_embeddings_768d.npz`, `query_videoprism_768d.npz`, `query_e5_embeddings_384d.npz`).
+    - `query_plans/`: `query_decomposition_plans.jsonl` (thay cho `query_decomposition_cache.jsonl`).
+    - `calibration/`: `siglip2_keyframe_hubness_radii.npy` (thay cho `keyframe_hubness_radii.npy`).
+  - Cung cấp bộ resolver tương thích ngược với cấu trúc phẳng legacy (`resolve_processed_root`, `resolve_artifact_path`, `resolve_metadata_db_path`, `resolve_keyframe_faiss_path`, `resolve_env_db_path`, `resolve_env_faiss_path`).
+- **Đồng bộ Runtime, Registry, Configs & Scripts:**
+  - Cập nhật [`cli.py`](../src/videntra/cli.py), [`device.py`](../src/videntra/config/device.py), [`unified_pipeline.py`](../src/videntra/retrieval/unified_pipeline.py), [`videoprism_branch.py`](../src/videntra/retrieval/videoprism_branch.py), [`augmented_vector.py`](../src/videntra/indexing/augmented_vector.py), [`llm.py`](../src/videntra/query/llm.py), [`adapter.py`](../src/videntra/storage/adapter.py), [`datasets.py`](../src/videntra/registry/datasets.py), [`.env.example`](../.env.example), [`.gitignore`](../.gitignore) (chỉ track `.gitkeep` trong từng phân vùng, bỏ qua tệp dữ liệu nặng) và 15 scripts dưới `scripts/`.
+  - Di dời toàn bộ tệp dữ liệu cục bộ vào các phân vùng mới (`0` tệp phẳng còn sót lại ở gốc `data/processed/` hoặc `data/cache/`).
+- **Kiểm Chứng & Kiểm Thử Tự Động:**
+  - Cập nhật [`test_augmented_864d.py`](../tests/indexing/test_augmented_864d.py), [`test_unified_pipeline.py`](../tests/retrieval/test_unified_pipeline.py), [`test_unified_adapter.py`](../tests/storage/test_unified_adapter.py) và thêm mới [`test_data_paths.py`](../tests/config/test_data_paths.py).
+  - `.\.venv\Scripts\python.exe -B -m videntra doctor --strict`: `ready_for_serving: true`, `registered_datasets: ["msrvtt"]`, `missing_required: []`, toàn bộ 6 artifact trong `data/processed/*/*` đều báo `exists: true`.
+  - `.\.venv\Scripts\python.exe -B -m videntra dataset verify`: `ok: true` (`db_videos_checked: 1000`, `db_missing_media: 0`, `db_missing_keyframes: 0`).
+  - `.\.venv\Scripts\python.exe -B -m pytest -q`: **`654 passed, 3 warnings in 98.44s`** (`0` failed, `0` skipped).
+
 ## 23/11/2026 — Tái Cấu Trúc Kho `data/` Theo Từng Dataset Module Hóa (`data/datasets/<id>/`) & CLI `videntra dataset`
 
 - **Thiết kế Quản Lý Vòng Đời Dataset Độc Lập ([`src/videntra/registry/datasets.py`](../src/videntra/registry/datasets.py), [`src/videntra/registry/__init__.py`](../src/videntra/registry/__init__.py), [`src/videntra/cli.py`](../src/videntra/cli.py)):**

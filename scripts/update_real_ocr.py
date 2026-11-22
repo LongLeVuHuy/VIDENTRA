@@ -28,8 +28,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def main():
     parser = argparse.ArgumentParser(description="Update real OCR observations into VIDENTRA metadata.db")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--keyframes-dir", type=Path, default=Path("data/raw/keyframes"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
+    parser.add_argument("--keyframes-dir", type=Path, default=Path("data/datasets/msrvtt/keyframes"))
     parser.add_argument("--sample-step", type=int, default=2, help="Sample keyframe 0 and every N-th keyframe per video")
     parser.add_argument("--max-keyframes", type=int, default=None)
     parser.add_argument("--general-backend", choices=("paddleocr_en", "rapidocr"), default="rapidocr")

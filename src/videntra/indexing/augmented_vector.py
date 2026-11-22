@@ -475,25 +475,29 @@ def build_query_864d_vector(
 
 
 def rebuild_augmented_864d_cache(
-    faiss_path: str | Path = "data/processed/faiss_index.bin",
-    metadata_db_path: str | Path = "data/processed/metadata.db",
-    output_npy_path: str | Path | None = "data/processed/augmented_embeddings.npy",
+    faiss_path: str | Path | None = None,
+    metadata_db_path: str | Path | None = None,
+    output_npy_path: str | Path | None = "data/processed/visual_keyframes/siglip2_yolo_augmented_864d.npy",
     alpha_obj: float = 0.25,
     alpha_meta: float = 0.15,
     beta_hub: float = 0.08,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
     """Rebuilds decoupled 864d normalized augmented representations directly on CPU in < 0.5s.
 
-    Reads 768d raw vectors from faiss_index.bin and metadata from metadata.db,
+    Reads 768d raw vectors from siglip2_keyframes_768d.faiss and metadata from corpus_metadata.db,
     computes de-hubbed semantic + 80d YOLOv8 IDF + 16d context representation,
     and optionally persists to output_npy_path.
     """
     import sqlite3
     from collections import defaultdict
     import faiss
+    from videntra.config.paths import (
+        resolve_env_db_path,
+        resolve_env_faiss_path,
+    )
 
-    f_path = Path(faiss_path)
-    db_path = Path(metadata_db_path)
+    f_path = resolve_env_faiss_path(faiss_path)
+    db_path = resolve_env_db_path(metadata_db_path)
 
     if not f_path.exists():
         raise FileNotFoundError(f"FAISS index not found: {f_path}")

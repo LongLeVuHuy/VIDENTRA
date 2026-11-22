@@ -45,8 +45,8 @@ def _decode_audio_mono_16k(video_path: Path) -> np.ndarray:
 
 def main():
     parser = argparse.ArgumentParser(description="Update real ASR transcripts into VIDENTRA metadata.db")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--media-dir", type=Path, default=Path("data/raw"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
+    parser.add_argument("--media-dir", type=Path, default=Path("data/datasets"))
     parser.add_argument("--backend", choices=("faster_whisper", "phowhisper"), default="faster_whisper")
     parser.add_argument("--model-size", type=str, default="tiny")
     parser.add_argument("--asr-model-dir", type=Path, default=None)

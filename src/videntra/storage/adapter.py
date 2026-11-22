@@ -12,6 +12,7 @@ import numpy as np
 
 from videntra.retrieval.visual import RankedMoment, ensemble_clause_scores, VisualRetrievalEngine
 from videntra.query.rules import decompose_query_clauses, extract_object_requirements
+from videntra.config.paths import DEFAULT_KEYFRAME_FAISS_PATH, DEFAULT_METADATA_DB_PATH
 from videntra.indexing.text_store import build_fts5_query
 from videntra.relations.entities import compute_object_verification_boost
 from videntra.retrieval.fusion import aggregate_video_moments
@@ -23,8 +24,8 @@ class UnifiedSearchEngine:
 
     def __init__(
         self,
-        db_path: Path | str = Path("data/processed/metadata.db"),
-        faiss_path: Path | str = Path("data/processed/faiss_index.bin"),
+        db_path: Path | str = DEFAULT_METADATA_DB_PATH,
+        faiss_path: Path | str = DEFAULT_KEYFRAME_FAISS_PATH,
         model_dir: Path | str = Path("models/siglip2"),
         blueprint_store_dir: Path | str | None = None,
         device: str = "cpu",

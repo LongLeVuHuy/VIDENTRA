@@ -240,9 +240,9 @@ def _allocate_balanced_source_groups(
 def build_local_inventory(
     *,
     media_dir: Path = Path("data/datasets/msrvtt/media"),
-    db_path: Path = Path("data/processed/metadata.db"),
-    vp_manifest_path: Path = Path("data/processed/videoprism_clip_manifest.json"),
-    vp_subclips_path: Path = Path("data/processed/videoprism_subclips_map.jsonl"),
+    db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
+    vp_manifest_path: Path = Path("data/processed/visual_clips/videoprism_whole_clips_manifest.json"),
+    vp_subclips_path: Path = Path("data/processed/visual_clips/videoprism_subclips_manifest.jsonl"),
     test_1ka_ids: set[str],
     all_video_ids: set[str],
 ) -> dict[str, Any]:

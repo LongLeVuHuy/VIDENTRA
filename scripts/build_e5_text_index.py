@@ -225,7 +225,7 @@ def build_structured_event_synopses(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build E5 dense text FAISS index from metadata.db")
-    parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
+    parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--out-dir", type=Path, default=Path("data/processed"))
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--model-id", type=str, default=E5_MODEL_ID)
