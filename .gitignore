@@ -28,35 +28,20 @@ dist/
 *.tmp
 *.bak
 
-# Data directories (keep folder structure via .gitkeep, ignore heavy media/indexes/cache)
+# Data directories (keep folder structure via .gitkeep, ignore heavy media/indexes/cache/datasets)
 data/*
 !data/.gitkeep
-!data/raw/
+!data/datasets/
 !data/processed/
 !data/cache/
 !data/quarantine/
 
-data/raw/*
-!data/raw/.gitkeep
-!data/raw/qvhighlights/
-!data/raw/msrvtt/
-!data/raw/textvr/
-!data/raw/tvr/
-!data/raw/avc/
-!data/raw/keyframes/
-
-data/raw/qvhighlights/*
-!data/raw/qvhighlights/.gitkeep
-data/raw/msrvtt/*
-!data/raw/msrvtt/.gitkeep
-data/raw/textvr/*
-!data/raw/textvr/.gitkeep
-data/raw/tvr/*
-!data/raw/tvr/.gitkeep
-data/raw/avc/*
-!data/raw/avc/.gitkeep
-data/raw/keyframes/*
-!data/raw/keyframes/.gitkeep
+data/datasets.json
+data/datasets/*
+!data/datasets/.gitkeep
+!data/datasets/msrvtt/
+data/datasets/*/*
+!data/datasets/*/.gitkeep
 
 data/processed/*
 !data/processed/.gitkeep

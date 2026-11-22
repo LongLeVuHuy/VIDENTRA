@@ -597,6 +597,37 @@ def handle_doctor(args):
     )
 
 
+def handle_dataset(args):
+    from .registry.datasets import DatasetRegistryManager
+
+    mgr = DatasetRegistryManager(
+        data_root=args.data_root,
+        asset_roots_path=args.asset_roots,
+    )
+    if args.action == "list":
+        return {"datasets": mgr.list_datasets()}
+    if args.action == "add":
+        return mgr.add_dataset(
+            args.name,
+            description=args.description,
+            license_name=args.license,
+            source=args.source,
+            video_pattern=args.video_pattern,
+        )
+    if args.action == "remove":
+        return mgr.remove_dataset(
+            args.name,
+            confirm=args.yes,
+            prune_processed=args.prune_processed,
+        )
+    if args.action == "verify":
+        return mgr.verify(
+            args.name,
+            db_path=args.db_path,
+        )
+    raise ValueError(f"Unknown dataset action: {args.action}")
+
+
 def main(argv=None):
     if Path(".env").is_file():
         try:
@@ -744,6 +775,27 @@ def main(argv=None):
     doctor_parser.add_argument("--strict", action="store_true", default=False,
                                help="Exit non-zero if required serving packages or artifacts are missing")
 
+    # dataset
+    ds_parser = subs.add_parser("dataset", help="Manage modular per-dataset storage under data/datasets/")
+    ds_subs = ds_parser.add_subparsers(dest="action", required=True)
+    for act_name in ("list", "add", "remove", "verify"):
+        p_act = ds_subs.add_parser(act_name)
+        p_act.add_argument("--data-root", type=Path, default=Path("data"))
+        p_act.add_argument("--asset-roots", type=Path, default=Path("configs/local/asset_roots.json"))
+        if act_name in ("add", "remove"):
+            p_act.add_argument("--name", required=True)
+        elif act_name == "verify":
+            p_act.add_argument("--name", default=None)
+            p_act.add_argument("--db-path", type=Path, default=None)
+        if act_name == "add":
+            p_act.add_argument("--description", default="")
+            p_act.add_argument("--license", default="unknown")
+            p_act.add_argument("--source", default="")
+            p_act.add_argument("--video-pattern", default="*.mp4")
+        elif act_name == "remove":
+            p_act.add_argument("--yes", action="store_true", default=False)
+            p_act.add_argument("--prune-processed", action="store_true", default=False)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "fixtures":
@@ -770,6 +822,10 @@ def main(argv=None):
             output = handle_doctor(args)
             print(json.dumps(output, indent=2))
             return 2 if (args.strict and not output["ready_for_serving"]) else 0
+        elif args.command == "dataset":
+            output = handle_dataset(args)
+            print(json.dumps(output, indent=2, ensure_ascii=False))
+            return 2 if (args.action == "verify" and not output.get("ok", False)) else 0
         else:
             docs = validate_manifests(args.directory)
             output = {"manifests": len(docs), "records": sum(len(d["records"]) for d in docs)}

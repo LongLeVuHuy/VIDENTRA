@@ -1,5 +1,19 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 23/11/2026 — Tái Cấu Trúc Kho `data/` Theo Từng Dataset Module Hóa (`data/datasets/<id>/`) & CLI `videntra dataset`
+
+- **Thiết kế Quản Lý Vòng Đời Dataset Độc Lập ([`src/videntra/registry/datasets.py`](../src/videntra/registry/datasets.py), [`src/videntra/registry/__init__.py`](../src/videntra/registry/__init__.py), [`src/videntra/cli.py`](../src/videntra/cli.py)):**
+  - Tổ chức mỗi dataset thành một gói khép kín `data/datasets/<dataset_id>/{media,keyframes,annotations,provenance,snapshots}` kèm `dataset.json` và đăng ký trung tâm tại `data/datasets.json` (gitignored), đồng bộ tự động `configs/local/asset_roots.json`.
+  - Cung cấp `videntra dataset list|add|remove|verify`: `remove` mặc định chỉ chạy dry-run báo cáo số file/dung lượng/dòng DB, và khi truyền `--yes --prune-processed` sẽ xóa sạch dữ liệu dataset đó kèm cắt atomic khỏi SQLite (`Videos`, `Keyframes`, `KeyframeMap`, `FrameObjects`, `OCRObservations`, `ASRSegments`, `fts_ocr`/`fts_asr`) và dựng lại các chỉ mục FAISS/E5/VideoPrism còn lại.
+- **Cập nhật Runtime Lookup, Configs, Scripts & `.gitignore`:**
+  - Cập nhật [`src/videntra/api/frames.py`](../src/videntra/api/frames.py) (`resolve_keyframe_roots()`), [`src/videntra/api/ui_html.py`](../src/videntra/api/ui_html.py), [`src/videntra/config/device.py`](../src/videntra/config/device.py) (`registered_datasets` + `datasets_registry` trong `videntra doctor`), `configs/local/asset_roots*.json`, [`.gitignore`](../.gitignore), cùng đường dẫn mặc định ở [`prepare_msrvtt_1ka_protocol.py`](../scripts/prepare_msrvtt_1ka_protocol.py), [`audit_non_msrvtt_cleanup.py`](../scripts/audit_non_msrvtt_cleanup.py), [`extract_all_keyframes.py`](../scripts/extract_all_keyframes.py), [`offline_processor.py`](../scripts/offline_processor.py) và [`rebuild_corpus_hybrid_v2.py`](../scripts/rebuild_corpus_hybrid_v2.py).
+- **Di Dời Toàn Bộ Dữ Liệu MSR-VTT & Kiểm Chứng Toàn Vẹn (Zero Data Loss):**
+  - Chuyển `1,000` `.mp4` (`648.33 MB`), `30,970` ảnh `.jpg` (`520.75 MB`), `annotations` (`6.64 MB`), `provenance` (`28.85 MB`) và `snapshots/msrvtt_1ka` (`59.25 MB`, `smoke_retrieval_passed = true`) vào `data/datasets/msrvtt/`; xóa bỏ thư mục `data/raw/` cũ sau khi xác nhận không còn tệp dữ liệu sót lại.
+  - Cập nhật đồng bộ SQLite `data/processed/metadata.db` (`Videos=1000` gắn `dataset='msrvtt'`, `Keyframes=24261`), xác minh `videntra dataset verify` báo `ok: true` (`0` video/keyframe thiếu trên đĩa) và `videntra doctor --strict` báo `ready_for_serving: true` với `registered_datasets: ["msrvtt"]`.
+- **Kiểm thử tự động:**
+  - Cập nhật [`tests/registry/test_asset_roots.py`](../tests/registry/test_asset_roots.py) và thêm [`tests/registry/test_dataset_manager.py`](../tests/registry/test_dataset_manager.py) kiểm tra `add`/`list`/`verify`, bảo vệ path traversal, dry-run/prune FAISS+SQLite trên corpus 2 dataset giả lập và CLI `videntra dataset`.
+  - Chạy toàn bộ test suite `.\.venv\Scripts\python.exe -B -m pytest -q`: **`651 passed, 3 warnings in 98.21s`** (`0` failed, `0` skipped).
+
 ## 22–23/11/2026 — Nâng cấp R8 Multi-Backbone, Dọn Dữ Liệu Ngoài MSR-VTT & Vượt Mốc 50% trên MSR-VTT 1K-A (`55.60%` Hit@1)
 
 - **Dọn dẹp toàn bộ dữ liệu ngoài MSR-VTT & tạo Standalone Snapshot (`scripts/audit_non_msrvtt_cleanup.py`):**

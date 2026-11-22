@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import platform
@@ -157,6 +158,15 @@ def collect_environment_report(
     resolved_ltr = Path(ltr_model_path if ltr_model_path is not None else "models/ranking/videntra_ltr_v1.json")
     resolved_roots = Path(asset_roots_path if asset_roots_path is not None else "configs/local/asset_roots.json")
     processed_dir = resolved_db.parent
+    data_root = processed_dir.parent if processed_dir.name == "processed" else Path("data")
+    datasets_reg_path = data_root / "datasets.json"
+    registered_datasets: list[str] = []
+    if datasets_reg_path.is_file():
+        try:
+            reg_doc = json.loads(datasets_reg_path.read_text(encoding="utf-8"))
+            registered_datasets = sorted((reg_doc.get("datasets") or {}).keys())
+        except (OSError, json.JSONDecodeError):
+            registered_datasets = []
 
     device_info = get_device_info()
     core_pkgs = _check_packages(_CORE_PACKAGES)
@@ -171,6 +181,7 @@ def collect_environment_report(
         "e5_text_index": _path_status(processed_dir / "faiss_text_e5_384.bin", required=False),
         "videoprism_clip_index": _path_status(processed_dir / "faiss_videoprism_clip_768.bin", required=False),
         "videoprism_subclips": _path_status(processed_dir / "videoprism_subclips_768.npy", required=False),
+        "datasets_registry": _path_status(datasets_reg_path, required=False),
         "asset_roots_config": _path_status(resolved_roots, required=False),
     }
 
@@ -190,6 +201,7 @@ def collect_environment_report(
         "device": device_info,
         "core_packages": core_pkgs,
         "optional_packages": optional_pkgs,
+        "registered_datasets": registered_datasets,
         "artifacts": artifacts,
         "missing_required": missing_required,
         "ready_for_serving": len(missing_required) == 0,

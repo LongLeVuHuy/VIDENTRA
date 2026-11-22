@@ -239,7 +239,7 @@ def _allocate_balanced_source_groups(
 
 def build_local_inventory(
     *,
-    media_dir: Path = Path("data/raw/msrvtt/media"),
+    media_dir: Path = Path("data/datasets/msrvtt/media"),
     db_path: Path = Path("data/processed/metadata.db"),
     vp_manifest_path: Path = Path("data/processed/videoprism_clip_manifest.json"),
     vp_subclips_path: Path = Path("data/processed/videoprism_subclips_map.jsonl"),
@@ -312,7 +312,7 @@ def build_local_inventory(
 
 def prepare_protocol(
     *,
-    provenance_dir: Path = Path("data/raw/msrvtt/provenance/protocol_20261122"),
+    provenance_dir: Path = Path("data/datasets/msrvtt/provenance/protocol_20261122"),
     out_root: Path = Path("work/msrvtt_protocol_20261122"),
     seed: int = PROTOCOL_SEED,
     overwrite: bool = False,
@@ -661,7 +661,7 @@ def main() -> int:
     parser.add_argument(
         "--provenance-dir",
         type=Path,
-        default=Path("data/raw/msrvtt/provenance/protocol_20261122"),
+        default=Path("data/datasets/msrvtt/provenance/protocol_20261122"),
     )
     parser.add_argument(
         "--out-root",

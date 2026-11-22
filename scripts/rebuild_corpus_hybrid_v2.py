@@ -53,8 +53,8 @@ DEFAULT_DB_PATH = Path("data/processed/metadata.db")
 DEFAULT_FAISS_PATH = Path("data/processed/faiss_index.bin")
 DEFAULT_AUGMENTED_PATH = Path("data/processed/augmented_embeddings.npy")
 DEFAULT_HUBNESS_PATH = Path("data/cache/keyframe_hubness_radii.npy")
-DEFAULT_KEYFRAMES_DIR = Path("data/raw/keyframes")
-DEFAULT_RAW_DIR = Path("data/raw")
+DEFAULT_KEYFRAMES_DIR = Path("data/datasets/msrvtt/keyframes")
+DEFAULT_RAW_DIR = Path("data/datasets")
 DEFAULT_STAGING_DIR = Path("work/kaggle/hybrid_v2_staging")
 DEFAULT_KERNEL_DIR = Path("work/kaggle/hybrid_v2_kernel")
 DEFAULT_KAGGLE_OUT_DIR = Path("work/kaggle/hybrid_v2_out")
@@ -188,6 +188,10 @@ def _probe_via_pyav(video_path: Path) -> tuple[ProbeResult, float, int]:
 
 def _detect_dataset_group(mp4_path: Path) -> str:
     parts_lower = [p.lower() for p in mp4_path.parts]
+    if "datasets" in parts_lower:
+        ds_idx = parts_lower.index("datasets")
+        if ds_idx + 1 < len(parts_lower):
+            return parts_lower[ds_idx + 1]
     for name in ("msrvtt", "avc", "qvhighlights"):
         if name in parts_lower:
             return name
@@ -256,8 +260,12 @@ def _sample_single_video(args: tuple[str, str, int, str, str]) -> tuple[dict[str
     kf_rows: list[dict[str, Any]] = []
     for k_idx, s in enumerate(manifest.samples):
         ord_idx = int(s.original_decoded_frame_index)
-        rel_posix = f"data/raw/keyframes/{video_id}/{ord_idx:06d}.jpg"
-        abs_jpg = _ROOT / rel_posix
+        try:
+            rel_kf_dir = kf_dir.relative_to(_ROOT).as_posix()
+        except ValueError:
+            rel_kf_dir = kf_dir.as_posix()
+        rel_posix = f"{rel_kf_dir}/{ord_idx:06d}.jpg"
+        abs_jpg = _ROOT / rel_posix if not kf_dir.is_absolute() else (kf_dir / f"{ord_idx:06d}.jpg")
         if _is_valid_jpeg(abs_jpg):
             reused_count += 1
         elif ord_idx in pixels_cache:

@@ -49,7 +49,7 @@ def is_msrvtt_video_id(video_id: str) -> bool:
 def export_standalone_msrvtt_snapshot(
     *,
     protocol_root: Path = PROTOCOL_ROOT,
-    snapshot_dir: Path = Path("data/processed/msrvtt_1ka"),
+    snapshot_dir: Path = Path("data/datasets/msrvtt/snapshots/msrvtt_1ka"),
 ) -> dict[str, Any]:
     """Export standalone MSR-VTT 1K-A assets & verify independent retrieval smoke test."""
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -338,7 +338,7 @@ def run_cleanup_audit(
 ) -> dict[str, Any]:
     root = root.resolve()
     if snapshot_only:
-        snap = export_standalone_msrvtt_snapshot(protocol_root=protocol_root, snapshot_dir=root / "data/processed/msrvtt_1ka")
+        snap = export_standalone_msrvtt_snapshot(protocol_root=protocol_root, snapshot_dir=root / "data/datasets/msrvtt/snapshots/msrvtt_1ka")
         return {"snapshot": snap}
 
     _, _, free_before = shutil.disk_usage(root.drive or "C:\\")
@@ -386,7 +386,7 @@ def run_cleanup_audit(
         (root / raw_sub).mkdir(parents=True, exist_ok=True)
 
     prune_summary = _prune_processed_to_msrvtt(root)
-    snap = export_standalone_msrvtt_snapshot(protocol_root=protocol_root, snapshot_dir=root / "data/processed/msrvtt_1ka")
+    snap = export_standalone_msrvtt_snapshot(protocol_root=protocol_root, snapshot_dir=root / "data/datasets/msrvtt/snapshots/msrvtt_1ka")
 
     _, _, free_after = shutil.disk_usage(root.drive or "C:\\")
     receipt = {

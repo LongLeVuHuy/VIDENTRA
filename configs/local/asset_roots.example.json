@@ -1,11 +1,7 @@
 {
   "roots": {
-    "qvhighlights": "data/raw/qvhighlights/media",
-    "msrvtt": "data/raw/msrvtt/media",
-    "textvr": "data/raw/textvr/media",
-    "tvr": "data/raw/tvr/media",
-    "m1_fixtures": "work/m1_fixtures",
-    "avc": "data/raw/avc/media"
+    "msrvtt": "data/datasets/msrvtt/media",
+    "m1_fixtures": "work/m1_fixtures"
   },
   "denied_roots": [
     "work/evaluation-only",

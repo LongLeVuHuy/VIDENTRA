@@ -120,12 +120,12 @@ def _discover_video_paths(conn: sqlite3.Connection, raw_dir: Path) -> dict[str, 
 
 def extract_all_keyframes(
     db_path: Path = Path("data/processed/metadata.db"),
-    raw_dir: Path = Path("data/raw"),
+    raw_dir: Path = Path("data/datasets"),
     max_workers: int = 6,
 ) -> None:
     start_time = time.time()
     print("=" * 75)
-    print("BẮT ĐẦU TRÍCH XUẤT TOÀN BỘ ẢNH KEYFRAMES VÀO THƯ MỤC DATA/RAW/KEYFRAMES")
+    print("BẮT ĐẦU TRÍCH XUẤT TOÀN BỘ ẢNH KEYFRAMES VÀO THƯ MỤC DATA/DATASETS/*/KEYFRAMES")
     print("=" * 75)
 
     if not db_path.exists():
@@ -205,14 +205,14 @@ def extract_all_keyframes(
     print(f"- Tổng số keyframes yêu cầu    : {total_keyframes}")
     print(f"- Tổng số ảnh hợp lệ trên đĩa : {final_existing}")
     print(f"- Tỷ lệ hoàn thành             : {(final_existing / max(1, total_keyframes)) * 100.0:.2f}%")
-    print(f"- Thư mục lưu trữ              : {raw_dir / 'keyframes'}")
+    print(f"- Thư mục dữ liệu gốc           : {raw_dir}")
     print(f"{'='*75}\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/metadata.db"))
-    parser.add_argument("--raw-dir", type=Path, default=Path("data/raw"))
+    parser.add_argument("--raw-dir", type=Path, default=Path("data/datasets"))
     parser.add_argument("--workers", type=int, default=6)
     args = parser.parse_args()
 

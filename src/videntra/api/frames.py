@@ -12,11 +12,12 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
 
+from videntra.registry.datasets import resolve_keyframe_roots
 from videntra.timeline.ledger import exact_seek_frame
 
 
 router = APIRouter(prefix="/v1", tags=["frames"])
-_KEYFRAMES_ROOT = Path("data/raw/keyframes")
+_KEYFRAMES_ROOT = Path("data/datasets/msrvtt/keyframes")
 
 
 def _encode_jpeg_response(
@@ -39,7 +40,7 @@ def _encode_jpeg_response(
 
 
 def _lookup_unified_keyframe(pipeline: object, video_id: str, index: int) -> tuple[Path, str, str] | None:
-    """Look up a pre-extracted keyframe JPEG from pipeline DB or data/raw/keyframes."""
+    """Look up a pre-extracted keyframe JPEG from pipeline DB or active dataset keyframe roots."""
     safe_vid = re.sub(r'[<>:"/\\|?*]', "_", video_id)
     if safe_vid != video_id:
         return None
@@ -61,8 +62,11 @@ def _lookup_unified_keyframe(pipeline: object, video_id: str, index: int) -> tup
         except sqlite3.Error:
             pass
 
-    if _KEYFRAMES_ROOT.exists():
-        root = _KEYFRAMES_ROOT.resolve()
+    search_roots = list(resolve_keyframe_roots())
+    if _KEYFRAMES_ROOT.exists() and _KEYFRAMES_ROOT.resolve() not in {p.resolve() for p in search_roots}:
+        search_roots.append(_KEYFRAMES_ROOT)
+    for kf_root in search_roots:
+        root = kf_root.resolve()
         candidate = (root / safe_vid / f"{index:06d}.jpg").resolve()
         if candidate.is_relative_to(root) and candidate.is_file():
             return candidate, "", ""

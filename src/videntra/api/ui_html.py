@@ -201,8 +201,6 @@ UI_HTML = """<!DOCTYPE html>
           <input id="datasetInput" list="datasetPresets" class="input-ctl" type="text" placeholder="Tất cả (tuỳ chọn)" style="width:130px;">
           <datalist id="datasetPresets">
             <option value="msrvtt"></option>
-            <option value="avc"></option>
-            <option value="qvhighlights"></option>
           </datalist>
         </label>
         <label class="control-item">Backend:

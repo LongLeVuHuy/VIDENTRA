@@ -71,8 +71,8 @@ class OfflineProcessingPipeline:
         self,
         db_path: Path = Path("data/processed/metadata.db"),
         faiss_path: Path = Path("work/offline_scratch/faiss_index.bin"),
-        raw_data_dir: Path = Path("data/raw"),
-        keyframes_dir: Path = Path("data/raw/keyframes"),
+        raw_data_dir: Path = Path("data/datasets"),
+        keyframes_dir: Path = Path("data/datasets/msrvtt/keyframes"),
         models_dir: Path = Path("models"),
         encoder: Any | None = None,
         i_understand_overwrite: bool = False,
@@ -144,7 +144,7 @@ class OfflineProcessingPipeline:
 
         total_vids = len(video_files)
         if total_vids == 0:
-            print("Không tìm thấy video nào trong data/raw/*/media.")
+            print(f"Không tìm thấy video nào trong {self.raw_data_dir}/*/media.")
             return {"status": "no_videos"}
 
         registered_vids = []

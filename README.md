@@ -3,7 +3,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![Architecture](https://img.shields.io/badge/Pipeline-SigLIP2%20%2B%20VideoPrism%20%2B%20PE--Core--L%20%2B%20So400M%20X--Pool%20CSLS-0b7a53.svg)](#3-kiến-trúc-pipeline-7-giai-đoạn)
 [![MSR-VTT 1K-A](https://img.shields.io/badge/MSR--VTT%201K--A%20Hit%401-55.60%25%20(556%2F1000)-0b7a53.svg)](#72-benchmark-chính-thức-msr-vtt-1k-a-jsfusion--vượt-mốc-50-hit1-5560)
-[![Test Suite](https://img.shields.io/badge/Pytest-647%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
+[![Test Suite](https://img.shields.io/badge/Pytest-651%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
 [![GPU Target](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20VRAM%20%7C%20CPU-orange.svg)](#4-phần-cứng-mục-tiêu--ngân-sách-vram-6gb)
 [![CI](https://github.com/LongLeVuHuy/VIDENTRA/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
@@ -56,9 +56,11 @@ VIDENTRA/
 │   ├── ranking/videntra_ltr_v1.json    # Trọng số 32d Monotonic LightGBM (tracked)
 │   └── {siglip2,ocr,asr,detection,llm}/ # Thư mục chứa weights cục bộ (gitignored)
 ├── data/
+│   ├── datasets/                 # Tổ chức tách biệt từng dataset (<id>/{media,keyframes,annotations,provenance,snapshots})
+│   │   └── msrvtt/               # Dataset MSR-VTT hiện hành (1,000 .mp4, 30,970 .jpg, annotations, provenance, snapshots)
+│   ├── datasets.json             # Registry chỉ mục các dataset đang quản lý (local, gitignored)
 │   ├── processed/                # SQLite metadata.db, FAISS 864d/E5/VideoPrism & .npy (gitignored)
-│   ├── cache/                    # Embedding cache truy vấn & hubness radii (gitignored)
-│   └── raw/                      # Video gốc & keyframes JPEG (gitignored)
+│   └── cache/                    # Embedding cache truy vấn & hubness radii (gitignored)
 ├── src/videntra/
 │   ├── api/                      # FastAPI server, HTTP 206 streaming, Web UI Inspector, CSV export
 │   ├── asr/                      # VAD, PhoWhisper / Faster-Whisper, timeline alignment
@@ -73,13 +75,14 @@ VIDENTRA/
 │   ├── ocr/                      # PaddleOCR / VietOCR routing & tracking
 │   ├── query/                    # Rule parser, object requirements & optional Qwen2.5-1.5B adapter
 │   ├── ranking/                  # 32d feature builder, compiled 1D LightGBM LTR, VEDJE reranker & provenance cache
+│   ├── registry/                 # MediaResolver isolation & DatasetRegistryManager (`videntra dataset`)
 │   ├── relations/                # SpatialActionVerifier (2D geometry + forward-backward action DP) & Kalman tracker (SORT/ByteTrack)
 │   ├── retrieval/                # UnifiedMultimodalSearchPipeline (SSOT), MSR-VTT 1K-A R8 matrix/X-Pool/CSLS, VideoPrism, ClipBranch & DP alignment
 │   ├── sampling/                 # HybridAdaptiveSampler (5 chiến lược) & benchmark quality metrics
 │   ├── storage/                  # SQLite WAL-safe reader & Parquet adapters
-│   └── cli.py                    # CLI (`videntra doctor|search|serve|index|evaluate|sampling`)
+│   └── cli.py                    # CLI (`videntra doctor|dataset|search|serve|index|evaluate|sampling`)
 ├── scripts/                      # Tiện ích đánh giá, retrain LTR 5-fold CV, MSR-VTT 1K-A Kaggle pipeline/matrix/eval & cleanup audit
-├── tests/                        # Suite kiểm thử tự động (647 tests, chạy không cần GPU)
+├── tests/                        # Suite kiểm thử tự động (651 tests, chạy không cần GPU)
 ├── docs/audit/                   # Manifest & receipt kiểm toán dọn dẹp dữ liệu ngoài MSR-VTT (SHA-256)
 ├── validation/ & test_queries/   # Tập query đánh giá 80% / 20% tách biệt hoàn toàn (gitignored JSONL)
 ├── PROJECT.md                    # Kiến trúc kỹ thuật chi tiết theo module & lịch sử cột mốc
@@ -195,10 +198,10 @@ Vì repository GitHub không chứa file nhị phân lớn (raw video, weights, 
 
 | Thư mục / Tệp | Dung lượng tham chiếu | Bắt buộc để chạy Web UI / Search? | Ghi chú |
 | :--- | :---: | :---: | :--- |
-| `data/processed/` | ~`282 MB` | **Có** | Chứa `metadata.db`, `faiss_index.bin`, `augmented_embeddings.npy`, `faiss_text_e5_384.bin`, `faiss_videoprism_clip_768.bin`, `videoprism_subclips_768.npy` |
+| `data/processed/` | ~`201 MB` | **Có** | Chứa `metadata.db`, `faiss_index.bin`, `augmented_embeddings.npy`, `faiss_text_e5_384.bin`, `faiss_videoprism_clip_768.bin`, `videoprism_subclips_768.npy` |
 | `models/siglip2/` | ~`1.47 GB` | **Có** | Weights `google/siglip2-base-patch16-224` (`model.safetensors`, tokenizer, config) |
 | `data/cache/` | ~`12.6 MB` | Khuyến nghị | Cache embedding query & `keyframe_hubness_radii.npy` (giúp tăng tốc warm/cold lookup) |
-| `data/raw/` | ~`2.58 GB` | Khi cần xem video/frame | Chứa keyframes `.jpg` và media `.mp4` phục vụ player HTTP 206 & trích xuất lại |
+| `data/datasets/<id>/` | ~`1.26 GB` (`msrvtt`) | Khi cần xem video/frame | Mỗi dataset độc lập gồm `media/`, `keyframes/`, `annotations/`, `provenance/`, `snapshots/`, `dataset.json` |
 | `models/ocr`, `asr`, `detection` | ~`1.09 GB` | Chỉ khi tái ingest | `VietOCR`, `PaddleOCR`, `PhoWhisper-small`, `YOLOv8n` cho bước trích xuất offline |
 | `validation/` & `test_queries/` | ~`12.8 MB` | Chỉ khi benchmark/train | Bộ câu hỏi & nhãn đánh giá tách riêng (`80% val / 20% test`) |
 | `models/llm/` | ~`4.02 GB` | Tùy chọn | Chỉ cần nếu đặt `VIDENTRA_LLM_ENABLED=1` |
@@ -239,7 +242,26 @@ Trên máy RTX 3060 đã cài đúng PyTorch CUDA và đầy đủ dữ liệu, 
 
 ## 6. Hướng Dẫn Vận Hành (CLI, Web UI Inspector, REST API & Python SDK)
 
-### 6.1. Tìm kiếm nhanh qua CLI
+### 6.1. Quản lý Dataset Vòng đời Độc lập (`videntra dataset`)
+
+Hệ thống quản lý dữ liệu theo từng thư mục `data/datasets/<dataset_id>/` tự động đồng bộ `data/datasets.json` và `configs/local/asset_roots.json`:
+
+```powershell
+# Liệt kê danh sách dataset và dung lượng từng phân vùng
+.\.venv\Scripts\python.exe -m videntra dataset list
+
+# Khởi tạo khung thư mục chuẩn & đăng ký một dataset mới (media, keyframes, annotations, provenance, snapshots)
+.\.venv\Scripts\python.exe -m videntra dataset add --name new_dataset --description "Custom corpus"
+
+# Kiểm tra tính nhất quán đường dẫn giữa dataset.json, asset_roots.json, ổ đĩa và SQLite metadata.db
+.\.venv\Scripts\python.exe -m videntra dataset verify
+
+# Xem trước tác động xóa (dry-run an toàn) hoặc xóa hoàn toàn kèm dọn DB/FAISS
+.\.venv\Scripts\python.exe -m videntra dataset remove --name new_dataset
+.\.venv\Scripts\python.exe -m videntra dataset remove --name new_dataset --yes --prune-processed
+```
+
+### 6.2. Tìm kiếm nhanh qua CLI
 
 ```powershell
 # Mặc định tự chọn GPU CUDA nếu có (--device auto)
@@ -248,13 +270,13 @@ Trên máy RTX 3060 đã cài đúng PyTorch CUDA và đầy đủ dữ liệu, 
   --mode accurate --top-k 5
 ```
 
-### 6.2. Khởi chạy Web UI Inspector & FastAPI Server
+### 6.3. Khởi chạy Web UI Inspector & FastAPI Server
 
 ```powershell
 .\.venv\Scripts\python.exe -m videntra serve --backend unified --host 127.0.0.1 --port 8000
 ```
 
-- **Web UI Inspector:** `http://127.0.0.1:8000/` (hỗ trợ lọc preset dataset `Tất cả / MSRVTT / AVC / QVHighlights`, badge phương thức, tua video `HTTP 206 Range`, nút tìm tương tự, dải keyframe lân cận và xuất CSV chuẩn AIC/VBS).
+- **Web UI Inspector:** `http://127.0.0.1:8000/` (hỗ trợ lọc preset dataset `Tất cả / MSRVTT` hoặc nhập tên dataset bất kỳ, badge phương thức, tua video `HTTP 206 Range`, nút tìm tương tự, dải keyframe lân cận và xuất CSV chuẩn AIC/VBS).
 - **Swagger / OpenAPI Docs:** `http://127.0.0.1:8000/docs`
 
 | Endpoint | Method | Chức Năng |
@@ -269,7 +291,7 @@ Trên máy RTX 3060 đã cài đúng PyTorch CUDA và đầy đủ dữ liệu, 
 | `/v1/media/{video_id}` | `GET / HEAD` | Stream video gốc hỗ trợ `HTTP 206 Partial Content` |
 | `/v1/exports` | `POST` | Xuất kết quả dạng `aic_kis`, `vbs_csv`, `csv`, `json` (chống CSV formula injection) |
 
-### 6.3. Tích hợp Python SDK
+### 6.4. Tích hợp Python SDK
 
 ```python
 from videntra.retrieval.unified_pipeline import UnifiedMultimodalSearchPipeline
@@ -296,7 +318,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 
 ### 7.1. Kho Video & Dọn Dẹp Chuẩn Hóa Tập MSR-VTT (`22/11/2026`)
 
-- **Dọn dẹp toàn bộ asset ngoài MSR-VTT (`scripts/audit_non_msrvtt_cleanup.py`):** Theo quyết định tối ưu dung lượng, toàn bộ raw video, keyframe, cache và dòng DB thuộc AVC, QVHighlights, TextVR, TVR và Blender đã được kiểm toán & xóa sạch (`356` mục / `15,848` files, giải phóng `1.92 GB` dung lượng đĩa, đối soát trong [deletion_receipt_non_msrvtt_20261122.json](docs/audit/deletion_receipt_non_msrvtt_20261122.json)). Kho local hiện chỉ lưu **MSR-VTT** và duy trì standalone snapshot tại `data/processed/msrvtt_1ka/` (`15` files, `smoke_retrieval_passed = true`).
+- **Dọn dẹp toàn bộ asset ngoài MSR-VTT (`scripts/audit_non_msrvtt_cleanup.py`) & tái cấu trúc `data/datasets/msrvtt/`:** Theo quyết định tối ưu dung lượng, toàn bộ raw video, keyframe, cache và dòng DB thuộc AVC, QVHighlights, TextVR, TVR và Blender đã được kiểm toán & xóa sạch (`356` mục / `15,848` files, giải phóng `1.92 GB` dung lượng đĩa, đối soát trong [deletion_receipt_non_msrvtt_20261122.json](docs/audit/deletion_receipt_non_msrvtt_20261122.json)). Kho local hiện tổ chức gọn theo từng dataset tại `data/datasets/msrvtt/` (`1,000` video `.mp4`, `30,970` keyframes `.jpg`, `annotations/`, `provenance/`, `snapshots/msrvtt_1ka/`) và kiểm tra toàn vẹn qua `videntra dataset verify` (`0` file thiếu trên đĩa).
 - **Kho lưu trữ MSR-VTT 1K-A Protocol (`scripts/prepare_msrvtt_1ka_protocol.py`):** Tách chặt chẽ **`4,585`** video Train-9K sạch (đã loại bỏ overlap & liên kết nguồn), **`4,000`** video Validation (`Tune` 2,000 + `Confirm` 2,000 queries tách rời hoàn toàn theo `source_group`) và tập niêm phong **`test_1ka`** (`1,000` videos / `1,000` queries chuẩn JSFusion — chỉ giải niêm và chấm **một lần duy nhất** sau khi khóa Champion trên `Confirm`).
 
 ### 7.2. Benchmark Chính Thức MSR-VTT 1K-A (JSFusion) — Vượt Mốc 50% Hit@1 (`55.60%`)
@@ -375,7 +397,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 # 1. Kiểm tra cấu hình Python, GPU/CUDA, gói và dữ liệu cục bộ
 .\.venv\Scripts\python.exe -m videntra doctor --strict
 
-# 2. Chạy toàn bộ 647 unit & integration tests
+# 2. Chạy toàn bộ 651 unit & integration tests
 .\.venv\Scripts\python.exe -B -m pytest -q
 
 # 3. Đánh giá ma trận Validation MSR-VTT 1K-A (B0–B4 & R0–R8) và chốt Champion
