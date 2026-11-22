@@ -1,8 +1,9 @@
 # VIDENTRA — Multimodal Video Retrieval & Temporal Moment Localization Engine
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![Architecture](https://img.shields.io/badge/Pipeline-SigLIP2%20864d%20%2B%20VideoPrism%20%2B%2032d%20LightGBM%20LTR-0b7a53.svg)](#3-kiến-trúc-pipeline-7-giai-đoạn)
-[![Test Suite](https://img.shields.io/badge/Pytest-639%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
+[![Architecture](https://img.shields.io/badge/Pipeline-SigLIP2%20%2B%20VideoPrism%20%2B%20PE--Core--L%20%2B%20So400M%20X--Pool%20CSLS-0b7a53.svg)](#3-kiến-trúc-pipeline-7-giai-đoạn)
+[![MSR-VTT 1K-A](https://img.shields.io/badge/MSR--VTT%201K--A%20Hit%401-55.60%25%20(556%2F1000)-0b7a53.svg)](#72-benchmark-chính-thức-msr-vtt-1k-a-jsfusion--vượt-mốc-50-hit1-5560)
+[![Test Suite](https://img.shields.io/badge/Pytest-647%20passed-brightgreen.svg)](#8-kiểm-thử--tái-lập-đánh-giá)
 [![GPU Target](https://img.shields.io/badge/Target%20Hardware-RTX%203060%206GB%20VRAM%20%7C%20CPU-orange.svg)](#4-phần-cứng-mục-tiêu--ngân-sách-vram-6gb)
 [![CI](https://github.com/LongLeVuHuy/VIDENTRA/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
@@ -71,14 +72,15 @@ VIDENTRA/
 │   ├── localization/             # Contrast boundary refinement, DP localization & Soft-NMS
 │   ├── ocr/                      # PaddleOCR / VietOCR routing & tracking
 │   ├── query/                    # Rule parser, object requirements & optional Qwen2.5-1.5B adapter
-│   ├── ranking/                  # 32d feature builder, compiled 1D LightGBM LTR & provenance cache
-│   ├── relations/                # SpatialActionVerifier (2D geometry + forward-backward action DP)
-│   ├── retrieval/                # UnifiedMultimodalSearchPipeline (SSOT), VideoPrism, ClipBranch & DP alignment
+│   ├── ranking/                  # 32d feature builder, compiled 1D LightGBM LTR, VEDJE reranker & provenance cache
+│   ├── relations/                # SpatialActionVerifier (2D geometry + forward-backward action DP) & Kalman tracker (SORT/ByteTrack)
+│   ├── retrieval/                # UnifiedMultimodalSearchPipeline (SSOT), MSR-VTT 1K-A R8 matrix/X-Pool/CSLS, VideoPrism, ClipBranch & DP alignment
 │   ├── sampling/                 # HybridAdaptiveSampler (5 chiến lược) & benchmark quality metrics
 │   ├── storage/                  # SQLite WAL-safe reader & Parquet adapters
 │   └── cli.py                    # CLI (`videntra doctor|search|serve|index|evaluate|sampling`)
-├── scripts/                      # Tiện ích đánh giá, retrain LTR 5-fold CV, Kaggle GPU workers & audit
-├── tests/                        # Suite kiểm thử tự động (639 tests, chạy không cần GPU)
+├── scripts/                      # Tiện ích đánh giá, retrain LTR 5-fold CV, MSR-VTT 1K-A Kaggle pipeline/matrix/eval & cleanup audit
+├── tests/                        # Suite kiểm thử tự động (647 tests, chạy không cần GPU)
+├── docs/audit/                   # Manifest & receipt kiểm toán dọn dẹp dữ liệu ngoài MSR-VTT (SHA-256)
 ├── validation/ & test_queries/   # Tập query đánh giá 80% / 20% tách biệt hoàn toàn (gitignored JSONL)
 ├── PROJECT.md                    # Kiến trúc kỹ thuật chi tiết theo module & lịch sử cột mốc
 └── docs/PROGRESS.md              # Nhật ký triển khai kỹ thuật
@@ -292,12 +294,32 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 
 ## 7. Tập Dữ Liệu, Chống Rò Rỉ & Kết Quả Benchmark Thực Nghiệm
 
-### 7.1. Kho Video Benchmark & Giao Thức Chống Rò Rỉ (`1,324` Videos / `32,739` Keyframes)
+### 7.1. Kho Video & Dọn Dẹp Chuẩn Hóa Tập MSR-VTT (`22/11/2026`)
 
-- **Kho lưu trữ active:** `1,324` videos (`1,000` **MSR-VTT**, `300` **AVC**, `24` **QVHighlights**), **`32,739` keyframes** trích từ `hybrid_v2_adaptive`, **`83,253` YOLO `FrameObjects`**, `6,910` mẫu OCR, `3,860` đoạn ASR, **`10,770` vector E5 `384d`**, `1,324` vector clip & `866` vector sub-clip `VideoPrism-LvT-B`.
-- **Phân tách 80% / 20% & Zero Data Leakage:** Toàn bộ nhãn ground truth nằm cô lập tại `validation/` (`80%`) và `test_queries/` (`20%`), chỉ evaluator được phép đọc; mô hình **32d LightGBM (`videntra_ltr_v1.json`)** chỉ huấn luyện trên `validation/` theo **5-Fold GroupKFold** (nhóm theo canonical `source_group` nối liên thông), bảo đảm **`heldout_test_201` có `overlap = 0` và `heldout_source_leakage = False`**.
+- **Dọn dẹp toàn bộ asset ngoài MSR-VTT (`scripts/audit_non_msrvtt_cleanup.py`):** Theo quyết định tối ưu dung lượng, toàn bộ raw video, keyframe, cache và dòng DB thuộc AVC, QVHighlights, TextVR, TVR và Blender đã được kiểm toán & xóa sạch (`356` mục / `15,848` files, giải phóng `1.92 GB` dung lượng đĩa, đối soát trong [deletion_receipt_non_msrvtt_20261122.json](docs/audit/deletion_receipt_non_msrvtt_20261122.json)). Kho local hiện chỉ lưu **MSR-VTT** và duy trì standalone snapshot tại `data/processed/msrvtt_1ka/` (`15` files, `smoke_retrieval_passed = true`).
+- **Kho lưu trữ MSR-VTT 1K-A Protocol (`scripts/prepare_msrvtt_1ka_protocol.py`):** Tách chặt chẽ **`4,585`** video Train-9K sạch (đã loại bỏ overlap & liên kết nguồn), **`4,000`** video Validation (`Tune` 2,000 + `Confirm` 2,000 queries tách rời hoàn toàn theo `source_group`) và tập niêm phong **`test_1ka`** (`1,000` videos / `1,000` queries chuẩn JSFusion — chỉ giải niêm và chấm **một lần duy nhất** sau khi khóa Champion trên `Confirm`).
 
-### 7.2. Kết Quả Đánh Giá Đa Tập Chính Thức (`Run 1d90b8f9`)
+### 7.2. Benchmark Chính Thức MSR-VTT 1K-A (JSFusion) — Vượt Mốc 50% Hit@1 (`55.60%`)
+
+> **Nguồn số liệu chính thức:** [benchmark/msrvtt_1ka_benchmark_report.md](benchmark/msrvtt_1ka_benchmark_report.md), [benchmark/msrvtt_1ka_benchmark_results.json](benchmark/msrvtt_1ka_benchmark_results.json) (đánh giá single-shot `test_1ka` lúc `2026-11-22T17:56:38Z`, Seed `20261122`, Peak RAM `2,219.4 MB`).
+> **Kiến trúc Champion `R8_videntra_champion_candidate` (`src/videntra/retrieval/msrvtt_matrix.py`):** Hợp nhất 4 visual backbones (`google/videoprism-lvt-base-f16r288`, `timm/PE-Core-L-14-336`, `google/siglip2-so400m-patch14-384`, `google/siglip2-base-patch16-224` — trích 12 frames theo `PTS/time_base` trình tự hiển thị) cùng Gram-matrix L2-normalized **X-Pool** (`mean_xpool_top3` / `mean_plus_xpool`), **Query-Bank CSLS** (`r8_csls_weights = [0.3, 0.0, 0.0, 0.2]`), **Multi-Prompt**, **Boltzmann `exp(z/2.0)` Fusion** (`r8_s1_weights = [0.95, 1.35, 0.7, 0.12]`) và **ASR BM25** (`Faster-Whisper small`, `r8_w_asr = 0.12`), không rò rỉ nhãn kiểm thử.
+
+| Tập Đánh Giá | Cấu Hình | Hits / N | Video Hit@1 | Hit@5 | Hit@10 | Stage-1 R@20 | MRR@10 | Delta vs B1 (`95% CI`) | `+W/-L` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Tune` (`2,000`)** | `B1_videoprism_standalone` | 880/2000 | 44.00% | 71.40% | 79.35% | 86.70% | 0.5558 | +0.00 | +0/-0 |
+| **`Tune` (`2,000`)** | **`R8_videntra_champion_candidate`** | **985/2000** | **49.25%** | **75.60%** | **83.40%** | **89.15%** | **0.6057** | **+5.25 pp** `[+3.63, +6.89]` | +195/-90 |
+| **`Confirm` (`2,000`)** | `B0_siglip2_standalone` | 731/2000 | 36.55% | 64.20% | 73.50% | 81.20% | 0.4852 | -7.40 pp `[-9.46, -5.26]` | +186/-334 |
+| **`Confirm` (`2,000`)** | `B1_videoprism_standalone` | 879/2000 | 43.95% | 73.35% | 80.45% | 86.70% | 0.5645 | +0.00 | +0/-0 |
+| **`Confirm` (`2,000`)** | **`R8_videntra_champion_candidate` (Locked)** | **1004/2000** | **50.20%** | **77.15%** | **84.80%** | **89.85%** | **0.6189** | **+6.25 pp** `[+4.59, +7.93]` | +216/-91 |
+| **`test_1ka` (`1,000`)** | `B0_siglip2_standalone` | 423/1000 | **42.30%** | 65.10% | 74.10% | 82.50% | 0.5207 | -6.40 pp `[-9.36, -3.44]` | +81/-145 |
+| **`test_1ka` (`1,000`)** | `B1_videoprism_standalone` | 487/1000 | **48.70%** | 75.30% | 82.50% | 88.60% | 0.5972 | +0.00 | +0/-0 |
+| **`test_1ka` (`1,000`)** | **`R8_videntra_champion_candidate` (Official)** | **556/1000** | **55.60%** | **79.00%** | **86.80%** | **91.40%** | **0.6549** | **+6.90 pp** **`[+4.68, +9.13]`** | **+101/-32** |
+
+- **Mục tiêu `>= 501 / 1,000` (> 50% Video Hit@1) trên `test_1ka`:** **ĐẠT VƯỢT MỤC TIÊU (`556 / 1,000 = 55.60%`)**, vượt `+6.90 pp` so với `VideoPrism-LvT-B` độc lập (`48.70%`) và `+13.30 pp` so với `SigLIP2-Base` (`42.30%`), độ trễ scoring `p50/p95 = 0.11 / 0.18 ms`.
+
+### 7.3. Tham Chiếu Lịch Sử Multi-Corpus (`Run 1d90b8f9`, trước đợt dọn ngoài MSR-VTT 22/11/2026)
+
+> **Lưu ý:** Bảng lịch sử dưới đây lưu tại [benchmark/benchmark_summary.json](benchmark/benchmark_summary.json) từ mốc `1,324` videos hỗn hợp (`MSR-VTT + AVC + QVHighlights`, `20/11/2026`) để đối chiếu quá trình tối ưu hóa pipeline 7 giai đoạn trước khi thu gọn về tập MSR-VTT 1K-A.
 
 > **Nguồn số liệu:** [benchmark/benchmark_summary.json](benchmark/benchmark_summary.json), [benchmark/benchmark_report.md](benchmark/benchmark_report.md) và [benchmark/provenance.json](benchmark/provenance.json) (`Run 1d90b8f9f09f41629f9a500229a47626`, commit `7ead8e0`, `Dirty = False`).  
 > **Môi trường đo thực tế:** Windows 10 AMD64, CPU **4 luồng** (`torch_num_threads=2`, `faiss_omp_max_threads=4`), RAM `31.89 GB`, suy luận trên CPU (`device="cpu"`).
@@ -311,7 +333,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 - **Hồ sơ hiệu năng đo được trên CPU (`dev_150`):** Stage `p50` chi tiết: `faiss = 7.91 ms`, `fts5 = 6.04 ms`, `fusion = 20.55 ms`, `boundary = 2.76 ms`; End-to-End Online: `352.84 ms p50 / 700.69 ms p95`; Cold query latency: `291.09 ms p50 / 582.84 ms p95`; Bộ nhớ tiến trình: RSS `3,414.1 MB` / Peak RAM **`3,672.1 MB`** (`< 4,000 MB`).
 - **Định vị khoảnh khắc bổ sung (`dev_150`):** `Moment Hit@1@0.3 = 81.82%`, `Moment Hit@1@0.7 = 40.91%`, `mAP@[0.5:0.95] = 0.3383`, Boundary MAE `6.99s` (`dev_150`, `N=13`) và `1.31s` (`heldout_test_201`, `N=1`).
 
-### 7.3. Phân Rã Theo Từng Dataset (`Run 1d90b8f9`)
+### 7.4. Phân Rã Theo Từng Dataset (`Run 1d90b8f9`)
 
 | Tập | Dataset | Queries | Global Hit@1 | Within-DS Hit@1 | Hit@5 | Hit@10 | Global MRR | Union Recall | Shortlist@k Recall |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -322,7 +344,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 | **`heldout_test_201`** | **MSR-VTT** | 191 | **`43.98%`** | **`45.55%`** | `67.02%` | **`76.96%`** | **`0.5394`** | `82.72%` | `92.15%` |
 | **`heldout_test_201`** | **AVC / QVHighlights** | 8 / 2 | `87.50%` / `50.00%` | `87.50%` / **`100.00%`** | `87.50%` / `50.00%` | `87.50%` / `100.00%` | `0.8750` / `0.5833` | `100%` / `100%` | `100%` / `100%` |
 
-### 7.4. Ma Trận Ablation `A0` $\to$ `A5` (`dev_150`)
+### 7.5. Ma Trận Ablation `A0` $\to$ `A5` (`dev_150`)
 
 | Cấu Hình | Thành Phần Kích Hoạt | Video Hit@1 | Video Hit@10 | MRR | Video nDCG@10 | Moment Hit@1@0.5 | Moment nDCG@5 | Non-Neural `p50` |
 | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -333,7 +355,7 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 | **`A4`** | `+` Mở rộng biên theo tương phản | `54.67%` | `79.33%` | `0.6274` | `0.6677` | `50.00%` | `0.4164` | `25.96 ms` |
 | **`A5`** | `+ VideoPrism-LvT-B` + Calibrated RRF + `32d LTR` + Spatial/Action + Dense Denoise + Consensus | **`64.00%`** | **`84.67%`** | **`0.7129`** | **`0.7455`** | **`59.09%`** | **`0.5176`** | `38.23 ms` |
 
-### 7.5. Benchmark 5 Chiến Lược Trích Xuất Keyframes (`HybridAdaptiveSampler`)
+### 7.6. Benchmark 5 Chiến Lược Trích Xuất Keyframes (`HybridAdaptiveSampler`)
 
 Đo 3 tầng (`2026-11-18T21:42:19Z`, lưu cục bộ tại `work/experiments/keyframe_strategy_benchmark/results.json`) trên **30 video thật / `49,977` frames** và **18 validation queries / `2,396` unique union frames `SigLIP2` CPU**:
 
@@ -353,16 +375,19 @@ with UnifiedMultimodalSearchPipeline() as pipeline:
 # 1. Kiểm tra cấu hình Python, GPU/CUDA, gói và dữ liệu cục bộ
 .\.venv\Scripts\python.exe -m videntra doctor --strict
 
-# 2. Chạy toàn bộ 639 unit & integration tests
-.\.venv\Scripts\python.exe -m pytest -q
+# 2. Chạy toàn bộ 647 unit & integration tests
+.\.venv\Scripts\python.exe -B -m pytest -q
 
-# 3. Đánh giá nhanh trên validation splits (tự động chọn CUDA nếu khả dụng)
+# 3. Đánh giá ma trận Validation MSR-VTT 1K-A (B0–B4 & R0–R8) và chốt Champion
+.\.venv\Scripts\python.exe -u -B scripts/run_msrvtt_validation_matrix.py
+
+# 4. Chấm single-shot tập niêm phong test_1ka sau khi khóa Champion
+.\.venv\Scripts\python.exe -u -B scripts/evaluate_msrvtt_1ka_test.py
+
+# 5. Đánh giá nhanh trên validation splits legacy (nếu cần đối chiếu)
 .\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --splits dev_150,dev_full_859 --device auto --out-dir work/val_check
 
-# 4. Chạy ma trận đầy đủ 3 splits + A0..A5 và cập nhật benchmark/ (chỉ khi working tree sạch)
-.\.venv\Scripts\python.exe scripts/run_validation_benchmark.py --device auto --out-dir work/ref_run_staging --publish-reference
-
-# 5. So sánh đa phương án trích xuất keyframes
+# 6. So sánh đa phương án trích xuất keyframes
 .\.venv\Scripts\python.exe scripts/benchmark_keyframe_strategies.py
 .\.venv\Scripts\python.exe -m videntra sampling compare --config configs/ingestion/m1_default.json --manifest manifests/benchmark/smoke/benchmark_smoke.media.json --output work/sampling_compare
 ```

@@ -1,5 +1,34 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 22–23/11/2026 — Nâng cấp R8 Multi-Backbone, Dọn Dữ Liệu Ngoài MSR-VTT & Vượt Mốc 50% trên MSR-VTT 1K-A (`55.60%` Hit@1)
+
+- **Dọn dẹp toàn bộ dữ liệu ngoài MSR-VTT & tạo Standalone Snapshot (`scripts/audit_non_msrvtt_cleanup.py`):**
+  - Theo quyết định của người dùng giữ lại duy nhất MSR-VTT, đã kiểm kê manifest ([`docs/audit/non_msrvtt_cleanup_manifest_20261122.json`](audit/non_msrvtt_cleanup_manifest_20261122.json)), xóa **356** thư mục/tệp thuộc AVC, QVHighlights, TextVR, TVR, Blender và backup cũ (`15,848` files, thu hồi **`1,916,141,568` bytes** dung lượng đĩa; biên nhận [`docs/audit/deletion_receipt_non_msrvtt_20261122.json`](audit/deletion_receipt_non_msrvtt_20261122.json)), đồng thời prune `data/processed/*`.
+  - Làm mới standalone snapshot tại `data/processed/msrvtt_1ka/` (`snapshot_receipt.json` lúc `2026-11-22T17:57:39Z`: `15 files`, `smoke_retrieval_passed = true`, `smoke_sample_top1 = "video9770"`).
+- **Thiết lập Protocol MSR-VTT 1K-A Zero-Leakage & Pipeline Trích Xuất Kaggle (`prepare_msrvtt_1ka_protocol.py`, `run_msrvtt_kaggle_pipeline.py`):**
+  - Cô lập hoàn toàn `test_1ka` (`1,000` videos / `1,000` queries chuẩn JSFusion) khỏi quá trình huấn luyện và tinh chỉnh; tách `Train-9K` sạch (`4,585` videos ngoài 1K-A) và `Validation` `4,000` videos (`Tune` 2,000 queries / `Confirm` 2,000 queries tách rời theo `source_group`).
+  - Bổ sung nhánh trích xuất `vl2` (`timm/PE-Core-L-14-336` `rev 8eff41b3...` + `google/siglip2-so400m-patch14-384` `rev e8e48729...`, 12 PTS/time_base frames/video), chế độ `--accelerator {gpu,tpu,cpu}` với CPU `fp32`/`bfloat16` auto-benchmark và `--num-slices` / `--slice-index` trên [`scripts/run_msrvtt_kaggle_pipeline.py`](../scripts/run_msrvtt_kaggle_pipeline.py).
+  - Kéo và xác thực SHA-256 đầy đủ các shard: `vl2_val_tune` (`2,000` videos / `8,012` queries, `1956.59s`, Dual T4), `vl2_val_confirm` (`2,000` videos / `8,066` queries, `1954.04s`, Dual T4), 4 shard mã hóa truy vấn `test_1ka_queries_only` trên Kaggle CPU (`cap`, `mm`, `vp`, `vl2` — `4,099` expanded rows), và `vl2_test_1ka_videos_only` (`1,000` gallery videos `test_1ka` trên Kaggle GPU, `8 files`, `SUCCESS`), kết hợp các shard gallery `vp_train_sub`, `mm_test_1ka_videos_only`, `asr_test_1ka_videos_only`, `cap_val_tune` đã cache.
+- **Tối ưu & Khóa Champion `R8_videntra_champion_candidate` (`src/videntra/retrieval/msrvtt_matrix.py`, `src/videntra/ranking/vedje_reranker.py`, `scripts/run_msrvtt_validation_matrix.py`):**
+  - Huấn luyện lại B4 LightGBM trên Train-9K (`5-Fold CV = 0.5553`) và `VEDJEJointRerankerNet` (`r3_vedje_train9k.pt`: `3,200` pairs, masking `6,214/51,642` false negatives, `best_val_hit1 = 0.545643`); tích hợp Kalman tracking (`SORT` / `ByteTrack`, [`src/videntra/relations/kalman_tracker.py`](../src/videntra/relations/kalman_tracker.py)).
+  - Kết hợp **4 visual backbones** (`VideoPrism-LvT-B`, `PE-Core-L-14-336`, `SigLIP2-SO400M-384`, `SigLIP2-B16`) cùng **Gram-matrix L2-normalized X-Pool** (`mean_xpool_top3` / `mean_plus_xpool`), **Query-Bank CSLS** (`[0.3, 0.0, 0.0, 0.2]`), **Multi-Prompt**, **Boltzmann `exp(z/2.0)` Fusion** (`[0.95, 1.35, 0.7, 0.12]`) và **ASR BM25** (`w_asr = 0.12`).
+  - **Tune (`2,000` queries):** `B0 = 36.40%`, `B1 = 44.00%`, `R7_add_ocr_asr = 46.20%`, **`R8_videntra_champion_candidate = 49.25%` (`985/2,000`)**, `+5.25 pp` vs `B1` (`95% CI [+3.63, +6.89] pp`), `MRR@10 = 0.6057`.
+  - **Confirm (`2,000` queries, khóa trước test):** `B0 = 36.55%`, `B1 = 43.95%`, `R3 = 47.25%`, `R4_caption_dense_e5 = 47.85%`, **`R8_videntra_champion_candidate = 50.20%` (`1,004/2,000`)**, `Hit@5 = 77.15%`, `Hit@10 = 84.80%`, `Stage-1 R@20 = 89.85%`, `MRR@10 = 0.6189`, **`+6.25 pp` vs `B1`** (`95% CI [+4.59, +7.93] pp`, `+216 rescued / -91 lost`). Khóa tại `work/msrvtt_protocol_20261122/champion_lock_receipt.json` (`config_sha256 = e07cf1b9...`).
+- **Đánh Giá Single-Shot Tập Niêm Phong `test_1ka` (`scripts/evaluate_msrvtt_1ka_test.py`):**
+  - Vá lỗi tên trường cũ (`medr`/`meanr_at_20` -> `stage1_recall_at_20`/`+W/-L`) trong `_format_test_report` và tự động gom các shard `vl2_test_1ka_videos*`.
+  - Kết quả đánh giá duy nhất lúc `2026-11-22T17:56:38Z` (Seed `20261122`, Peak RAM `2,219.4 MB`, `elapsed = 43.32s`, ghi nhận `"test_1ka_evaluated": true`):
+    - **`B0_siglip2_standalone`:** **`42.30%`** (`423/1,000`), `Hit@5 = 65.10%`, `Hit@10 = 74.10%`, `MRR@10 = 0.5207`, `-6.40 pp` vs `B1`.
+    - **`B1_videoprism_standalone`:** **`48.70%`** (`487/1,000`), `Hit@5 = 75.30%`, `Hit@10 = 82.50%`, `Stage-1 R@20 = 88.60%`, `MRR@10 = 0.5972`.
+    - **`R8_videntra_champion_candidate` (Champion):** **`55.60%` (`556/1,000` Video Hit@1 — ĐẠT VƯỢT MỤC TIÊU `>= 501/1,000`)**, `Hit@5 = 79.00%`, `Hit@10 = 86.80%`, `Stage-1 R@20 = 91.40%`, `MRR@10 = 0.6549`, **`+6.90 pp` vs `B1`** (`95% CI [+4.68, +9.13] pp`, `+101 rescued / -32 lost`), **`+13.30 pp` vs `B0`**, scoring `p50/p95 = 0.11 / 0.18 ms`. Báo cáo đầy đủ tại [`benchmark/msrvtt_1ka_benchmark_report.md`](../benchmark/msrvtt_1ka_benchmark_report.md) & [`benchmark/msrvtt_1ka_benchmark_results.json`](../benchmark/msrvtt_1ka_benchmark_results.json).
+- **Kiểm thử & Dọn dẹp cuối lượt:**
+  - Bổ sung kiểm thử cho `_format_test_report` và chia slice `run_shard_job` trong [`tests/evaluation/test_msrvtt_1ka_protocol.py`](../tests/evaluation/test_msrvtt_1ka_protocol.py), xóa các thư mục kernel tạm không sử dụng.
+  - Chạy toàn bộ test suite `.\.venv\Scripts\python.exe -B -m pytest -q`: **`647 passed, 3 warnings in 135.91s`** (`0` failed, `0` skipped).
+
+## 22/11/2026 — Thiết lập & Dọn dẹp cầu nối Google Drive ↔ Google Colab A100
+
+- Xác minh kết nối `gdrive` plugin (tài khoản `doremonvt01@gmail.com`) và tạo thử nghiệm thư mục `Colab Notebooks/VIDENTRA/` cùng `videntra_a100_bridge.ipynb` trên Google Drive.
+- Theo quyết định của người dùng (ưu tiên tiếp tục dùng Kaggle GPU trước, tránh tiêu tốn compute units khi chưa cần), đã chuyển toàn bộ thư mục `Colab Notebooks/VIDENTRA/` (ID `1GECiVuC4OM3uFqCCBSs-KHnraFEEDgQ-`) và các tệp bên trong vào Trash trên Google Drive.
+
 ## 22/11/2026 — Bàn giao kế hoạch benchmark MSR‑VTT 1K‑A cho Antigravity
 
 - Chốt [kế hoạch thực thi](implementation/MSRVTT_HIT_AT_1_ANTIGRAVITY.md) với 4.000 video validation ngoài 1K‑A, test chuẩn 1.000 video/1.000 caption, baseline VideoPrism độc lập và ma trận rerank Top‑20. Chọn cấu hình theo validation trước khi chấm test, giao trích xuất nặng cho Kaggle và yêu cầu manifest dọn dataset ngoài MSR‑VTT trước khi xóa.

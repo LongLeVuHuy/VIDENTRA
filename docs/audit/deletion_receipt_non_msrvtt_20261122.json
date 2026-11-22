@@ -1,0 +1,2886 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-22",
+  "executed_at_utc": "2026-11-22T04:01:55Z",
+  "operation": "non_msrvtt_deletion_and_processed_prune",
+  "user_authorization": "bạn hãy xóa tất cả các file raw video không phải của tập msrvtt và các keyframes, ocr,asr,... liên quan nhé để cho tiết kiệm dung lượng. Chỉ dữ lại MSRVTT",
+  "free_bytes_before": 68727693312,
+  "free_bytes_after": 70643834880,
+  "bytes_reclaimed": 1916141568,
+  "deleted_items_count": 356,
+  "deleted_files_count": 15848,
+  "deleted_raw_bytes": 2408990877,
+  "deleted_items": [
+    {
+      "category": "non_msrvtt_raw",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\avc",
+      "kind": "directory",
+      "file_count": 360,
+      "total_bytes": 200665603,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_raw",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\qvhighlights",
+      "kind": "directory",
+      "file_count": 50,
+      "total_bytes": 405090045,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_raw",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\textvr",
+      "kind": "directory",
+      "file_count": 3,
+      "total_bytes": 1765960,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_raw",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\tvr",
+      "kind": "directory",
+      "file_count": 3,
+      "total_bytes": 4176512,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_raw",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\blender_pilot_20261110",
+      "kind": "directory",
+      "file_count": 4,
+      "total_bytes": 401728468,
+      "status": "deleted"
+    },
+    {
+      "category": "legacy_pre_hybrid_backup",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\backups\\pre_hybrid_v2_20261118_204817",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 122094124,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_qvh",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\qvh_inference_queries_20261111.json",
+      "kind": "file",
+      "file_count": 1,
+      "total_bytes": 2077,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\-_5h-hcktzk__s60__e70",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 1009825,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\-ixXO5I4xOo__s800__e810",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 657357,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\00DH3yn5C30_210.0_360.0",
+      "kind": "directory",
+      "file_count": 313,
+      "total_bytes": 6492753,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0_QKSyaV6R8__s190__e200",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 526574,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0Dlq21APUEQ__s360__e370",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 539413,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0KGXPWX86Y8__s470__e480",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 577817,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0QO_rY7JztU__s280__e290",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 725809,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0U9TGLujlnI__s40__e50",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 603590,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\0ZmcZiH0F28__s740__e750",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 430449,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\1_hFKRDDP_o__s350__e360",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 542506,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\1G9NeWCKpAs__s390__e400",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 1350458,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\1hp21gDMNWQ__s100__e110",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1013069,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\1ohL6KgasjA__s130__e140",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 938481,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\1ukWkxTMV9A__s870__e880",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1857011,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2F_pLNnVWWQ__s350__e360",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 353271,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2flv6oNrGhs__s90__e100",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1427881,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2McDQu5UQpk__s560__e570",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 851559,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2uspKE6YpT8__s110__e120",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 809403,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2VcOUDaJcnk__s180__e190",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1087747,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\2vFzBa_WKNg_210.0_360.0",
+      "kind": "directory",
+      "file_count": 310,
+      "total_bytes": 6702181,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3dcShxFNu9I__s210__e220",
+      "kind": "directory",
+      "file_count": 28,
+      "total_bytes": 1525040,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3dcShxFNu9I__s40__e50",
+      "kind": "directory",
+      "file_count": 36,
+      "total_bytes": 1327410,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3H7O5CSR-Rs__s1150__e1160",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 643414,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3JzEpODp83Q__s210__e220",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 310492,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3tTf2q6MYjM__s40__e50",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 1032140,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\3uTNJEK9Z6o__s290__e300",
+      "kind": "directory",
+      "file_count": 49,
+      "total_bytes": 1674841,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4-WqlMKq9n8__s2380__e2390",
+      "kind": "directory",
+      "file_count": 47,
+      "total_bytes": 1906524,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4-WqlMKq9n8__s440__e450",
+      "kind": "directory",
+      "file_count": 41,
+      "total_bytes": 2179029,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\41f7vjAywj0__s1100__e1110",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 567834,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4G9S-eoLgX4_210.0_360.0",
+      "kind": "directory",
+      "file_count": 473,
+      "total_bytes": 9658007,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4NqMP7IzgFg__s510__e520",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 597650,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4PbGW3k2Sqw__s460__e470",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 307798,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\4PbGW3k2Sqw__s710__e720",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 336008,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5liq3kgucTs__s1440__e1450",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 486712,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5liq3kgucTs__s450__e460",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 751519,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5liq3kgucTs__s5670__e5680",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 590196,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5mnFzkHQuY0__s590__e600",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 888283,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5VzVVzw4ST8__s110__e120",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 750977,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5YDdZeaMn7c__s1180__e1190",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 659692,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\5YDdZeaMn7c__s320__e330",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 977651,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6AjlyV1xebk__s80__e90",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 221043,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6ciPZTtMEIg__s270__e280",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 874218,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6DLZgG15c-o__s510__e520",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 947693,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6heXAFLHc1s__s60__e70",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 764533,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6PWawVTVAOI__s270__e280",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 585443,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6U349dM1J7I__s40__e50",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1131187,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6WS9i59rfGI__s340__e350",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 626952,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6xpzb7pvSxA__s270__e280",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 861295,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\6YKJN3mU9Cc__s1030__e1040",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 1191729,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\72LDEOJFkNQ__s490__e500",
+      "kind": "directory",
+      "file_count": 44,
+      "total_bytes": 1712670,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\7818lxgEr5w__s260__e269",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 196373,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\7epWd-nLPSs__s100__e110",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1181327,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\7epWd-nLPSs__s250__e260",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 958841,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\7epWd-nLPSs__s600__e603",
+      "kind": "directory",
+      "file_count": 7,
+      "total_bytes": 152456,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\8_RYMkPdpE8_210.0_360.0",
+      "kind": "directory",
+      "file_count": 446,
+      "total_bytes": 7728200,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\8ghB2QPRORg_60.0_210.0",
+      "kind": "directory",
+      "file_count": 339,
+      "total_bytes": 7216924,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\8QTP-QOsC0o__s90__e100",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 621596,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\9-o2bHsKc8c__s100__e110",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 345846,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\9pM1_RKwVhw__s760__e770",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 489015,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\_jAg_N4j5Ik__s60__e70",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 602590,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\_wG6DSf0c8I__s90__e100",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 379938,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\A06akpknh_I__s160__e170",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 851875,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\A_MFAuOwK5k_510.0_660.0",
+      "kind": "directory",
+      "file_count": 364,
+      "total_bytes": 7390021,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Aenrz2MD8OQ__s360__e370",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1244990,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AF9qvqmG3CE__s880__e890",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 2457483,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AjNdkxQtCFg__s210__e220",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 695938,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AjNdkxQtCFg__s540__e550",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 638884,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AjNdkxQtCFg__s820__e830",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 257653,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\akJjbx3qCbU__s30__e40",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 674691,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\akJjbx3qCbU__s330__e340",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1028423,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AKt9JiFhwcw__s730__e740",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 423905,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\aLQFZkc0KiM__s40__e50",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 741241,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\aoCcoKh5IMc__s370__e380",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 1588361,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\aqd5RV2E2kA__s190__e197",
+      "kind": "directory",
+      "file_count": 7,
+      "total_bytes": 258975,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AqKDm1ryD_I__s330__e340",
+      "kind": "directory",
+      "file_count": 33,
+      "total_bytes": 1693035,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AqKDm1ryD_I__s880__e890",
+      "kind": "directory",
+      "file_count": 30,
+      "total_bytes": 958696,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AVErftnrqwY_210.0_360.0",
+      "kind": "directory",
+      "file_count": 258,
+      "total_bytes": 6537801,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\aw2EO2jRgdU__s860__e870",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 372094,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\AW6IgzeMjpE_360.0_510.0",
+      "kind": "directory",
+      "file_count": 433,
+      "total_bytes": 7915133,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ay5EDf1IlPU__s290__e300",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 634319,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\BhpVXv-j6H8__s50__e60",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 633440,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\BLgEDWcJArM__s390__e400",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 1017871,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\BM3044AH3mE__s20__e30",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 477721,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\bMQprYPlK54__s190__e200",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1096510,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\bMXk3v0yXLw__s220__e230",
+      "kind": "directory",
+      "file_count": 33,
+      "total_bytes": 1816392,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\bP5KfdFJzC4_60.0_210.0",
+      "kind": "directory",
+      "file_count": 109,
+      "total_bytes": 1751999,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\bz_NgKnVKxE__s620__e630",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 653341,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\CbnCVDK504s__s570__e580",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 679908,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\CbnCVDK504s__s610__e620",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1106859,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\cdt-zOSIyhU__s290__e300",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 407557,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\cEhk5qCAAVA__s650__e660",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 406983,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\CLse7FeOk50__s670__e680",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 639467,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\cpProln2_R8__s360__e370",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 334021,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\CQTflfGhA5w__s180__e190",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 764313,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\d1n6jly0OI8__s160__e170",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 537915,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\D5yuZbiElVg__s1290__e1300",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 734427,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\D5yuZbiElVg__s1310__e1320",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 627015,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\D5yuZbiElVg__s2280__e2290",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 1013366,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\D5yuZbiElVg__s630__e640",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 963141,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\d_d-Jp6Blrk__s530__e534",
+      "kind": "directory",
+      "file_count": 6,
+      "total_bytes": 190175,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\DJSfZPRCzeQ__s2280__e2290",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 949264,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\DK8n5pz2qqw__s50__e60",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 791397,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\DMohjQHailc__s450__e460",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 672222,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\DNtdle2PIzg__s840__e850",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 719052,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\dQXAwENm2yk__s180__e190",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 1200329,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\dQXAwENm2yk__s200__e210",
+      "kind": "directory",
+      "file_count": 28,
+      "total_bytes": 1229222,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\dTaRaHlyzXQ__s1180__e1190",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 911346,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\dTaRaHlyzXQ__s530__e540",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 571976,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\DusXyqCFrTs__s1570__e1580",
+      "kind": "directory",
+      "file_count": 28,
+      "total_bytes": 1203074,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\E439dI93nYc__s10__e20",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 894288,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\e_avtvWSPCM__s330__e340",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 448495,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ECzOpyGWMgM__s390__e400",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 760092,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Eiv63XmU384__s50__e60",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 927604,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\EkRRo5DN9lI__s430__e440",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 966933,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ePlMbYocWHs__s370__e380",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1519899,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\EqxXJ-EMGOw__s60__e70",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 471508,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\eWVJ8buUdgQ__s310__e320",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 749743,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\f-FF7Qigd3U__s730__e740",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 214247,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\F14nHmyu2cM__s2430__e2440",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 1128357,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FA4DHCUX36A__s640__e650",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 985724,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FcIOcMCRNxo__s20__e30",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 976335,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\fDGspdLDRig__s210__e220",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 599381,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FNIitZt3pyc__s20__e30",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 506293,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FNIitZt3pyc__s50__e60",
+      "kind": "directory",
+      "file_count": 42,
+      "total_bytes": 1027864,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FNIitZt3pyc__s510__e520",
+      "kind": "directory",
+      "file_count": 33,
+      "total_bytes": 888868,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FoNCpRmdJgU__s70__e80",
+      "kind": "directory",
+      "file_count": 28,
+      "total_bytes": 1116744,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\fqGyaeJwy-s__s2810__e2820",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1108669,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\fqGyaeJwy-s__s3000__e3010",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1254889,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\fqGyaeJwy-s__s3650__e3660",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 1726451,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ft-lo8qZTJE__s10__e20",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1358730,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ftgruqa-2gc__s200__e210",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 408993,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FUQOO0mQlRU__s710__e720",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 772538,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\FYU3KWg9TdQ_60.0_210.0",
+      "kind": "directory",
+      "file_count": 290,
+      "total_bytes": 7063376,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\G4oA9t2lRDk__s260__e264",
+      "kind": "directory",
+      "file_count": 6,
+      "total_bytes": 485834,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\G4oA9t2lRDk__s80__e90",
+      "kind": "directory",
+      "file_count": 30,
+      "total_bytes": 1423115,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\G9me7FzTakM__s350__e360",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 460619,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\GAUdBAL0K5A_360.0_510.0",
+      "kind": "directory",
+      "file_count": 525,
+      "total_bytes": 12369002,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\gd-_ii0vIIg__s140__e150",
+      "kind": "directory",
+      "file_count": 59,
+      "total_bytes": 2220417,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\gd-_ii0vIIg__s480__e490",
+      "kind": "directory",
+      "file_count": 51,
+      "total_bytes": 2457546,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ghl3pJWt-0I__s90__e100",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 577954,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\giQ8xEWjnBs__s730__e740",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 438719,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\GLXpU5YqlU0__s160__e170",
+      "kind": "directory",
+      "file_count": 69,
+      "total_bytes": 1520038,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\gLywGSF4Cx4__s820__e830",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 794764,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\GrTXHeSHGSE__s440__e450",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 692547,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\gXIqTW2EdhI__s10__e20",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 629525,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\GyObBh0GL90__s400__e410",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 835336,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\GyObBh0GL90__s40__e50",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 844943,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\H1aSpqIRch8__s400__e410",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1134504,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Hdce1Wdp-q4__s90__e100",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 915269,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\hDFjsHfwees__s1200__e1210",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 570113,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\hmwrX87nhwQ__s260__e270",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 886194,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\HO8GTzcStQ8__s330__e340",
+      "kind": "directory",
+      "file_count": 41,
+      "total_bytes": 1287425,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Hodgoq_R57Q__s400__e410",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 1322924,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\hshRg7qWdG0__s370__e380",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 955424,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\hT49jg2BLlc__s340__e350",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 821937,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\HTToIW9OAzk__s660__e670",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 733331,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\hwhpw9nOPiM__s720__e730",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 758146,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\HyskEkv93OE__s260__e270",
+      "kind": "directory",
+      "file_count": 31,
+      "total_bytes": 1273665,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\I5bDIyBqyC0__s180__e190",
+      "kind": "directory",
+      "file_count": 65,
+      "total_bytes": 3039883,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\I5bDIyBqyC0__s470__e480",
+      "kind": "directory",
+      "file_count": 31,
+      "total_bytes": 1050246,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\I6oQb3_mhus__s10__e20",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 293607,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\i_GUuJyyyRQ__s80__e90",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 646083,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\iH1-Z6eB2cY_660.0_810.0",
+      "kind": "directory",
+      "file_count": 257,
+      "total_bytes": 5383756,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ihs4VFZWwn4__s880__e890",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 359393,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\INSrhp6dqlw__s260__e270",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 952410,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\io9k0gNj7c4__s460__e470",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 629591,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\IOI-QOiQ01g__s1420__e1430",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 1053902,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\iuMlh75-tzs_360.0_510.0",
+      "kind": "directory",
+      "file_count": 359,
+      "total_bytes": 9362467,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\J7RZd4s7h0w__s160__e170",
+      "kind": "directory",
+      "file_count": 30,
+      "total_bytes": 1235173,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\jb5S7bjnpEE__s250__e260",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 982369,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\jLP5TGNhTaE__s10__e20",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 657079,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\JQDQp4kLjb4__s530__e540",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 1182189,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\jSjjfRKQT-A__s140__e150",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 408374,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\K1-E60zd6tk__s460__e470",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 1381750,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\K1-E60zd6tk__s50__e60",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 849981,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\k8AjAdgIOPM__s360__e370",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1135919,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\k_-cXWbrHpE__s90__e100",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 682304,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\KA6k83MWC1c__s170__e180",
+      "kind": "directory",
+      "file_count": 54,
+      "total_bytes": 2361819,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\kBCz54D57AM__s500__e510",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 441793,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\KCADH3x56eE__s930__e940",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 129044,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\KCzKkVe8bD8__s660__e670",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1553338,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\KNewjqQpi00__s530__e540",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1233151,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\knL-oVVWcEA__s0__e10",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 602271,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ky62ZtebT_Y__s620__e630",
+      "kind": "directory",
+      "file_count": 33,
+      "total_bytes": 1258731,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LaUA7v_oQxc__s750__e760",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 353429,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LdzmahJiovM__s30__e40",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 717054,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\lgwKFOTjbCU__s450__e460",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 914919,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Lgxtk4swP7g__s150__e160",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 565346,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LgXxomQCiF0__s130__e140",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 577372,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ljl4sjHnxxE__s980__e990",
+      "kind": "directory",
+      "file_count": 34,
+      "total_bytes": 1136039,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\lQ5nlozgjqY__s650__e660",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1056491,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\lRShwrWGO0E__s40__e50",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 881676,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\luMQ-4qlOXs__s130__e140",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 1056905,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LuN3LkO7WRU__s300__e310",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 921572,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LuN3LkO7WRU__s60__e70",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1320215,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\LWgbfR4hjpg__s390__e400",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1166808,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\lZmMHsQXrzw__s380__e390",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1326719,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\M2LGcH3S_ok_60.0_210.0",
+      "kind": "directory",
+      "file_count": 516,
+      "total_bytes": 9745953,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\M5Qz0cKLBkU__s180__e190",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 599606,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\M5Qz0cKLBkU__s240__e250",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 579597,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\M8G-FM_xonI__s90__e100",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1226228,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\MAvLzT7nTPs__s260__e270",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 1004718,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\MAvLzT7nTPs__s360__e370",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 1192774,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mBrZLPB_yks__s450__e460",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 696726,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mBrZLPB_yks__s760__e770",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 745623,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mfkxFI4oxas__s70__e80",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 701803,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mfpucB_4Viw__s420__e430",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 738794,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mJjTHEDOYfk__s160__e170",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 884892,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\mTThEibT0Q0__s50__e60",
+      "kind": "directory",
+      "file_count": 44,
+      "total_bytes": 1757101,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\MVb5wuYdzM8__s40__e50",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 709927,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\n08S4_nnV8E__s950__e960",
+      "kind": "directory",
+      "file_count": 34,
+      "total_bytes": 1113907,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\N6G2_5sMhuM__s120__e130",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 1098789,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\nfofV1f6lzE__s200__e210",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 704424,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\nfqWm7nY0hk__s70__e80",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 1093966,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NhHxwA3zLIM__s240__e250",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 893942,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NhHxwA3zLIM__s550__e560",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 770496,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\nJUP36AmrSM_360.0_510.0",
+      "kind": "directory",
+      "file_count": 402,
+      "total_bytes": 7568820,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NQkOTujHZls__s1270__e1280",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 831128,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NQkOTujHZls__s1820__e1830",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 1273473,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NUsG9BgSes0_60.0_210.0",
+      "kind": "directory",
+      "file_count": 278,
+      "total_bytes": 6998217,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\NzyjaMWxNrU_360.0_510.0",
+      "kind": "directory",
+      "file_count": 271,
+      "total_bytes": 4789883,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\o7kgMs3-sZY__s520__e530",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1351485,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\o_q0yQxv89M__s140__e150",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 719725,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\OGhbCC9mNM8__s660__e670",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 254826,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\OJ5a9zY-PA8__s290__e300",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 515438,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\OJptdCCrcr4__s180__e190",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 169168,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\oo3RmWcL94o__s220__e230",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 471044,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\oo3RmWcL94o__s250__e260",
+      "kind": "directory",
+      "file_count": 39,
+      "total_bytes": 1396605,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\oOw9J4Uo7fw__s150__e160",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 614367,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\oPVJYbcSXLk__s200__e210",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 860897,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ou8fFofpruA__s230__e240",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 914590,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\P6Cr_jRVQ6c__s220__e230",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 626508,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\pD9ro9h--Bc__s10__e20",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 491992,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\PeQ-uU5H8Ws__s400__e410",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 387531,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Piw-9dOC8YQ_60.0_210.0",
+      "kind": "directory",
+      "file_count": 524,
+      "total_bytes": 10264802,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\PjPE_FTsVBQ__s20__e30",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 739219,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ppope4sSKb8__s470__e480",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 592236,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\PViKCBhrGJY__s380__e390",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 1294420,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\PYNJKYOEXe8__s470__e480",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 642309,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\PZE65k8JRmQ__s650__e660",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 984829,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\QBTJnPvs1ik__s340__e350",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 544186,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\qf0TjmMiRvM__s420__e430",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 616828,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\QfJ96N2UJP8__s100__e110",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 491343,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\QkDFwQVBF24__s700__e710",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 869882,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\qNrI5pMJiew__s280__e290",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 812497,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\R-vWNWzX6pg__s200__e210",
+      "kind": "directory",
+      "file_count": 45,
+      "total_bytes": 1305747,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\R4vKYWV0VuQ__s30__e40",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 684509,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\R9YA1CAgf1s__s650__e660",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 420224,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\R_BHXsS0E8U__s4330__e4340",
+      "kind": "directory",
+      "file_count": 33,
+      "total_bytes": 1229982,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rAy_G-1JF74__s490__e500",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 713030,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\reWf9Rt7zA4__s10__e20",
+      "kind": "directory",
+      "file_count": 30,
+      "total_bytes": 991533,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\RglXEU86zLU__s120__e130",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 673091,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rKW6AatxDrA__s20__e30",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 622987,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rlDqjl4Txpk__s80__e90",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 598156,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rLskVV1ooFY__s210__e220",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 525878,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\RoripwjYFp8_60.0_210.0",
+      "kind": "directory",
+      "file_count": 492,
+      "total_bytes": 11595655,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rpvXuN_MnnU__s130__e140",
+      "kind": "directory",
+      "file_count": 39,
+      "total_bytes": 1466294,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\rUeS7Zt9ung__s150__e160",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 941229,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\RwhFmjgKXwA__s680__e690",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 640530,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\RWvWkkCtjfY_60.0_210.0",
+      "kind": "directory",
+      "file_count": 565,
+      "total_bytes": 13555773,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\sfeTHAw_Y6Q__s120__e130",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 684314,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\SLrOfoeZHvc__s50__e60",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 633264,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Smm8YXBHLuI__s160__e170",
+      "kind": "directory",
+      "file_count": 28,
+      "total_bytes": 1245420,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ssWgel1Yz5k__s80__e90",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1453283,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\STfxvA7j_U8__s340__e350",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1027169,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\sXvPYYYNra0__s690__e700",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 1208115,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\sXvxmRMd9lk__s670__e680",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 1224911,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\SztkBf6MyMc__s610__e620",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 945694,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\tdbTy9aoGt8__s990__e1000",
+      "kind": "directory",
+      "file_count": 19,
+      "total_bytes": 728777,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\tEOt7y2R3AU__s220__e230",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1015124,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\TGLCjTo44x0__s40__e50",
+      "kind": "directory",
+      "file_count": 25,
+      "total_bytes": 991652,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\TGLCjTo44x0__s420__e430",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 651947,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\tOFvju_vZCo__s540__e550",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 968550,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\TUf5jutc0Ok__s200__e210",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 729526,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\TUf5jutc0Ok__s240__e250",
+      "kind": "directory",
+      "file_count": 18,
+      "total_bytes": 782884,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\U5OdqqIgVm0__s390__e400",
+      "kind": "directory",
+      "file_count": 32,
+      "total_bytes": 1009808,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\UaYhvOSmzNc_60.0_210.0",
+      "kind": "directory",
+      "file_count": 218,
+      "total_bytes": 5638979,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\UiAP-hK1rn4__s40__e50",
+      "kind": "directory",
+      "file_count": 41,
+      "total_bytes": 1894543,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Uov18Cv2u94__s550__e560",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 556591,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Uspcs3mE9kc__s240__e250",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 609272,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\VhswjVPdjMw__s300__e310",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 372890,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\VhZxh7R4cpY__s140__e150",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 445574,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\VKyCW70oLgk__s200__e210",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 1101687,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\VN1gNYvnckA__s10__e20",
+      "kind": "directory",
+      "file_count": 30,
+      "total_bytes": 981960,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\vpmnbC9SYOM__s280__e290",
+      "kind": "directory",
+      "file_count": 45,
+      "total_bytes": 1257806,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Vqek7WfKyts__s960__e970",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 526830,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\vTH2FfoJBkM__s10__e20",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 1043388,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\vtt4bL53doo__s120__e130",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1531167,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\WasYuiOk5xQ__s30__e40",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 261761,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\WasYuiOk5xQ__s350__e360",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 341064,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\WbGi7KdxYhU__s30__e40",
+      "kind": "directory",
+      "file_count": 12,
+      "total_bytes": 421867,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\wCwJqlt7lMg__s20__e30",
+      "kind": "directory",
+      "file_count": 31,
+      "total_bytes": 1146015,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\wFPaHOAoGzI_360.0_510.0",
+      "kind": "directory",
+      "file_count": 202,
+      "total_bytes": 4762816,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\WGOsBcoHWJ8__s240__e250",
+      "kind": "directory",
+      "file_count": 42,
+      "total_bytes": 1287452,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\wifGlW-N4PY__s0__e10",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 819759,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\wifGlW-N4PY__s70__e80",
+      "kind": "directory",
+      "file_count": 29,
+      "total_bytes": 1636418,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Wig9fqc5Cvc__s350__e360",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 743177,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\WP3JxIg_h2g__s350__e360",
+      "kind": "directory",
+      "file_count": 10,
+      "total_bytes": 502952,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\X3E0-od_wUk__s470__e480",
+      "kind": "directory",
+      "file_count": 24,
+      "total_bytes": 511671,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\x8ULq9M-aEk__s240__e250",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 552791,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xGZk41qMiUs__s250__e260",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 655290,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xiw7yNowwQY__s600__e610",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 1073027,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xJGYuyOYOCM__s300__e310",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 562006,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xvAvN5xn5oY__s140__e150",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 315327,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xvAvN5xn5oY__s560__e570",
+      "kind": "directory",
+      "file_count": 15,
+      "total_bytes": 518582,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\xxcTvd1wZl4__s70__e80",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1136848,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\y2nKC_NFx0U__s130__e140",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 651567,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Y_kRwaEfwXw__s400__e410",
+      "kind": "directory",
+      "file_count": 11,
+      "total_bytes": 524029,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\yDu6jiOdj80_60.0_210.0",
+      "kind": "directory",
+      "file_count": 708,
+      "total_bytes": 13801790,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\yGcUr9bb9X0__s370__e380",
+      "kind": "directory",
+      "file_count": 35,
+      "total_bytes": 1227265,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\yGcUr9bb9X0__s870__e880",
+      "kind": "directory",
+      "file_count": 21,
+      "total_bytes": 1034379,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\YIwPDje5cpI__s40__e50",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 1086830,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\yLUvvfw_06s__s950__e960",
+      "kind": "directory",
+      "file_count": 23,
+      "total_bytes": 1093357,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ymf7Smzs-eY__s120__e130",
+      "kind": "directory",
+      "file_count": 17,
+      "total_bytes": 325100,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Ysn9nA5hiZI__s10__e20",
+      "kind": "directory",
+      "file_count": 14,
+      "total_bytes": 770559,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\YT6jCB8qJ2k__s230__e240",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1363154,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\YT6jCB8qJ2k__s810__e820",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 355682,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\yU25ys_vQjc__s320__e330",
+      "kind": "directory",
+      "file_count": 22,
+      "total_bytes": 817440,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\z12l9AAZhXc_210.0_360.0",
+      "kind": "directory",
+      "file_count": 248,
+      "total_bytes": 4203532,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\z1tn7a2heZ4__s280__e290",
+      "kind": "directory",
+      "file_count": 27,
+      "total_bytes": 1109412,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Z2yddPQvVf8__s150__e160",
+      "kind": "directory",
+      "file_count": 26,
+      "total_bytes": 988461,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\Z8Dvs3XRcy8__s500__e510",
+      "kind": "directory",
+      "file_count": 16,
+      "total_bytes": 639137,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ZhQqa37FaHU__s160__e170",
+      "kind": "directory",
+      "file_count": 20,
+      "total_bytes": 751365,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_keyframes",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\raw\\keyframes\\ZKjKpYunh3s__s720__e730",
+      "kind": "directory",
+      "file_count": 13,
+      "total_bytes": 362428,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 46121,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 1,
+      "total_bytes": 5640,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_asrfix_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 48442,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_asrfix_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 3262559,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_cuda12_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 48326,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_cuda12_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 3249562,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_mount_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 46580,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_mount_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 3236767,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py312_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 46947,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py312_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 3258805,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py312_av16_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 47481,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py312_av16_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 8,
+      "total_bytes": 3253057,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py313_20261111",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 46378,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_a5_diagnostic_py313_20261111_output_v1",
+      "kind": "directory",
+      "file_count": 1,
+      "total_bytes": 31250,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_dense_config_20261110",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 483,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_dense_gpu_20261110",
+      "kind": "directory",
+      "file_count": 6,
+      "total_bytes": 2411152,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_dense_kernel_20261110",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 11508,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_dense_rank_config_20261110",
+      "kind": "directory",
+      "file_count": 2,
+      "total_bytes": 1686,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_pilot_plan_20261110",
+      "kind": "directory",
+      "file_count": 5,
+      "total_bytes": 33940,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_pilot_plan_20261110_v2",
+      "kind": "directory",
+      "file_count": 5,
+      "total_bytes": 35185,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_visual_dataset_20261110",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 401757580,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_visual_failed_v1",
+      "kind": "directory",
+      "file_count": 1,
+      "total_bytes": 1184,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_visual_gpu_v2",
+      "kind": "directory",
+      "file_count": 6,
+      "total_bytes": 808360,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_visual_kernel_20261110",
+      "kind": "directory",
+      "file_count": 3,
+      "total_bytes": 17921,
+      "status": "deleted"
+    },
+    {
+      "category": "non_msrvtt_kaggle_blender",
+      "path": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\work\\kaggle\\blender_visual_pilot_input_20261110",
+      "kind": "directory",
+      "file_count": 9,
+      "total_bytes": 401765066,
+      "status": "deleted"
+    }
+  ],
+  "processed_prune_verification": {
+    "augmented_embeddings_rows": 24261,
+    "faiss_index_ntotal": 24261,
+    "e5_text_manifest_rows": 6987,
+    "faiss_text_e5_384_ntotal": 6987,
+    "videoprism_clip_manifest_videos": 1000,
+    "faiss_videoprism_clip_768_ntotal": 1000,
+    "videoprism_subclips_rows": 434,
+    "db_videos_remaining": 1000,
+    "db_keyframes_remaining": 24261,
+    "db_non_msrvtt_videos": 0,
+    "db_ocr_remaining": 4590,
+    "db_asr_remaining": 2397,
+    "offline_outputs_pruned_keyframes": 8044,
+    "deleted_work_kaggle_inputs_images": true
+  },
+  "standalone_msrvtt_snapshot": {
+    "created_at_utc": "2026-11-22T04:01:55Z",
+    "snapshot_dir": "C:\\Users\\DELL\\Desktop\\VIDENTRA\\data\\processed\\msrvtt_1ka",
+    "files_count": 2,
+    "smoke_retrieval_passed": false,
+    "smoke_sample_top1": null
+  }
+}
