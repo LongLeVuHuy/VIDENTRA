@@ -209,13 +209,12 @@ def _make_lightweight_unified_pipeline(**kwargs):
     return p
 
 
-def test_unified_cli_and_api_default_to_rules_even_with_cuda_and_local_model(monkeypatch, tmp_path):
+def test_unified_cli_and_api_auto_enable_llm_on_cuda_and_fallback_on_cpu(monkeypatch, tmp_path):
+    import json
     from videntra.query.llm import LocalSmallLLMBackend
 
     models_dir = tmp_path / "models" / "llm"
     (models_dir / "qwen2.5-1.5b-instruct").mkdir(parents=True)
-    monkeypatch.delenv("VIDENTRA_LLM_ENABLED", raising=False)
-    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
     monkeypatch.setattr(LocalSmallLLMBackend, "DEFAULT_MODELS_DIR", models_dir)
 
     llm_calls = 0
@@ -223,23 +222,51 @@ def test_unified_cli_and_api_default_to_rules_even_with_cuda_and_local_model(mon
     def spy_generate(self, prompt: str, system_prompt: str | None = None):
         nonlocal llm_calls
         llm_calls += 1
-        return "{}"
+        return json.dumps(
+            {
+                "lang": "en",
+                "events": [{"id": "e1", "vis": "a dog swimming in a pool", "ocr": [], "asr": [], "objs": [], "pol": "pos"}],
+                "spatial": [],
+                "temporal": [],
+            }
+        )
 
     monkeypatch.setattr(LocalSmallLLMBackend, "generate", spy_generate)
 
     # Medium/long query (>4 words) that passes complexity gate into LLM/rules path
     query = "a dog is swimming in a pool in the backyard"
 
-    # 1. API path
-    api_pipeline = _make_lightweight_unified_pipeline()
-    client = TestClient(create_app(pipeline=api_pipeline, snapshot_id="s1"))
-    resp = client.post("/v1/search", json={"query": query, "top_k": 2, "mode": "accurate", "ranking_mode": "moment"})
-    assert resp.status_code == 200
+    # 1. Explicit VIDENTRA_LLM_ENABLED=0 forces rules even with CUDA + local model
+    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "0")
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
+    api_off = _make_lightweight_unified_pipeline()
+    client_off = TestClient(create_app(pipeline=api_off, snapshot_id="s1"))
+    resp_off = client_off.post("/v1/search", json={"query": query, "top_k": 2, "mode": "accurate", "ranking_mode": "moment"})
+    assert resp_off.status_code == 200
     assert llm_calls == 0
-    assert api_pipeline.last_diagnostics["llm_enabled"] is False
-    assert api_pipeline.last_diagnostics["query_plan_mode"] == "fallback"
+    assert api_off.last_diagnostics["llm_enabled"] is False
+    assert api_off.last_diagnostics["query_plan_mode"] == "fallback"
 
-    # 2. CLI path
+    # 2. CPU-only with default ("auto") also stays rules-only
+    monkeypatch.delenv("VIDENTRA_LLM_ENABLED", raising=False)
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: False))
+    api_cpu = _make_lightweight_unified_pipeline()
+    client_cpu = TestClient(create_app(pipeline=api_cpu, snapshot_id="s1"))
+    resp_cpu = client_cpu.post("/v1/search", json={"query": query, "top_k": 2, "mode": "accurate", "ranking_mode": "moment"})
+    assert resp_cpu.status_code == 200
+    assert llm_calls == 0
+    assert api_cpu.last_diagnostics["llm_enabled"] is False
+
+    # 3. CUDA + local model with default ("auto") auto-enables LLM across API and CLI
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
+    api_cuda = _make_lightweight_unified_pipeline()
+    client_cuda = TestClient(create_app(pipeline=api_cuda, snapshot_id="s1"))
+    resp_cuda = client_cuda.post("/v1/search", json={"query": query, "top_k": 2, "mode": "accurate", "ranking_mode": "moment"})
+    assert resp_cuda.status_code == 200
+    assert llm_calls == 1
+    assert api_cuda.last_diagnostics["llm_enabled"] is True
+    assert api_cuda.last_diagnostics["query_plan_mode"] == "llm_compact"
+
     import videntra.retrieval.unified_pipeline as module
 
     cli_pipeline = _make_lightweight_unified_pipeline()
@@ -265,10 +292,10 @@ def test_unified_cli_and_api_default_to_rules_even_with_cuda_and_local_model(mon
         output=None,
     )
     cli_out = handle_search(args)
-    assert cli_out["results"] == resp.json()["results"]
-    assert llm_calls == 0
-    assert cli_pipeline.last_diagnostics["llm_enabled"] is False
-    assert cli_pipeline.last_diagnostics["query_plan_mode"] == "fallback"
+    assert cli_out["results"] == resp_cuda.json()["results"]
+    assert llm_calls == 2
+    assert cli_pipeline.last_diagnostics["llm_enabled"] is True
+    assert cli_pipeline.last_diagnostics["query_plan_mode"] == "llm_compact"
 
 
 def test_unified_explicit_llm_enable_and_frozen_cache_hit_miss(monkeypatch, tmp_path):

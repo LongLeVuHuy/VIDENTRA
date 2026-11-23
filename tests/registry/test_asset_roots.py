@@ -29,8 +29,9 @@ def test_asset_roots_configuration_relocation():
 
     # If legacy qvh assets directory is accessible on the test machine, verify MediaResolver
     qvh_root = Path(config["roots"].get("qvhighlights", ""))
-    if "qvhighlights" in config["roots"] and qvh_root.exists():
-        manifest = load_manifest(ROOT / "manifests" / "qvh24.media.json")
+    qvh_manifest_path = ROOT / "manifests" / "qvh24.media.json"
+    if "qvhighlights" in config["roots"] and qvh_root.exists() and qvh_manifest_path.is_file():
+        manifest = load_manifest(qvh_manifest_path)
         resolver = MediaResolver(
             {k: Path(v) for k, v in config["roots"].items()},
             manifest["records"],

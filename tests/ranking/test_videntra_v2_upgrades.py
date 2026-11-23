@@ -173,3 +173,63 @@ def test_vlm_debiasing_and_margin_raw_fusion() -> None:
         preds, top20, raw_vlm, margin_gate=0.5, w_vlm=0.8, top_k_rerank=3, mode="margin_raw", debias_alpha=1.0, debias_shrink=0.0,
     )
     assert out[0]["ranked_video_ids"][0] == "v2"
+
+
+def test_ensure_vlm_lm_head_tied_respects_config_flag() -> None:
+    import torch
+    from types import SimpleNamespace
+    from videntra.ranking.vlm_reranker import ensure_vlm_lm_head_tied
+
+    class _DummyVLM(torch.nn.Module):
+        def __init__(self, tie_flag: bool) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(tie_word_embeddings=tie_flag, text_config=None)
+            self.embed = torch.nn.Embedding(4, 8)
+            self.lm_head = torch.nn.Linear(8, 4, bias=False)
+            self.tied_called = False
+
+        def get_input_embeddings(self) -> torch.nn.Embedding:
+            return self.embed
+
+        def tie_weights(self) -> None:
+            self.tied_called = True
+
+    untied_7b = _DummyVLM(False)
+    orig_head = untied_7b.lm_head.weight.detach().clone()
+    ensure_vlm_lm_head_tied(untied_7b)
+    assert untied_7b.tied_called is False
+    assert untied_7b.lm_head.weight.data_ptr() != untied_7b.embed.weight.data_ptr()
+    assert torch.allclose(untied_7b.lm_head.weight, orig_head)
+
+    tied_3b = _DummyVLM(True)
+    ensure_vlm_lm_head_tied(tied_3b)
+    assert tied_3b.tied_called is True
+    assert tied_3b.lm_head.weight.data_ptr() == tied_3b.embed.weight.data_ptr()
+
+
+def test_qwen25_vl_reranker_offline_cache_and_margin_gate(tmp_path: Path) -> None:
+    import gzip
+    from videntra.ranking import Qwen25VLReranker, VLMFusionConfig
+
+    cache_file = tmp_path / "vlm_cache.jsonl.gz"
+    rows = [
+        {"query_id": "q_unc", "candidate_video_ids": ["v1", "v2", "v3"], "vlm_scores": [-0.5, 2.5, 0.0]},
+        {"query_id": "q_conf", "candidate_video_ids": ["v1", "v2", "v3"], "vlm_scores": [-2.0, 4.0, 0.0]},
+    ]
+    with gzip.open(cache_file, "wt", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+    rr = Qwen25VLReranker(
+        score_cache_path=cache_file,
+        fusion_config=VLMFusionConfig(margin_gate=1.0, w_vlm=0.8, top_k_rerank=3, mode="margin_raw"),
+    )
+    assert rr.enabled is True
+    new_unc, st_unc = rr.rerank_video_scores("cat chasing ball", [("v1", 1.05), ("v2", 1.00), ("v3", 0.2)], {}, query_id="q_unc")
+    assert st_unc["applied"] is True
+    assert new_unc[0] == "v2"
+
+    new_conf, st_conf = rr.rerank_video_scores("dog running", [("v1", 4.5), ("v2", 1.0), ("v3", 0.2)], {}, query_id="q_conf")
+    assert st_conf["applied"] is False
+    assert st_conf["reason"] == "margin_confident"
+    assert new_conf == ["v1", "v2", "v3"]

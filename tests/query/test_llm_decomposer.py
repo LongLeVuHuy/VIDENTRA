@@ -978,23 +978,34 @@ def test_adaptive_decomposer_extractive_v2_falls_back_on_placeholder(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_local_llm_backend_disabled_by_default_even_with_cuda(monkeypatch, tmp_path: Path):
+def test_local_llm_backend_auto_enables_on_cuda_and_respects_overrides(monkeypatch, tmp_path: Path):
     models_dir = tmp_path / "models" / "llm"
     (models_dir / "qwen2.5-1.5b-instruct").mkdir(parents=True)
     monkeypatch.delenv("VIDENTRA_LLM_ENABLED", raising=False)
-    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
     monkeypatch.setattr(LocalSmallLLMBackend, "DEFAULT_MODELS_DIR", models_dir)
 
-    backend_default = LocalSmallLLMBackend()
-    assert backend_default.enabled is False
+    # CPU-only default -> disabled even when local weights exist
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: False))
+    assert LocalSmallLLMBackend().enabled is False
 
-    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "1")
-    backend_env_on = LocalSmallLLMBackend()
-    assert backend_env_on.enabled is True
+    # CUDA + local weights -> auto-enabled when unset or "auto"
+    monkeypatch.setattr(LocalSmallLLMBackend, "_has_cuda", staticmethod(lambda: True))
+    assert LocalSmallLLMBackend().enabled is True
+    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "auto")
+    assert LocalSmallLLMBackend().enabled is True
 
+    # Explicit "0" disables even on CUDA with weights
     monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "0")
-    backend_env_off = LocalSmallLLMBackend()
-    assert backend_env_off.enabled is False
+    assert LocalSmallLLMBackend().enabled is False
+
+    # CUDA without discovered weights -> disabled unless explicit "1"
+    empty_models = tmp_path / "empty_models"
+    empty_models.mkdir(parents=True)
+    monkeypatch.setattr(LocalSmallLLMBackend, "DEFAULT_MODELS_DIR", empty_models)
+    monkeypatch.delenv("VIDENTRA_LLM_ENABLED", raising=False)
+    assert LocalSmallLLMBackend().enabled is False
+    monkeypatch.setenv("VIDENTRA_LLM_ENABLED", "1")
+    assert LocalSmallLLMBackend().enabled is True
 
 
 @pytest.mark.parametrize("prompt_ver", ["compact-v1", "extractive-v2", "lora-sft-v1"])

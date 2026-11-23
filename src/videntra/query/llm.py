@@ -554,8 +554,8 @@ class LocalSmallLLMBackend:
             elif env_enabled in ("0", "false", "no", "off"):
                 self.enabled = False
             else:
-                # Default disabled: never auto-enable live LLM on CUDA without explicit config/env
-                self.enabled = False
+                # Auto-enable on CUDA when local weights are present; fall back to rules on CPU.
+                self.enabled = bool(self._has_cuda() and self._discover_model_path() is not None)
         self.generate_fn = generate_fn
         self.n_ctx = n_ctx
         self.n_threads = (

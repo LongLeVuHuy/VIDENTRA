@@ -89,46 +89,22 @@ work/*
 
 validation/*
 !validation/.gitkeep
-!validation/qvhighlights/
 !validation/msrvtt/
-!validation/textvr/
-!validation/tvr/
-!validation/avc/
-validation/qvhighlights/*
-!validation/qvhighlights/.gitkeep
 validation/msrvtt/*
 !validation/msrvtt/.gitkeep
 !validation/msrvtt/valid_tuning/
 !validation/msrvtt/valid_confirm/
 validation/msrvtt/*/*
 !validation/msrvtt/*/.gitkeep
-validation/textvr/*
-!validation/textvr/.gitkeep
-validation/tvr/*
-!validation/tvr/.gitkeep
-validation/avc/*
-!validation/avc/.gitkeep
 
 test_queries/*
 !test_queries/.gitkeep
-!test_queries/qvhighlights/
 !test_queries/msrvtt/
-!test_queries/textvr/
-!test_queries/tvr/
-!test_queries/avc/
-test_queries/qvhighlights/*
-!test_queries/qvhighlights/.gitkeep
 test_queries/msrvtt/*
 !test_queries/msrvtt/.gitkeep
 !test_queries/msrvtt/test_1ka_benchmark/
 test_queries/msrvtt/*/*
 !test_queries/msrvtt/*/.gitkeep
-test_queries/textvr/*
-!test_queries/textvr/.gitkeep
-test_queries/tvr/*
-!test_queries/tvr/.gitkeep
-test_queries/avc/*
-!test_queries/avc/.gitkeep
 
 # Local path configs (keep template example only)
 configs/local/*

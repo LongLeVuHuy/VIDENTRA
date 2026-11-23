@@ -1,9 +1,21 @@
 {
   "schema_version": 2,
-  "evaluated_at_utc": "2026-11-23T07:54:01Z",
+  "evaluated_at_utc": "2026-11-23T12:45:20Z",
   "dataset": "MSR-VTT 1K-A (JSFusion, 1,000 videos / 1,000 sealed queries)",
-  "champion_lock_v2": "2e7ac640682d40f0f35e7fad2cb8e236f4141f07bed7c044469fadd4d5b203a4",
-  "confirm_champion_hit_at_1": 0.5145,
+  "champion_id": "R9d_videntra_v2_1_3b_6gb",
+  "champion_lock_v2": "1712181d16e17a2c27389e888595e98de91c29dce31b6ca1f2a4bc5f2a89e13a",
+  "confirm_champion_hit_at_1": 0.5175,
+  "vlm_model": {
+    "model_id": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "revision": "66285546d2b821cf421d4f5eb2576359d3770cd3",
+    "quant": "nf4_4bit",
+    "variant": "3b_nf4"
+  },
+  "vlm_peak_vram_mb": {
+    "tune": 3594.0,
+    "confirm": 3704.5,
+    "test_1ka": 2792.7
+  },
   "test_1ka_results": {
     "B0_siglip2_standalone": {
       "config_id": "B0_siglip2_standalone",
@@ -194,8 +206,30 @@
       "latency_p95_ms": 0.0,
       "slices": {}
     },
-    "R9d_videntra_v2_champion": {
-      "config_id": "R9d_videntra_v2_champion",
+    "R9d_videntra_v2_1_3b_6gb": {
+      "config_id": "R9d_videntra_v2_1_3b_6gb",
+      "n_queries": 1000,
+      "hits_at_1": 572,
+      "hit_at_1": 0.572,
+      "hit_at_5": 0.799,
+      "hit_at_10": 0.874,
+      "mrr_at_10": 0.669261,
+      "stage1_recall_at_20": 0.918,
+      "rescued_vs_b1": 120,
+      "lost_vs_b1": 35,
+      "net_vs_b1": 85,
+      "delta_pp_vs_b1": 8.5,
+      "ci95_pp_vs_b1": [
+        6.2054,
+        10.8675
+      ],
+      "n_source_groups": 885,
+      "latency_p50_ms": 0.0,
+      "latency_p95_ms": 0.0,
+      "slices": {}
+    },
+    "R9d_videntra_v2_7b_cloud_ref": {
+      "config_id": "R9d_videntra_v2_7b_cloud_ref",
       "n_queries": 1000,
       "hits_at_1": 571,
       "hit_at_1": 0.571,

@@ -1,5 +1,21 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 23/11/2026 (b) — VIDENTRA v2.1 Tối Ưu RTX 3060 6GB VRAM (`Qwen2.5-VL-3B` NF4 Đạt `57.20%` Hit@1), CUDA Auto-LLM Ablation & Chuẩn Hóa Kho Mã Nguồn
+
+- **Kiến Trúc RTX 3060 6GB VRAM & Chuyển VLM Vào `src/` ([`src/videntra/ranking/vlm_reranker.py`](../src/videntra/ranking/vlm_reranker.py), [`src/videntra/retrieval/unified_pipeline.py`](../src/videntra/retrieval/unified_pipeline.py), [`src/videntra/query/llm.py`](../src/videntra/query/llm.py)):**
+  - Chuyển logic Stage-2 Margin-Gated VLM Reranker từ scripts vào thư viện lõi `videntra.ranking.vlm_reranker` với mặc định **`Qwen/Qwen2.5-VL-3B-Instruct`** lượng tử hóa 4-bit **NF4** (`nf4_4bit`, `revision=66285546d2b821cf421d4f5eb2576359d3770cd3`, hỗ trợ `7B` tùy chọn) cùng `ensure_vlm_lm_head_tied` kiểm tra `tie_word_embeddings` (tránh ghi đè `lm_head` trên 7B và ghép đúng trên 3B), xử lý tuần tự `batch_size=1` + `unload()` để bảo toàn ngân sách 6GB VRAM.
+  - Cấu hình `VIDENTRA_LLM_ENABLED=auto` trong `LocalSmallLLMBackend` và `.env.example`: tự động kích hoạt tách mệnh đề bằng `Qwen2.5-1.5B-Instruct` khi có GPU CUDA + weights cục bộ và tự động dùng `<1ms` `RuleBasedQueryParser` trên máy CPU.
+- **Dọn Dẹp Thư Mục & Tệp Lỗi Thời:**
+  - Xóa bỏ thư mục/tệp lỗi thời hoặc ngoài phạm vi MSR-VTT: `manifests/`, `validation/{avc,qvhighlights,textvr,tvr}/`, `test_queries/{avc,qvhighlights,textvr,tvr}/`, `docs/handoffs/`, `docs/implementation/M1_CONTRACTS.md`, 13 báo cáo benchmark cũ dưới `benchmark/` và 13 script không còn sử dụng dưới `scripts/`; cập nhật `tests/conftest.py`, `tests/registry/{test_manifests.py,test_asset_roots.py}`, `tests/evaluation/test_benchmark_verdicts.py` và `.gitignore`.
+- **Ablation Tách Query Chunks bằng Local LLM trên Kaggle Dual-T4 ([`llm_chunk_ablation.json`](../work/msrvtt_protocol_20261122/v2_run/llm_chunk_ablation.json)):**
+  - Chạy `Qwen/Qwen2.5-1.5B-Instruct` (`revision=989aa7980e4cf806f80c7fef2b1adb7bc71aa306`, FP16, `peak_vram_mb=3,796.6 MB`, `1,601.73s`) trên `3,885` truy vấn của `Valid-4000` (`252` câu ngắn qua fast-rule; `288/3,633 = 7.93%` câu trung bình/dài vượt kiểm định 5 tầng `extractive-v2`, `3,345` fallback rule), mã hóa `4,150` chunks duy nhất qua cả 4 VL backbones (`PE-bigG`, `DFN5B-H`, `PE-L`, `SigLIP2-SO400M`).
+  - Kết quả trên `Valid-Confirm`: `R9c` nguyên câu đạt **`51.55%`** (`MRR@10 = 0.6286`, `R@20 = 90.20%`) so với cộng thêm chunk `w=0.03` (cả rule & LLM đều đạt `51.50%`, `R@20 = 90.25%`) hay `w=0.08` (`51.50%`, `R@20 = 90.35%`) → xác thực lý thuyết MSR-VTT là mô tả đơn sự kiện nên khóa `w_llm_chunk = 0.0` cho MSR-VTT.
+- **Kết Quả V2.1 (`Qwen2.5-VL-3B-Instruct` 4-bit NF4, Tune → Confirm → Sealed Test 1K-A):**
+  - Kiểm chứng cặp `Valid-Tune`: **`gt > neg = 5,065` vs `gt < neg = 2,220` (`69.53%` win rate)**, chọn **`w_vlm = +1.35`**, `top_k_rerank = 3`, `mode = "margin_raw"`, `margin_gate = 5.342474`, `debias_alpha = 0.0` → `Valid-Tune` Hit@1 tăng từ `49.85%` lên **`51.20%`** (`1,024/2,000`, `peak_vram_mb = 3,594.0 MB`).
+  - Khóa Champion trên `Valid-Confirm`: **`51.75%` Hit@1 (`1,035/2,000`)**, **`MRR@10 = 0.629932`**, `R@5 = 78.20%`, `R@10 = 84.80%` (`peak_vram_mb = 3,704.5 MB`) — vượt Stage-1 `R9c` (`51.55%`), V1 `R8` (`50.20%`) và bản 7B cũ (`51.45%`).
+  - Chấm đơn lần trên tập niêm phong **`MSR-VTT 1K-A`** (`test_1ka`, `625 × Top-3` storyboards trên Kaggle T4, **`peak_vram_mb = 2,792.7 MB` = `2.73 GB`**, `714.55s`): **`57.20%` Hit@1 (`572/1,000`)**, **`MRR@10 = 0.6693`**, **`R@5 = 79.90%`**, **`R@10 = 87.40%`**, **`Stage-1 R@20 = 91.80%`**, **`+8.50 pp` vs `B1` (`95% CI [+6.21, +10.87] pp`, `+120 rescued / -35 lost`, ròng `+85`)**, nhỉnh hơn cả tham chiếu Cloud `7B NF4` (`57.10%` Hit@1).
+- **Tài Liệu GitHub:** Viết lại hoàn chỉnh [`README.md`](../README.md) kèm sơ đồ Mermaid Offline & Online workflow, công thức LaTeX & bảng trọng số khóa, ngân sách VRAM RTX 3060 6GB, kết quả MSR-VTT 1K-A + LLM Chunking ablation + Keyframes và mục Tài liệu Tham khảo; cập nhật [`PROJECT.md`](../PROJECT.md).
+
 ## 23/11/2026 — Hoàn Thiện VIDENTRA v2 (`R9d_videntra_v2_champion`), Bộ Dữ Liệu 3 Phân Vùng Khép Kín & Sealed Benchmark `MSR-VTT 1K-A` Đạt `57.10%` Hit@1
 
 - **Chuẩn Hóa 3 Phân Vùng Dữ Liệu MSR-VTT & Quy Tắc Zero Leakage ([`AGENTS.md`](../AGENTS.md), [`scripts/materialize_msrvtt_validation_datasets.py`](../scripts/materialize_msrvtt_validation_datasets.py)):**

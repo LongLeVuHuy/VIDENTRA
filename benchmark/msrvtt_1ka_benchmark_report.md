@@ -1,9 +1,10 @@
-# MSR-VTT 1K-A Single-Shot Benchmark Results (VIDENTRA v2)
+# MSR-VTT 1K-A Single-Shot Benchmark Results (VIDENTRA v2.1 — RTX 3060 6GB Target)
 
-- **Evaluation date (UTC)**: 2026-11-23T07:54:01Z
+- **Evaluation date (UTC)**: 2026-11-23T12:45:20Z
 - **Dataset**: MSR-VTT 1K-A (JSFusion, 1,000 videos / 1,000 sealed queries)
-- **Locked V2 Confirm (`valid_confirm`, 2,000 queries) Hit@1**: `51.45%`
-- **Sealed Test (`test_1ka`, 1,000 queries) V2 Champion (`R9d`) Hit@1**: `57.10%` (`571/1000`), MRR@10 `0.6670`, R@5 `79.90%`, R@10 `87.40%`
+- **Active Champion**: `R9d_videntra_v2_1_3b_6gb` | **VLM**: `Qwen/Qwen2.5-VL-3B-Instruct (nf4_4bit)` | **Peak VLM VRAM (Kaggle T4)**: `2792.7 MB`
+- **Locked Confirm (`valid_confirm`, 2,000 queries) Hit@1**: `51.75%`
+- **Sealed Test (`test_1ka`, 1,000 queries) Hit@1**: `57.20%` (`572/1000`), MRR@10 `0.6693`, R@5 `79.90%`, R@10 `87.40%`
 
 | Config ID | Hit@1 (R@1) | R@5 | R@10 | MRR@10 | Δ Hit@1 vs B1 (pp) | 95% Bootstrap CI (pp) |
 |---|---:|---:|---:|---:|---:|---:|
@@ -15,4 +16,5 @@
 | `R9a_6backbone_raw` | 54.30% | 79.10% | 86.50% | 0.6467 | +5.60 | [+3.19, +7.97] |
 | `R9b_6backbone_qb_dis_znorm_mp` | 55.90% | 79.70% | 87.40% | 0.6593 | +7.20 | [+4.82, +9.58] |
 | `R9c_6backbone_adapter_multimodal` | 56.00% | 79.90% | 87.40% | 0.6603 | +7.30 | [+4.92, +9.71] |
-| `R9d_videntra_v2_champion` | 57.10% | 79.90% | 87.40% | 0.6670 | +8.40 | [+6.02, +10.80] |
+| `R9d_videntra_v2_1_3b_6gb` | 57.20% | 79.90% | 87.40% | 0.6693 | +8.50 | [+6.21, +10.87] |
+| `R9d_videntra_v2_7b_cloud_ref` | 57.10% | 79.90% | 87.40% | 0.6670 | +8.40 | [+6.02, +10.80] |

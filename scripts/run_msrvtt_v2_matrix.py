@@ -47,6 +47,11 @@ from videntra.ranking.vedje_reranker import (
     apply_qb_znorm_matrix,
     l2_normalize_np,
 )
+from videntra.ranking.vlm_reranker import (
+    blend_stage1_and_vlm_predictions,
+    combine_stage1_and_vlm_pool,
+    debias_vlm_scores,
+)
 from videntra.retrieval.msrvtt_matrix import (
     GalleryFeatureBank,
     apply_hubness_csls,
@@ -910,98 +915,221 @@ def _load_vlm_scores(vlm_dir: Path) -> dict[str, dict[str, float]]:
     return out
 
 
-def _debias_vlm_scores(
-    vlm_scores: Mapping[str, Mapping[str, float]],
-    *,
-    alpha: float = 0.0,
-    shrink: float = 2.0,
-) -> dict[str, dict[str, float]]:
-    """Shrink per-video VLM logit prior across a split's candidate pools (zero GT)."""
-    if float(alpha) <= 0.0 or not vlm_scores:
-        return {str(q): {str(v): float(s) for v, s in sm.items()} for q, sm in vlm_scores.items()}
-    by_vid: dict[str, list[float]] = defaultdict(list)
-    total_sum = 0.0
-    total_cnt = 0
-    for sm in vlm_scores.values():
-        for vid, sc in sm.items():
-            f_sc = float(sc)
-            by_vid[str(vid)].append(f_sc)
-            total_sum += f_sc
-            total_cnt += 1
-    g_mean = total_sum / max(1, total_cnt)
-    bias_by_vid = {
-        vid: ((len(vals) * float(np.mean(vals)) + float(shrink) * g_mean) / (len(vals) + float(shrink)))
-        if float(shrink) > 0.0
-        else float(np.mean(vals))
-        for vid, vals in by_vid.items()
+_debias_vlm_scores = debias_vlm_scores
+_combine_stage1_and_vlm_pool = combine_stage1_and_vlm_pool
+_blend_stage1_and_vlm_preds = blend_stage1_and_vlm_predictions
+
+
+def _load_llm_chunk_bundle(chunk_dir: Path) -> dict[str, Any]:
+    sd = _find_shard_dir(chunk_dir)
+    plans_by_sha = {str(r["query_text_sha256"]): r for r in _read_jsonl(sd / "query_plans.jsonl")}
+    chunk_idx_by_sha = {str(r["chunk_text_sha256"]): int(r["row_id"]) for r in _read_jsonl(sd / "chunk_rows.jsonl")}
+    vecs = {
+        "pe_bigg": np.load(str(sd / "pe_bigg_chunk_vectors.npy"), mmap_mode="r"),
+        "dfn": np.load(str(sd / "dfn_chunk_vectors.npy"), mmap_mode="r"),
+        "pe": np.load(str(sd / "pe_l_chunk_vectors.npy"), mmap_mode="r"),
+        "s4": np.load(str(sd / "sig400_chunk_vectors.npy"), mmap_mode="r"),
     }
-    a = float(alpha)
+    receipt = json.loads((sd / "receipt.json").read_text(encoding="utf-8"))
     return {
-        str(qid): {str(vid): float(sc) - a * bias_by_vid.get(str(vid), g_mean) for vid, sc in sm.items()}
-        for qid, sm in vlm_scores.items()
+        "plans_by_sha": plans_by_sha,
+        "chunk_idx_by_sha": chunk_idx_by_sha,
+        "vecs": vecs,
+        "receipt": receipt,
     }
 
 
-def _combine_stage1_and_vlm_pool(
-    s1_arr: np.ndarray,
-    vlm_arr: np.ndarray,
+def _compute_clause_matrix_for_bank(
+    bank: GalleryFeatureBank,
     *,
-    w_vlm: float,
-    mode: str = "z_pool",
+    bundle: Mapping[str, Any],
+    clause_field: str,
+    b_weights: Mapping[str, float],
 ) -> np.ndarray:
-    """Combine Stage-1 and VLM scores over a candidate pool."""
-    if mode == "z_pool":
-        s1_norm = (s1_arr - float(np.mean(s1_arr))) / max(1e-9, float(np.std(s1_arr)))
-        v_norm = (vlm_arr - float(np.mean(vlm_arr))) / max(1e-9, float(np.std(vlm_arr)))
-        return s1_norm + float(w_vlm) * v_norm
-    if mode == "margin_raw":
-        return s1_arr + float(w_vlm) * (vlm_arr - float(np.mean(vlm_arr)))
-    if mode == "margin_vz":
-        v_norm = (vlm_arr - float(np.mean(vlm_arr))) / max(1e-9, float(np.std(vlm_arr)))
-        return s1_arr + float(w_vlm) * v_norm
-    raise ValueError(f"Unsupported VLM blend mode: {mode}")
+    """Compute `(N_q, N_v)` row-z-scored multi-backbone max-frame clause similarity matrix."""
+    plans_by_sha = bundle["plans_by_sha"]
+    chunk_idx_by_sha = bundle["chunk_idx_by_sha"]
+    vecs = bundle["vecs"]
+    nq, nv = len(bank.queries), len(bank.video_ids)
+    if nq == 0 or nv == 0:
+        return np.zeros((nq, nv), dtype=np.float64)
 
+    q_clause_ids: list[list[int]] = []
+    used_ids: list[int] = []
+    seen_id: set[int] = set()
+    for q in bank.queries:
+        qt = str(q["query_text"]).strip()
+        qsha = sha256_text(qt)
+        plan = plans_by_sha.get(qsha) or {}
+        clauses = [str(c).strip() for c in (plan.get(clause_field) or []) if str(c).strip()] or [qt]
+        cids: list[int] = []
+        for c in clauses:
+            idx = chunk_idx_by_sha.get(sha256_text(c))
+            if idx is not None:
+                cids.append(idx)
+                if idx not in seen_id:
+                    seen_id.add(idx)
+                    used_ids.append(idx)
+        if not cids:
+            fb_idx = chunk_idx_by_sha.get(qsha)
+            if fb_idx is not None:
+                cids = [fb_idx]
+                if fb_idx not in seen_id:
+                    seen_id.add(fb_idx)
+                    used_ids.append(fb_idx)
+        q_clause_ids.append(cids)
 
-def _blend_stage1_and_vlm_preds(
-    base_preds: Sequence[Mapping[str, Any]],
-    top20_scores: Mapping[str, Mapping[str, float]],
-    vlm_scores: Mapping[str, Mapping[str, float]],
-    *,
-    margin_gate: float,
-    w_vlm: float,
-    top_k_rerank: int,
-    mode: str = "z_pool",
-    debias_alpha: float = 0.0,
-    debias_shrink: float = 2.0,
-) -> list[dict[str, Any]]:
-    """Apply Stage-2 Margin-Gated VLM Reranking strictly per query on frozen Stage-1 Top-K."""
-    eff_vlm = _debias_vlm_scores(vlm_scores, alpha=debias_alpha, shrink=debias_shrink) if float(w_vlm) != 0.0 else {}
-    out: list[dict[str, Any]] = []
-    for p in base_preds:
-        qid = str(p["query_id"])
-        ranked = [str(v) for v in p["ranked_video_ids"]]
-        s1_map = top20_scores.get(qid, {})
-        if float(w_vlm) == 0.0 or qid not in eff_vlm or len(ranked) < 2:
-            out.append({"query_id": qid, "gallery": p["gallery"], "ranked_video_ids": ranked})
+    local_pos = {cid: i for i, cid in enumerate(used_ids)}
+    uid_arr = np.asarray(used_ids, dtype=np.int64)
+
+    frame_map = {
+        "pe_bigg": bank.pe_bigg_frame_vecs,
+        "dfn": bank.dfn_frame_vecs,
+        "pe": bank.pe_frame_vecs,
+        "s4": bank.sig400_frame_vecs,
+    }
+    total = np.zeros((nq, nv), dtype=np.float64)
+    w_sum = 0.0
+    for bk, bw in b_weights.items():
+        if bk not in vecs or float(bw) == 0.0 or frame_map.get(bk) is None or len(used_ids) == 0:
             continue
-        m1_z = float(s1_map.get(ranked[0], 0.0) - s1_map.get(ranked[1], 0.0))
-        if m1_z >= float(margin_gate):
-            out.append({"query_id": qid, "gallery": p["gallery"], "ranked_video_ids": ranked})
-            continue
+        f32 = np.asarray(frame_map[bk], dtype=np.float32)  # (N_v, F, D)
+        nf, dim = int(f32.shape[1]), int(f32.shape[2])
+        q_c = l2_normalize_np(np.asarray(vecs[bk][uid_arr], dtype=np.float32))  # (U, D)
+        sims = (q_c @ f32.reshape(nv * nf, dim).T).reshape(len(used_ids), nv, nf).astype(np.float64)
+        c_max = np.max(sims, axis=2)  # (U, N_v)
 
-        pool = [v for v in ranked[:top_k_rerank] if v in eff_vlm[qid]]
-        if len(pool) < 2:
-            out.append({"query_id": qid, "gallery": p["gallery"], "ranked_video_ids": ranked})
-            continue
+        bmat = np.zeros((nq, nv), dtype=np.float64)
+        for qi, cids in enumerate(q_clause_ids):
+            if cids:
+                pos = [local_pos[cid] for cid in cids]
+                bmat[qi] = np.mean(c_max[pos], axis=0)
+        total += float(bw) * _zscore_rows(bmat)
+        w_sum += float(bw)
 
-        s1_arr = np.asarray([s1_map[v] for v in pool], dtype=np.float64)
-        vlm_arr = np.asarray([eff_vlm[qid][v] for v in pool], dtype=np.float64)
-        comb = _combine_stage1_and_vlm_pool(s1_arr, vlm_arr, w_vlm=w_vlm, mode=mode)
-        reordered = [pool[i] for i in sorted(range(len(pool)), key=lambda i: (-comb[i], i))]
-        pool_set = set(reordered)
-        new_ranked = reordered + [v for v in ranked if v not in pool_set]
-        out.append({"query_id": qid, "gallery": p["gallery"], "ranked_video_ids": new_ranked})
-    return out
+    if w_sum <= 0.0:
+        return total
+    return _zscore_rows(total / w_sum)
+
+
+def cmd_ablate_llm_chunks(args: argparse.Namespace) -> int:
+    """Ablate deterministic rule chunking vs CUDA Local LLM (`Qwen2.5-1.5B-Instruct`) on Tune -> Confirm."""
+    state = json.loads((V2_RUN_DIR / "v2_stage1_state.json").read_text(encoding="utf-8"))
+    r9c_cfg = state["configs"]["R9c"]
+    b_weights = r9c_cfg["b_weights"]
+    ckpt_path = MODELS_DIR / "v2_cross_modal_adapter.pt"
+    train_banks, train_dicts = load_all_train_query_banks()
+    active_bs = tuple(state["adapter_meta"]["backbones"])
+    q_shas = [qs for qs in train_dicts[active_bs[0]].keys() if all(qs in train_dicts[b] for b in active_bs)]
+    q_in = {b: np.vstack([train_dicts[b][qs] for qs in q_shas]).astype(np.float32) for b in active_bs}
+    ad_q_bank = adapt_vectors_with_checkpoint(ckpt_path, query_feats=q_in, device="cpu")["queries"]["joint"]
+
+    bundle = _load_llm_chunk_bundle(Path(args.llm_chunk_dir))
+    plans_by_sha = bundle["plans_by_sha"]
+
+    def _prep_split(split_name: str):
+        banks, labels, _ = _load_split_galleries(split_name, train_banks=train_banks)
+        sigs = {
+            b.gallery_name: _precompute_gallery_signals(b, ckpt_path=ckpt_path, train_adapter_joint_bank=ad_q_bank, use_mp=True)
+            for b in banks
+        }
+        base_mats = {g: _build_fused_matrix(sigs[g], **r9c_cfg) for g in sigs}
+        rule_mats = {
+            b.gallery_name: _compute_clause_matrix_for_bank(b, bundle=bundle, clause_field="rule_visual_clauses", b_weights=b_weights)
+            for b in banks
+        }
+        llm_mats = {
+            b.gallery_name: _compute_clause_matrix_for_bank(b, bundle=bundle, clause_field="visual_clauses", b_weights=b_weights)
+            for b in banks
+        }
+        med_long_qids = {
+            q["query_id"]
+            for b in banks
+            for q in b.queries
+            if (plans_by_sha.get(sha256_text(str(q["query_text"]).strip())) or {}).get("tier") in ("medium", "long")
+        }
+        return banks, labels, base_mats, rule_mats, llm_mats, med_long_qids
+
+    tune_banks, tune_labels, tune_base, tune_rule, tune_llm, tune_ml_qids = _prep_split("tune")
+    conf_banks, conf_labels, conf_base, conf_rule, conf_llm, conf_ml_qids = _prep_split("confirm")
+
+    def _subset_hit1(preds: Sequence[Mapping[str, Any]], lbls: Mapping[str, Mapping[str, Any]], qset: set[str]) -> dict[str, Any]:
+        sub = [p for p in preds if p["query_id"] in qset]
+        hits = sum(
+            1 for p in sub
+            if p["ranked_video_ids"] and p["ranked_video_ids"][0] in {str(v) for v in lbls[p["query_id"]]["target_videos"]}
+        )
+        return {"n_queries": len(sub), "hits_at_1": hits, "hit_at_1": round(hits / max(1, len(sub)), 6)}
+
+    def _sweep(variant: str, t_c: Mapping[str, np.ndarray]):
+        best_w, best_m, best_obj = 0.0, None, -1.0
+        rows = []
+        for w in (0.0, 0.03, 0.05, 0.08, 0.12, 0.18, 0.25, 0.35):
+            mats = {g: tune_base[g] + float(w) * t_c[g] for g in tune_base}
+            m, preds = _eval_score_dict(f"tune_{variant}_w{w:.2f}", tune_banks, mats, tune_labels, n_boot=500)
+            obj = float(m["hit_at_1"]) + 0.10 * float(m["mrr_at_10"])
+            rows.append({
+                "w_chunk": w,
+                "hit_at_1": m["hit_at_1"],
+                "mrr_at_10": m["mrr_at_10"],
+                "med_long": _subset_hit1(preds, tune_labels, tune_ml_qids),
+            })
+            if obj > best_obj + 1e-6:
+                best_obj = obj
+                best_w = w
+                best_m = m
+        return best_w, best_m, rows
+
+    best_w_rule, _, tune_rule_curve = _sweep("rule", tune_rule)
+    best_w_llm, _, tune_llm_curve = _sweep("llm", tune_llm)
+
+    base_conf_m, base_conf_preds = _eval_score_dict("confirm_r9c_baseline", conf_banks, conf_base, conf_labels)
+    rule_conf_m, rule_conf_preds = _eval_score_dict(
+        "confirm_rule_chunks",
+        conf_banks,
+        {g: conf_base[g] + float(best_w_rule) * conf_rule[g] for g in conf_base},
+        conf_labels,
+    )
+    llm_conf_m, llm_conf_preds = _eval_score_dict(
+        "confirm_llm_chunks",
+        conf_banks,
+        {g: conf_base[g] + float(best_w_llm) * conf_llm[g] for g in conf_base},
+        conf_labels,
+    )
+    # Also evaluate forced fixed weight (w=0.08) so Confirm behavior is transparent even if Tune preferred w=0.0
+    llm_fixed_m, llm_fixed_preds = _eval_score_dict(
+        "confirm_llm_chunks_w008",
+        conf_banks,
+        {g: conf_base[g] + 0.08 * conf_llm[g] for g in conf_base},
+        conf_labels,
+    )
+    rule_fixed_m, rule_fixed_preds = _eval_score_dict(
+        "confirm_rule_chunks_w008",
+        conf_banks,
+        {g: conf_base[g] + 0.08 * conf_rule[g] for g in conf_base},
+        conf_labels,
+    )
+
+    out = {
+        "schema_version": 1,
+        "evaluated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "llm_receipt": bundle["receipt"],
+        "tune_sweeps": {
+            "rule": {"selected_w": best_w_rule, "curve": tune_rule_curve},
+            "llm": {"selected_w": best_w_llm, "curve": tune_llm_curve},
+        },
+        "confirm_results": {
+            "r9c_baseline": {**base_conf_m, "med_long": _subset_hit1(base_conf_preds, conf_labels, conf_ml_qids)},
+            "rule_tuned": {"w_chunk": best_w_rule, **rule_conf_m, "med_long": _subset_hit1(rule_conf_preds, conf_labels, conf_ml_qids)},
+            "llm_tuned": {"w_chunk": best_w_llm, **llm_conf_m, "med_long": _subset_hit1(llm_conf_preds, conf_labels, conf_ml_qids)},
+            "rule_w008": {"w_chunk": 0.08, **rule_fixed_m, "med_long": _subset_hit1(rule_fixed_preds, conf_labels, conf_ml_qids)},
+            "llm_w008": {"w_chunk": 0.08, **llm_fixed_m, "med_long": _subset_hit1(llm_fixed_preds, conf_labels, conf_ml_qids)},
+        },
+        "llm_improves_over_r9c_on_confirm": bool(float(llm_conf_m["hit_at_1"]) > float(base_conf_m["hit_at_1"])),
+    }
+    _write_json(V2_RUN_DIR / "llm_chunk_ablation.json", out)
+    print(json.dumps(out, indent=2))
+    return 0
 
 
 def _sweep_vlm_fusion_on_tune(
@@ -1103,13 +1231,9 @@ def _sweep_vlm_fusion_on_tune(
 
 def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
     state = json.loads((V2_RUN_DIR / "v2_stage1_state.json").read_text(encoding="utf-8"))
-    tune_preds = _read_preds(V2_RUN_DIR / "r9c_tune_preds.jsonl.gz")
-    confirm_preds = _read_preds(V2_RUN_DIR / "r9c_confirm_preds.jsonl.gz")
-    tune_top20 = json.loads((V2_RUN_DIR / "r9c_tune_top20_scores.json").read_text(encoding="utf-8"))
-    confirm_top20 = json.loads((V2_RUN_DIR / "r9c_confirm_top20_scores.json").read_text(encoding="utf-8"))
-
-    vlm_tune = _load_vlm_scores(Path(args.vlm_tune_dir))
-    vlm_confirm = _load_vlm_scores(Path(args.vlm_confirm_dir))
+    stage1_configs = {k: dict(v) for k, v in state["configs"].items()}
+    w_llm_chunk = float(getattr(args, "w_llm_chunk", 0.0) or 0.0)
+    llm_chunk_dir = getattr(args, "llm_chunk_dir", None)
 
     tune_labels = {
         str(r["query_id"]): r
@@ -1122,6 +1246,51 @@ def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
         for r in _read_jsonl(VAL_CONFIRM_DIR / f"{g}_labels.jsonl")
     }
 
+    if w_llm_chunk > 0.0 and llm_chunk_dir is not None:
+        r9c_cfg = stage1_configs["R9c"]
+        r9c_cfg["w_llm_chunk"] = w_llm_chunk
+        bundle = _load_llm_chunk_bundle(Path(llm_chunk_dir))
+        ckpt_path = MODELS_DIR / "v2_cross_modal_adapter.pt"
+        train_banks, train_dicts = load_all_train_query_banks()
+        active_bs = tuple(state["adapter_meta"]["backbones"])
+        q_shas = [qs for qs in train_dicts[active_bs[0]].keys() if all(qs in train_dicts[b] for b in active_bs)]
+        q_in = {b: np.vstack([train_dicts[b][qs] for qs in q_shas]).astype(np.float32) for b in active_bs}
+        ad_q_bank = adapt_vectors_with_checkpoint(ckpt_path, query_feats=q_in, device="cpu")["queries"]["joint"]
+
+        def _recompute_split(split_name: str):
+            banks, _, _ = _load_split_galleries(split_name, train_banks=train_banks)
+            preds: list[dict[str, Any]] = []
+            top20: dict[str, dict[str, float]] = {}
+            for b in banks:
+                sig = _precompute_gallery_signals(b, ckpt_path=ckpt_path, train_adapter_joint_bank=ad_q_bank, use_mp=True)
+                base_m = _build_fused_matrix(sig, **{k: v for k, v in r9c_cfg.items() if k != "w_llm_chunk"})
+                c_m = _compute_clause_matrix_for_bank(b, bundle=bundle, clause_field="visual_clauses", b_weights=r9c_cfg["b_weights"])
+                mat = base_m + w_llm_chunk * c_m
+                for i, q in enumerate(b.queries):
+                    ranked = rank_gallery_desc(b.video_ids, mat[i])
+                    preds.append({"query_id": q["query_id"], "gallery": b.gallery_name, "ranked_video_ids": ranked})
+                    top20[q["query_id"]] = {v: round(float(mat[i][b.vid_to_idx[v]]), 6) for v in ranked[:20]}
+            return preds, top20
+
+        tune_preds, tune_top20 = _recompute_split("tune")
+        confirm_preds, confirm_top20 = _recompute_split("confirm")
+        _write_preds(V2_RUN_DIR / "r9c_with_llm_confirm_preds.jsonl.gz", confirm_preds)
+    else:
+        tune_preds = _read_preds(V2_RUN_DIR / "r9c_tune_preds.jsonl.gz")
+        confirm_preds = _read_preds(V2_RUN_DIR / "r9c_confirm_preds.jsonl.gz")
+        tune_top20 = json.loads((V2_RUN_DIR / "r9c_tune_top20_scores.json").read_text(encoding="utf-8"))
+        confirm_top20 = json.loads((V2_RUN_DIR / "r9c_confirm_top20_scores.json").read_text(encoding="utf-8"))
+
+    vlm_tune_dir = Path(args.vlm_tune_dir)
+    vlm_confirm_dir = Path(args.vlm_confirm_dir)
+    vlm_tune = _load_vlm_scores(vlm_tune_dir)
+    vlm_confirm = _load_vlm_scores(vlm_confirm_dir)
+    vlm_tune_rec = json.loads((_find_shard_dir(vlm_tune_dir) / "receipt.json").read_text(encoding="utf-8"))
+    vlm_conf_rec = json.loads((_find_shard_dir(vlm_confirm_dir) / "receipt.json").read_text(encoding="utf-8"))
+    vlm_model_meta = vlm_conf_rec.get("model") or vlm_tune_rec.get("model") or {}
+    is_3b = "3b" in str(vlm_model_meta.get("model_id", "")).lower()
+    champion_id = "R9d_videntra_v2_1_3b_6gb" if is_3b else "R9d_videntra_v2_champion"
+
     # Tune VLM fusion strictly on Tune
     max_mg = float(state["vlm_export_margin_threshold"])
     max_k = int(state["vlm_export_top_k"])
@@ -1133,8 +1302,8 @@ def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
     confirm_r9d_preds = _blend_stage1_and_vlm_preds(confirm_preds, confirm_top20, vlm_confirm, **best_cfg)
     _write_preds(V2_RUN_DIR / "r9d_confirm_preds.jsonl.gz", confirm_r9d_preds)
 
-    tune_r9d = evaluate_predictions("R9d_videntra_v2_champion", tune_r9d_preds, tune_labels, seed=SEED)
-    confirm_r9d = evaluate_predictions("R9d_videntra_v2_champion", confirm_r9d_preds, confirm_labels, seed=SEED)
+    tune_r9d = evaluate_predictions(champion_id, tune_r9d_preds, tune_labels, seed=SEED)
+    confirm_r9d = evaluate_predictions(champion_id, confirm_r9d_preds, confirm_labels, seed=SEED)
 
     v1_receipt_path = PROTOCOL_ROOT / "champion_lock_receipt_v1_r8.json"
     v1_official_confirm = (
@@ -1152,20 +1321,25 @@ def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
         "schema_version": 2,
         "locked_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "seed": SEED,
-        "champion_id": "R9d_videntra_v2_champion",
+        "champion_id": champion_id,
         "previous_champion_confirm_hit_at_1": r8_confirm_h1,
         "improved_over_v1_r8": improved,
         "champion_confirm_metrics": confirm_r9d,
         "champion_tune_metrics": tune_r9d,
-        "stage1_configs": state["configs"],
+        "stage1_configs": stage1_configs,
         "vlm_fusion_config": best_cfg,
+        "vlm_model": vlm_model_meta,
+        "vlm_peak_vram_mb": {
+            "tune": vlm_tune_rec.get("peak_vram_mb"),
+            "confirm": vlm_conf_rec.get("peak_vram_mb"),
+        },
         "vlm_export_top_k": int(state["vlm_export_top_k"]),
         "vlm_export_margin_threshold": float(state["vlm_export_margin_threshold"]),
         "adapter_meta": state["adapter_meta"],
-        "config_sha256": sha256_text(json.dumps({"s1": state["configs"]["R9c"], "vlm": best_cfg}, sort_keys=True)),
+        "config_sha256": sha256_text(json.dumps({"s1": stage1_configs["R9c"], "vlm": best_cfg, "model": vlm_model_meta}, sort_keys=True)),
         "code_sha256": sha256_file(Path(__file__)),
     }
-    _write_json(V2_RUN_DIR / "v2_validation_summary.json", {**state, "tune_r9d": tune_r9d, "confirm_r9d": confirm_r9d, "vlm_fusion_config": best_cfg, "v1_official_confirm": v1_official_confirm})
+    _write_json(V2_RUN_DIR / "v2_validation_summary.json", {**state, "tune_r9d": tune_r9d, "confirm_r9d": confirm_r9d, "vlm_fusion_config": best_cfg, "vlm_model": vlm_model_meta, "v1_official_confirm": v1_official_confirm})
     _write_json(PROTOCOL_ROOT / "champion_lock_receipt_v2.json", lock_payload)
     if improved:
         main_lock = PROTOCOL_ROOT / "champion_lock_receipt.json"
@@ -1175,8 +1349,8 @@ def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
 
     # Write Markdown summary
     rows_md = [
-        "# VIDENTRA v2 (`R9`) Validation Report (Tune → Confirm)\n",
-        f"- **Champion V2**: `R9d_videntra_v2_champion` | **Locked Confirm Hit@1**: `{confirm_r9d['hit_at_1']*100:.2f}%` (`{confirm_r9d['hits_at_1']}/2000`) | **MRR@10**: `{confirm_r9d['mrr_at_10']:.4f}`\n",
+        "# VIDENTRA v2.1 (`R9`) Validation Report (Tune → Confirm)\n",
+        f"- **Champion**: `{champion_id}` | **VLM**: `{vlm_model_meta.get('model_id')}` (`{vlm_model_meta.get('quant')}`) | **Locked Confirm Hit@1**: `{confirm_r9d['hit_at_1']*100:.2f}%` (`{confirm_r9d['hits_at_1']}/2000`) | **MRR@10**: `{confirm_r9d['mrr_at_10']:.4f}`\n",
         f"- **VLM Config (tuned strictly on Tune)**: `{json.dumps(best_cfg)}`\n",
         "| Config ID | Tune Hit@1 | Confirm Hit@1 | Confirm Hit@5 | Confirm Hit@10 | Confirm MRR@10 |",
         "|---|---:|---:|---:|---:|---:|",
@@ -1193,20 +1367,21 @@ def cmd_fuse_vlm_and_lock(args: argparse.Namespace) -> int:
         tm, cm = state["tune_results"][k], state["confirm_results"][k]
         rows_md.append(f"| `{k}` | {tm['hit_at_1']*100:.2f}% | {cm['hit_at_1']*100:.2f}% | {cm['hit_at_5']*100:.2f}% | {cm['hit_at_10']*100:.2f}% | {cm['mrr_at_10']:.4f} |")
     rows_md.append(
-        f"| `R9d_videntra_v2_champion` | {tune_r9d['hit_at_1']*100:.2f}% | {confirm_r9d['hit_at_1']*100:.2f}% | "
+        f"| `{champion_id}` | {tune_r9d['hit_at_1']*100:.2f}% | {confirm_r9d['hit_at_1']*100:.2f}% | "
         f"{confirm_r9d['hit_at_5']*100:.2f}% | {confirm_r9d['hit_at_10']*100:.2f}% | {confirm_r9d['mrr_at_10']:.4f} |"
     )
     (V2_RUN_DIR / "v2_validation_report.md").write_text("\n".join(rows_md) + "\n", encoding="utf-8")
 
-    print(json.dumps({"tune_r9d": tune_r9d, "confirm_r9d": confirm_r9d, "improved_over_r8": improved, "vlm_fusion_config": best_cfg}, indent=2))
+    print(json.dumps({"champion_id": champion_id, "tune_r9d": tune_r9d, "confirm_r9d": confirm_r9d, "improved_over_r8": improved, "vlm_fusion_config": best_cfg, "vlm_peak_vram_mb": lock_payload["vlm_peak_vram_mb"]}, indent=2))
     return 0
 
 
 def cmd_eval_sealed_test(args: argparse.Namespace) -> int:
     lock_doc = json.loads((PROTOCOL_ROOT / "champion_lock_receipt_v2.json").read_text(encoding="utf-8"))
     if not lock_doc.get("improved_over_v1_r8") and not args.force:
-        raise RuntimeError("Champion V2 did not exceed V1 R8 on Confirm; pass --force only for diagnostic run.")
+        raise RuntimeError("Champion V2.1 did not exceed V1 R8 on Confirm; pass --force only for diagnostic run.")
 
+    champion_id = str(lock_doc.get("champion_id") or "R9d_videntra_v2_1_3b_6gb")
     ckpt_path = MODELS_DIR / "v2_cross_modal_adapter.pt"
     train_banks, train_dicts = load_all_train_query_banks()
     active_bs = tuple(lock_doc["adapter_meta"]["backbones"])
@@ -1219,17 +1394,42 @@ def cmd_eval_sealed_test(args: argparse.Namespace) -> int:
     sigs = {bank.gallery_name: _precompute_gallery_signals(bank, ckpt_path=ckpt_path, train_adapter_joint_bank=ad_q_bank, use_mp=True)}
 
     s1_cfgs = lock_doc["stage1_configs"]
+    r9c_cfg = dict(s1_cfgs["R9c"])
+    w_llm_chunk = float(r9c_cfg.pop("w_llm_chunk", 0.0) or 0.0)
+    if w_llm_chunk > 0.0:
+        if args.llm_chunk_dir is None:
+            raise ValueError("Locked config uses w_llm_chunk > 0; pass --llm-chunk-dir for test_1ka.")
+        sigs[bank.gallery_name]["llm_clause_mat"] = _compute_clause_matrix_for_bank(
+            bank,
+            bundle=_load_llm_chunk_bundle(Path(args.llm_chunk_dir)),
+            clause_field="visual_clauses",
+            b_weights=r9c_cfg["b_weights"],
+        )
+
     vlm_cfg = dict(lock_doc["vlm_fusion_config"])
     use_vlm = abs(float(vlm_cfg.get("w_vlm", 0.0))) > 0.0
     if args.export_vlm_candidates:
         if not use_vlm:
             exp = {"path": None, "total_queries": len(bank.queries), "exported_queries": 0, "vlm_skipped": True}
         else:
-            exp = _export_vlm_candidates_for_split(
-                test_banks, sigs, s1_cfgs["R9c"], V2_RUN_DIR / "vlm_candidates_test_1ka.jsonl",
-                top_k=int(vlm_cfg.get("top_k_rerank", lock_doc["vlm_export_top_k"])),
-                margin_threshold=float(vlm_cfg.get("margin_gate", lock_doc["vlm_export_margin_threshold"])),
-            )
+            r9c_mat = _build_fused_matrix(sigs[bank.gallery_name], **r9c_cfg)
+            if w_llm_chunk > 0.0:
+                r9c_mat = r9c_mat + w_llm_chunk * sigs[bank.gallery_name]["llm_clause_mat"]
+            mg_thresh = float(vlm_cfg.get("margin_gate", lock_doc["vlm_export_margin_threshold"]))
+            top_k = int(vlm_cfg.get("top_k_rerank", lock_doc["vlm_export_top_k"]))
+            out_cand = V2_RUN_DIR / "vlm_candidates_test_1ka.jsonl"
+            exp_rows: list[dict[str, Any]] = []
+            for i, q in enumerate(bank.queries):
+                ranked = rank_gallery_desc(bank.video_ids, r9c_mat[i])
+                mg = float(r9c_mat[i][bank.vid_to_idx[ranked[0]]] - r9c_mat[i][bank.vid_to_idx[ranked[1]]]) if len(ranked) >= 2 else 0.0
+                if mg < mg_thresh:
+                    exp_rows.append({"query_id": q["query_id"], "query_text": q["query_text"], "gallery": bank.gallery_name, "stage1_margin": round(mg, 6), "candidate_video_ids": ranked[:top_k]})
+            assert_no_gt_leakage(exp_rows, context="vlm_export_test_1ka")
+            out_cand.parent.mkdir(parents=True, exist_ok=True)
+            with out_cand.open("w", encoding="utf-8") as fh:
+                for r in exp_rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            exp = {"path": str(out_cand), "total_queries": len(bank.queries), "exported_queries": len(exp_rows)}
         print(json.dumps({"test_1ka_vlm_export": exp}, indent=2))
         if args.vlm_dir is None:
             return 0
@@ -1262,7 +1462,11 @@ def cmd_eval_sealed_test(args: argparse.Namespace) -> int:
     r9c_preds: list[dict[str, Any]] = []
     r9c_top20: dict[str, dict[str, float]] = {}
     for cid, kname in (("R9a_6backbone_raw", "R9a"), ("R9b_6backbone_qb_dis_znorm_mp", "R9b"), ("R9c_6backbone_adapter_multimodal", "R9c")):
-        mat = _build_fused_matrix(sigs[bank.gallery_name], **s1_cfgs[kname])
+        cfg_k = dict(s1_cfgs[kname])
+        w_lk = float(cfg_k.pop("w_llm_chunk", 0.0) or 0.0)
+        mat = _build_fused_matrix(sigs[bank.gallery_name], **cfg_k)
+        if kname == "R9c" and w_lk > 0.0:
+            mat = mat + w_lk * sigs[bank.gallery_name]["llm_clause_mat"]
         m, preds = _eval_score_dict(cid, test_banks, {bank.gallery_name: mat}, test_labels, b1_hits_by_qid=b1_hits)
         test_metrics[cid] = m
         if kname == "R9c":
@@ -1273,28 +1477,44 @@ def cmd_eval_sealed_test(args: argparse.Namespace) -> int:
                 r9c_top20[q["query_id"]] = {v: round(float(row[bank.vid_to_idx[v]]), 6) for v in top20_v}
 
     if use_vlm and args.vlm_dir is None:
-        raise ValueError("Pass --vlm-dir to evaluate final V2 Champion R9d on test_1ka")
+        raise ValueError("Pass --vlm-dir to evaluate final V2.1 Champion R9d on test_1ka")
     vlm_test = _load_vlm_scores(Path(args.vlm_dir)) if (use_vlm and args.vlm_dir is not None) else {}
+    vlm_test_rec = json.loads((_find_shard_dir(Path(args.vlm_dir)) / "receipt.json").read_text(encoding="utf-8")) if (use_vlm and args.vlm_dir is not None) else {}
     r9d_preds = _blend_stage1_and_vlm_preds(r9c_preds, r9c_top20, vlm_test, **vlm_cfg)
-    r9d_m = evaluate_predictions("R9d_videntra_v2_champion", r9d_preds, test_labels, b1_hits_by_qid=b1_hits, seed=SEED)
-    test_metrics["R9d_videntra_v2_champion"] = r9d_m
+    r9d_m = evaluate_predictions(champion_id, r9d_preds, test_labels, b1_hits_by_qid=b1_hits, seed=SEED)
+    test_metrics[champion_id] = r9d_m
+
+    v2_7b_ref_path = V2_RUN_DIR / "v2_7b_test_1ka_results.json"
+    if v2_7b_ref_path.is_file() and champion_id != "R9d_videntra_v2_champion":
+        ref_doc = json.loads(v2_7b_ref_path.read_text(encoding="utf-8"))
+        ref_7b = (ref_doc.get("test_1ka_results") or {}).get("R9d_videntra_v2_champion")
+        if ref_7b:
+            test_metrics["R9d_videntra_v2_7b_cloud_ref"] = {**ref_7b, "config_id": "R9d_videntra_v2_7b_cloud_ref"}
 
     out_json = {
         "schema_version": 2,
         "evaluated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "dataset": "MSR-VTT 1K-A (JSFusion, 1,000 videos / 1,000 sealed queries)",
+        "champion_id": champion_id,
         "champion_lock_v2": lock_doc["config_sha256"],
         "confirm_champion_hit_at_1": lock_doc["champion_confirm_metrics"]["hit_at_1"],
+        "vlm_model": lock_doc.get("vlm_model"),
+        "vlm_peak_vram_mb": {
+            **(lock_doc.get("vlm_peak_vram_mb") or {}),
+            "test_1ka": vlm_test_rec.get("peak_vram_mb"),
+        },
         "test_1ka_results": test_metrics,
     }
     _write_json(BENCHMARK_DIR / "msrvtt_1ka_benchmark_results.json", out_json)
 
+    vlm_desc = f"{(lock_doc.get('vlm_model') or {}).get('model_id', 'Qwen2.5-VL')} ({(lock_doc.get('vlm_model') or {}).get('quant', 'nf4_4bit')})"
     lines = [
-        "# MSR-VTT 1K-A Single-Shot Benchmark Results (VIDENTRA v2)\n",
+        "# MSR-VTT 1K-A Single-Shot Benchmark Results (VIDENTRA v2.1 — RTX 3060 6GB Target)\n",
         f"- **Evaluation date (UTC)**: {out_json['evaluated_at_utc']}",
         f"- **Dataset**: {out_json['dataset']}",
-        f"- **Locked V2 Confirm (`valid_confirm`, 2,000 queries) Hit@1**: `{lock_doc['champion_confirm_metrics']['hit_at_1']*100:.2f}%`",
-        f"- **Sealed Test (`test_1ka`, 1,000 queries) V2 Champion (`R9d`) Hit@1**: `{r9d_m['hit_at_1']*100:.2f}%` (`{r9d_m['hits_at_1']}/1000`), MRR@10 `{r9d_m['mrr_at_10']:.4f}`, R@5 `{r9d_m['hit_at_5']*100:.2f}%`, R@10 `{r9d_m['hit_at_10']*100:.2f}%`\n",
+        f"- **Active Champion**: `{champion_id}` | **VLM**: `{vlm_desc}` | **Peak VLM VRAM (Kaggle T4)**: `{vlm_test_rec.get('peak_vram_mb')} MB`",
+        f"- **Locked Confirm (`valid_confirm`, 2,000 queries) Hit@1**: `{lock_doc['champion_confirm_metrics']['hit_at_1']*100:.2f}%`",
+        f"- **Sealed Test (`test_1ka`, 1,000 queries) Hit@1**: `{r9d_m['hit_at_1']*100:.2f}%` (`{r9d_m['hits_at_1']}/1000`), MRR@10 `{r9d_m['mrr_at_10']:.4f}`, R@5 `{r9d_m['hit_at_5']*100:.2f}%`, R@10 `{r9d_m['hit_at_10']*100:.2f}%`\n",
         "| Config ID | Hit@1 (R@1) | R@5 | R@10 | MRR@10 | Δ Hit@1 vs B1 (pp) | 95% Bootstrap CI (pp) |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
@@ -1310,7 +1530,7 @@ def cmd_eval_sealed_test(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VIDENTRA v2 (R9) Evaluation Matrix")
+    parser = argparse.ArgumentParser(description="VIDENTRA v2.1 (R9) Evaluation Matrix")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_s1 = sub.add_parser("stage1-and-export")
@@ -1318,18 +1538,26 @@ def main() -> int:
     p_s1.add_argument("--vlm-top-k", type=int, default=8)
     p_s1.add_argument("--vlm-export-quantile", type=float, default=0.70)
 
+    p_abl = sub.add_parser("ablate-llm-chunks")
+    p_abl.add_argument("--llm-chunk-dir", type=Path, default=KAGGLE_OUT / "llm_chunk_val_4000")
+
     p_fuse = sub.add_parser("fuse-vlm-and-lock")
-    p_fuse.add_argument("--vlm-tune-dir", type=Path, default=KAGGLE_OUT / "vlm_val_tune")
-    p_fuse.add_argument("--vlm-confirm-dir", type=Path, default=KAGGLE_OUT / "vlm_val_confirm")
+    p_fuse.add_argument("--vlm-tune-dir", type=Path, default=KAGGLE_OUT / "vlm3b_val_tune")
+    p_fuse.add_argument("--vlm-confirm-dir", type=Path, default=KAGGLE_OUT / "vlm3b_val_confirm")
+    p_fuse.add_argument("--llm-chunk-dir", type=Path, default=None)
+    p_fuse.add_argument("--w-llm-chunk", type=float, default=0.0)
 
     p_test = sub.add_parser("eval-sealed-test")
     p_test.add_argument("--export-vlm-candidates", action="store_true")
     p_test.add_argument("--vlm-dir", type=Path, default=None)
+    p_test.add_argument("--llm-chunk-dir", type=Path, default=None)
     p_test.add_argument("--force", action="store_true")
 
     args = parser.parse_args()
     if args.cmd == "stage1-and-export":
         return cmd_stage1_and_export(args)
+    if args.cmd == "ablate-llm-chunks":
+        return cmd_ablate_llm_chunks(args)
     if args.cmd == "fuse-vlm-and-lock":
         return cmd_fuse_vlm_and_lock(args)
     if args.cmd == "eval-sealed-test":

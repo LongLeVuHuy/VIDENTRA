@@ -60,6 +60,8 @@ def _collect_minimal_src_files() -> tuple[str, ...]:
         if rel.startswith("src/videntra/api/") or rel in excluded:
             continue
         files.append(rel)
+    for sf in sorted((_ROOT / "src" / "videntra" / "contracts" / "schemas").glob("*.json")):
+        files.append(sf.relative_to(_ROOT).as_posix())
     return tuple(files)
 
 
@@ -2438,6 +2440,7 @@ from scripts.prepare_clip_vp_kaggle_bundle import select_bin_center_frames
 from videntra.evaluation.provenance import sha256_file
 from videntra.ingestion.decode import decode_frames
 from videntra.ingestion.probe import probe_media
+from videntra.ranking.vlm_reranker import ensure_vlm_lm_head_tied
 
 VLM_7B_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 VLM_7B_REV = "cc594898137f460bfe9f0759e9844b3ce807cfb5"
@@ -2449,6 +2452,7 @@ with gzip.open(TEMP / "vlm_payload.json.gz", "rt", encoding="utf-8") as fh:
     payload = json.load(fh)
 
 shard_name = payload["shard_name"]
+model_variant = str(payload.get("model_variant", "3b_nf4")).lower()
 items = payload["items"]  # [{query_id, query_text, candidate_video_ids}]
 smoke_limit = int(payload.get("smoke_limit", 0))
 if smoke_limit > 0:
@@ -2473,46 +2477,51 @@ assert not missing, f"Missing videos in {shard_name}: {missing[:10]}"
 n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
 
-def _tie_vlm_weights(mdl):
-    in_emb = mdl.get_input_embeddings()
-    if in_emb is not None and hasattr(mdl, "lm_head") and hasattr(mdl.lm_head, "weight") and mdl.lm_head.weight.shape == in_emb.weight.shape:
-        mdl.lm_head.weight = in_emb.weight
-    if hasattr(mdl, "tie_weights"):
-        try:
-            mdl.tie_weights()
-        except Exception:
-            pass
-    return mdl
-
 def _load_vlm_on_device(dev: str):
     if n_gpus > 0:
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+        if model_variant == "3b_nf4":
+            try:
+                proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
+                mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    VLM_3B_ID, revision=VLM_3B_REV, quantization_config=bnb_cfg, device_map=dev,
+                )
+                mdl = ensure_vlm_lm_head_tied(mdl).eval()
+                return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "nf4_4bit", "variant": "3b_nf4"}
+            except Exception as exc_3b_nf4:
+                print(f"[{shard_name} {dev}] 3B NF4 failed ({exc_3b_nf4}), falling back to 3B FP16", flush=True)
+                proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
+                mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    VLM_3B_ID, revision=VLM_3B_REV, torch_dtype=torch.float16, low_cpu_mem_usage=False,
+                )
+                mdl = ensure_vlm_lm_head_tied(mdl).to(dev).eval()
+                return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp16", "variant": "3b_fp16"}
         try:
-            bnb_cfg = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-            )
             proc = AutoProcessor.from_pretrained(VLM_7B_ID, revision=VLM_7B_REV, use_fast=False)
             mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 VLM_7B_ID, revision=VLM_7B_REV, quantization_config=bnb_cfg, device_map=dev,
             )
-            mdl = _tie_vlm_weights(mdl).eval()
-            return mdl, proc, {"model_id": VLM_7B_ID, "revision": VLM_7B_REV, "quant": "nf4_4bit"}
+            mdl = ensure_vlm_lm_head_tied(mdl).eval()
+            return mdl, proc, {"model_id": VLM_7B_ID, "revision": VLM_7B_REV, "quant": "nf4_4bit", "variant": "7b_nf4"}
         except Exception as exc_7b:
             print(f"[{shard_name} {dev}] 7B NF4 failed ({exc_7b}), falling back to 3B FP16 (no meta tensors)", flush=True)
             proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
             mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 VLM_3B_ID, revision=VLM_3B_REV, torch_dtype=torch.float16, low_cpu_mem_usage=False,
             )
-            mdl = _tie_vlm_weights(mdl).to(dev).eval()
-            return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp16"}
+            mdl = ensure_vlm_lm_head_tied(mdl).to(dev).eval()
+            return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp16", "variant": "3b_fp16"}
     proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
     mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         VLM_3B_ID, revision=VLM_3B_REV, torch_dtype=torch.float32, low_cpu_mem_usage=False,
     )
-    mdl = _tie_vlm_weights(mdl).eval()
-    return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp32_cpu"}
+    mdl = ensure_vlm_lm_head_tied(mdl).eval()
+    return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp32_cpu", "variant": "3b_cpu"}
 
 # Preload models sequentially on main thread (avoids HuggingFace init_empty_weights thread race)
 # and run 1-sample fail-fast Yes/No logit smoke check BEFORE decoding video storyboards.
@@ -2614,6 +2623,10 @@ def _worker(dev_i: int, sub_items: list[dict]):
             print(f"[{shard_name} {dev}] scored {idx_q+1}/{len(sub_items)} queries in {time.time()-t_start:.1f}s", flush=True)
     return out_rows, meta_info
 
+if n_gpus > 0:
+    for _dv in devices:
+        torch.cuda.reset_peak_memory_stats(_dv)
+
 slices = [items[i::len(devices)] for i in range(len(devices))]
 results_all = []
 used_meta = None
@@ -2623,8 +2636,23 @@ with ThreadPoolExecutor(max_workers=len(devices)) as pool:
         if used_meta is None:
             used_meta = m_info
 
+peak_vram_by_dev = (
+    {dv: round(torch.cuda.max_memory_allocated(dv) / (1024 ** 2), 1) for dv in devices}
+    if n_gpus > 0
+    else {}
+)
+peak_vram_mb = round(max(peak_vram_by_dev.values(), default=0.0), 1)
+
 q_ord = {it["query_id"]: i for i, it in enumerate(items)}
 results_all.sort(key=lambda r: q_ord[r["query_id"]])
+
+if results_all:
+    sample_scores = [float(s) for r in results_all[:5] for s in r["vlm_scores"]]
+    print(
+        f"[{shard_name}] sample5 stats: n={len(sample_scores)} min={min(sample_scores):.4f} "
+        f"max={max(sample_scores):.4f} mean={float(np.mean(sample_scores)):.4f} peak_vram_mb={peak_vram_mb}",
+        flush=True,
+    )
 
 out_dir = WORK / shard_name
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -2636,9 +2664,12 @@ with gzip.open(out_gz, "wt", encoding="utf-8") as fh:
 receipt = {
     "status": "SUCCESS",
     "shard_name": shard_name,
+    "model_variant": model_variant,
     "model": used_meta,
     "query_count": len(results_all),
     "devices": devices,
+    "peak_vram_mb": peak_vram_mb,
+    "peak_vram_by_device_mb": peak_vram_by_dev,
     "elapsed_seconds": round(time.time() - t_start, 2),
     "files": {"vlm_rerank_scores.jsonl.gz": {"sha256": sha256_file(out_gz), "bytes": out_gz.stat().st_size}},
 }
@@ -2779,10 +2810,441 @@ def run_shard_job(
     return res
 
 
+_LLM_CHUNK_SHARD_TEMPLATE = r'''
+import base64
+from concurrent.futures import ThreadPoolExecutor
+import gc
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+import unicodedata
+from importlib import metadata as importlib_metadata
+import zipfile
+
+import numpy as np
+
+WORK = Path("/kaggle/working")
+TEMP = Path("/tmp/videntra_llm_chunk_shard")
+TEMP.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(io.BytesIO(base64.b64decode(SOURCE))) as archive:
+    archive.extractall(TEMP)
+
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+constraints = []
+for pkg in ("numpy", "torch", "torchvision", "pillow", "scipy"):
+    try:
+        constraints.append(f"{pkg}=={importlib_metadata.version(pkg)}")
+    except importlib_metadata.PackageNotFoundError:
+        pass
+(TEMP / "constraints.txt").write_text("\n".join(constraints) + "\n", encoding="utf-8")
+subprocess.run(
+    [
+        sys.executable, "-m", "pip", "install", "-q", "-c", str(TEMP / "constraints.txt"),
+        "timm>=1.0.19", "open-clip-torch>=3.1.0", "ftfy", "regex",
+        "transformers>=4.49.0,<5.0.0", "accelerate>=1.0.0", "jsonschema",
+    ],
+    check=True,
+)
+sys.path.insert(0, str(TEMP))
+sys.path.insert(0, str(TEMP / "src"))
+
+from huggingface_hub import hf_hub_download, snapshot_download
+import open_clip
+import torch
+from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+
+from videntra.query.llm import (
+    AdaptiveQueryDecomposer,
+    LocalSmallLLMBackend,
+    QueryComplexityGate,
+    SemanticDecomposerValidator,
+    _extract_json_block,
+    get_system_prompt_for_version,
+)
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+QWEN_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+QWEN_REV = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+
+PE_BIGG_MODEL_ID = "timm/PE-Core-bigG-14-448"
+PE_BIGG_REVISION = "17aa0c25addfa14198fa2ff73d845a22d433432e"
+PE_BIGG_WEIGHTS_FILE = "open_clip_model.safetensors"
+PE_BIGG_WEIGHTS_SHA256 = "d46f61f93c4c8533d2550ed929effe9ec5b096ec48f78f42a17a050f43093a6a"
+PE_BIGG_DIM = 1280
+
+DFN_MODEL_ID = "apple/DFN5B-CLIP-ViT-H-14-378"
+DFN_REVISION = "01b771ed0d1395ca5ffdd279897d665ebe00dfd2"
+DFN_WEIGHTS_FILE = "open_clip_pytorch_model.bin"
+DFN_WEIGHTS_SHA256 = "c07a17b547d461c60a3cce5062b26bf8545b13de602c4c59d8490361eb716033"
+DFN_DIM = 1024
+
+PE_L_MODEL_ID = "timm/PE-Core-L-14-336"
+PE_L_REVISION = "8eff41b3f687e50a323662c2dda5eb3588c6dd35"
+PE_L_WEIGHTS_FILE = "open_clip_model.safetensors"
+PE_L_WEIGHTS_SHA256 = "b1fff7093c32a01d98a2d82098f9adf788b30f0efee639916520b3e4302f786b"
+PE_L_DIM = 1024
+
+SIG400_MODEL_ID = "google/siglip2-so400m-patch14-384"
+SIG400_REVISION = "e8e487298228002f3d8a82e0cd5c8ea9c567f57f"
+SIG400_WEIGHTS_FILE = "model.safetensors"
+SIG400_WEIGHTS_SHA256 = "9f4f4a49f908ef0c979bce8ff5a5c0e88882dc6c5dc4304387cbbd152558e2c2"
+SIG400_DIM = 1152
+
+t_start = time.time()
+with gzip.open(TEMP / "llm_chunk_payload.json.gz", "rt", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+shard_name = payload["shard_name"]
+base_queries = [unicodedata.normalize("NFC", str(q).strip()) for q in payload["base_queries"] if str(q).strip()]
+smoke_limit = int(payload.get("smoke_limit", 0))
+if smoke_limit > 0:
+    base_queries = base_queries[:smoke_limit]
+
+n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
+
+def _sha256_text(txt: str) -> str:
+    return hashlib.sha256(txt.encode("utf-8")).hexdigest()
+
+gate = QueryComplexityGate()
+rule_dec = AdaptiveQueryDecomposer(
+    prompt_version="extractive-v2",
+    enable_disk_cache=False,
+    llm_backend=LocalSmallLLMBackend(enabled=False),
+)
+
+plans: list[dict] = [{} for _ in range(len(base_queries))]
+llm_queue: list[tuple[int, str, str, list[str], list[str], list[str], list[str]]] = []
+short_rule_count = 0
+
+for idx, norm_q in enumerate(base_queries):
+    dec = gate.classify(norm_q)
+    r_plan = rule_dec._decompose_via_rules(norm_q, t0=time.perf_counter())
+    r_vis = [c.strip() for c in r_plan.visual_clauses if str(c).strip()] or [norm_q]
+    if dec.tier == "short":
+        short_rule_count += 1
+        plans[idx] = {
+            "query_text": norm_q,
+            "query_text_sha256": _sha256_text(norm_q),
+            "tier": dec.tier,
+            "routing_mode": r_plan.routing_mode,
+            "visual_clauses": r_vis,
+            "rule_visual_clauses": r_vis,
+            "ocr_phrases": list(r_plan.ocr_phrases),
+            "asr_phrases": list(r_plan.asr_phrases),
+            "object_requirements": list(r_plan.object_requirements),
+        }
+    else:
+        llm_queue.append((
+            idx, norm_q, dec.tier, r_vis,
+            list(r_plan.ocr_phrases), list(r_plan.asr_phrases), list(r_plan.object_requirements),
+        ))
+
+print(f"[{shard_name}] total={len(base_queries)} short_rule={short_rule_count} llm_queue={len(llm_queue)}", flush=True)
+
+llm_valid_count = 0
+llm_fallback_count = 0
+peak_vram_mb_qwen = 0.0
+
+if llm_queue:
+    qwen_dir = TEMP / "qwen25_15b"
+    snapshot_download(
+        repo_id=QWEN_ID,
+        revision=QWEN_REV,
+        allow_patterns=["*.json", "*.txt", "*.safetensors", "tokenizer*"],
+        local_dir=str(qwen_dir),
+    )
+    sys_prompt = get_system_prompt_for_version("extractive-v2")
+    qwen_loaded = []
+    for dev in devices:
+        tok = AutoTokenizer.from_pretrained(str(qwen_dir), local_files_only=True)
+        tok.padding_side = "left"
+        if tok.pad_token_id is None:
+            tok.pad_token_id = tok.eos_token_id
+        mdl = AutoModelForCausalLM.from_pretrained(
+            str(qwen_dir),
+            local_files_only=True,
+            torch_dtype=(torch.float16 if n_gpus > 0 else torch.float32),
+        ).to(dev).eval()
+        for attr in ("temperature", "top_p", "top_k"):
+            try:
+                setattr(mdl.generation_config, attr, None)
+            except Exception:
+                pass
+        if n_gpus > 0:
+            torch.cuda.reset_peak_memory_stats(dev)
+        qwen_loaded.append((dev, tok, mdl))
+    print(f"[{shard_name}] loaded {QWEN_ID} across {devices} in {time.time()-t_start:.1f}s", flush=True)
+
+    def _run_llm_worker(dev_i: int, items_sub: list[tuple]):
+        dev, tok, mdl = qwen_loaded[dev_i]
+        val = SemanticDecomposerValidator()
+        res_local = []
+        n_ok = 0
+        n_fb = 0
+        bs = 16 if n_gpus > 0 else 2
+        for st in range(0, len(items_sub), bs):
+            batch = items_sub[st : st + bs]
+            prompts = [
+                tok.apply_chat_template(
+                    [{"role": "system", "content": sys_prompt}, {"role": "user", "content": it[1]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for it in batch
+            ]
+            inputs = tok(prompts, padding=True, return_tensors="pt").to(dev)
+            in_len = int(inputs["input_ids"].shape[1])
+            with torch.inference_mode():
+                out_ids = mdl.generate(
+                    **inputs,
+                    max_new_tokens=160,
+                    do_sample=False,
+                    pad_token_id=tok.pad_token_id,
+                )
+            for row_i, it in enumerate(batch):
+                idx_q, norm_q, tier, r_vis, r_ocr, r_asr, r_obj = it
+                raw_resp = tok.decode(out_ids[row_i][in_len:], skip_special_tokens=True)
+                try:
+                    json_str = _extract_json_block(raw_resp)
+                    data = json.loads(json_str)
+                    _, plan = val.validate_and_expand(
+                        data,
+                        original_query=norm_q,
+                        query_length_tier=tier,
+                        routing_mode="llm_compact",
+                        model_revision=f"{QWEN_ID}@{QWEN_REV[:8]}",
+                        prompt_version="extractive-v2",
+                    )
+                    v_clauses = [c.strip() for c in plan.visual_clauses if str(c).strip()] or r_vis
+                    res_local.append((
+                        idx_q,
+                        {
+                            "query_text": norm_q,
+                            "query_text_sha256": _sha256_text(norm_q),
+                            "tier": tier,
+                            "routing_mode": "llm_compact",
+                            "visual_clauses": v_clauses,
+                            "rule_visual_clauses": r_vis,
+                            "ocr_phrases": list(plan.ocr_phrases),
+                            "asr_phrases": list(plan.asr_phrases),
+                            "object_requirements": list(plan.object_requirements),
+                        },
+                    ))
+                    n_ok += 1
+                except Exception:
+                    res_local.append((
+                        idx_q,
+                        {
+                            "query_text": norm_q,
+                            "query_text_sha256": _sha256_text(norm_q),
+                            "tier": tier,
+                            "routing_mode": "fallback",
+                            "visual_clauses": r_vis,
+                            "rule_visual_clauses": r_vis,
+                            "ocr_phrases": r_ocr,
+                            "asr_phrases": r_asr,
+                            "object_requirements": r_obj,
+                        },
+                    ))
+                    n_fb += 1
+            if (st // bs) % 10 == 0:
+                print(f"[{shard_name} {dev}] llm {min(st+bs, len(items_sub))}/{len(items_sub)} valid={n_ok} fb={n_fb}", flush=True)
+        return res_local, n_ok, n_fb
+
+    slices = [llm_queue[i::len(devices)] for i in range(len(devices))]
+    with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+        for res_local, n_ok, n_fb in pool.map(lambda p: _run_llm_worker(p[0], p[1]), enumerate(slices)):
+            for idx_q, row_p in res_local:
+                plans[idx_q] = row_p
+            llm_valid_count += n_ok
+            llm_fallback_count += n_fb
+
+    if n_gpus > 0:
+        peak_vram_mb_qwen = round(max(torch.cuda.max_memory_allocated(dv) / (1024 ** 2) for dv in devices), 1)
+    del qwen_loaded
+    gc.collect()
+    if n_gpus > 0:
+        torch.cuda.empty_cache()
+    shutil.rmtree(qwen_dir, ignore_errors=True)
+    print(f"[{shard_name}] LLM phase done: valid={llm_valid_count} fallback={llm_fallback_count} peak_vram_mb={peak_vram_mb_qwen} in {time.time()-t_start:.1f}s", flush=True)
+
+# Collect deduplicated chunk strings across LLM clauses, rule clauses, and base queries
+chunk_seen: set[str] = set()
+chunk_rows: list[dict] = []
+for p in plans:
+    for txt in [*p["visual_clauses"], *p["rule_visual_clauses"], p["query_text"]]:
+        s = str(txt).strip()
+        if not s:
+            continue
+        c_sha = _sha256_text(s)
+        if c_sha not in chunk_seen:
+            chunk_seen.add(c_sha)
+            chunk_rows.append({"row_id": len(chunk_rows), "chunk_text": s, "chunk_text_sha256": c_sha})
+
+chunk_texts = [r["chunk_text"] for r in chunk_rows]
+dev0 = devices[0]
+
+def _l2_norm_t(x):
+    xf = x.float()
+    return xf / xf.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-12)
+
+def _encode_openclip_chunks(*, tag, model_id, revision, weights_file, weights_sha256, fallback_arch, dim, ctx_default):
+    e_dir = TEMP / f"enc_{tag}"
+    snapshot_download(
+        repo_id=model_id,
+        revision=revision,
+        allow_patterns=["open_clip_config.json", weights_file, "*.json", "*.txt"],
+        local_dir=str(e_dir),
+    )
+    assert sha256_file(e_dir / weights_file) == weights_sha256, f"SHA-256 mismatch for {model_id}/{weights_file}"
+    try:
+        mdl, _, _ = open_clip.create_model_and_transforms(f"local-dir:{e_dir}")
+        tok = open_clip.get_tokenizer(f"local-dir:{e_dir}")
+    except Exception:
+        mdl, _, _ = open_clip.create_model_and_transforms(fallback_arch, pretrained=str(e_dir / weights_file))
+        tok = open_clip.get_tokenizer(fallback_arch)
+    mdl = mdl.eval()
+    if n_gpus > 0:
+        mdl = mdl.half()
+    mdl = mdl.to(dev0)
+    ctx_len = int(getattr(mdl, "context_length", ctx_default))
+    vecs = np.zeros((len(chunk_texts), dim), dtype=np.float32)
+    bs = 256
+    for st in range(0, len(chunk_texts), bs):
+        sub = chunk_texts[st : st + bs]
+        try:
+            t_in = tok(sub, context_length=ctx_len).to(dev0)
+        except TypeError:
+            t_in = tok(sub).to(dev0)
+        with torch.inference_mode():
+            if n_gpus > 0:
+                with torch.amp.autocast("cuda", dtype=torch.float16):
+                    qf = mdl.encode_text(t_in)
+            else:
+                qf = mdl.encode_text(t_in)
+            vecs[st : st + len(sub)] = _l2_norm_t(qf).cpu().numpy().astype(np.float32)
+    assert np.isfinite(vecs).all(), f"Non-finite vectors for {tag}"
+    del mdl, tok
+    gc.collect()
+    if n_gpus > 0:
+        torch.cuda.empty_cache()
+    shutil.rmtree(e_dir, ignore_errors=True)
+    print(f"[{shard_name}:{tag}] encoded {len(chunk_texts)} unique chunks in {time.time()-t_start:.1f}s", flush=True)
+    return vecs
+
+pe_bigg_chunks = _encode_openclip_chunks(
+    tag="pe_bigg", model_id=PE_BIGG_MODEL_ID, revision=PE_BIGG_REVISION,
+    weights_file=PE_BIGG_WEIGHTS_FILE, weights_sha256=PE_BIGG_WEIGHTS_SHA256,
+    fallback_arch="PE-Core-bigG-14-448", dim=PE_BIGG_DIM, ctx_default=72,
+)
+dfn_chunks = _encode_openclip_chunks(
+    tag="dfn5b", model_id=DFN_MODEL_ID, revision=DFN_REVISION,
+    weights_file=DFN_WEIGHTS_FILE, weights_sha256=DFN_WEIGHTS_SHA256,
+    fallback_arch="ViT-H-14-quickgelu", dim=DFN_DIM, ctx_default=77,
+)
+pe_l_chunks = _encode_openclip_chunks(
+    tag="pe_l", model_id=PE_L_MODEL_ID, revision=PE_L_REVISION,
+    weights_file=PE_L_WEIGHTS_FILE, weights_sha256=PE_L_WEIGHTS_SHA256,
+    fallback_arch="PE-Core-L-14-336", dim=PE_L_DIM, ctx_default=32,
+)
+
+# SigLIP2-SO400M-384 (lowercased, max_length=64)
+sig_w = Path(hf_hub_download(repo_id=SIG400_MODEL_ID, filename=SIG400_WEIGHTS_FILE, revision=SIG400_REVISION))
+assert sha256_file(sig_w) == SIG400_WEIGHTS_SHA256
+sig_proc = AutoProcessor.from_pretrained(SIG400_MODEL_ID, revision=SIG400_REVISION)
+sig_mdl = AutoModel.from_pretrained(
+    SIG400_MODEL_ID,
+    revision=SIG400_REVISION,
+    torch_dtype=(torch.float16 if n_gpus > 0 else torch.float32),
+).to(dev0).eval()
+sig400_chunks = np.zeros((len(chunk_texts), SIG400_DIM), dtype=np.float32)
+bs = 256
+for st in range(0, len(chunk_texts), bs):
+    sub_low = [t.lower() for t in chunk_texts[st : st + bs]]
+    s_in = sig_proc(text=sub_low, padding="max_length", max_length=64, truncation=True, return_tensors="pt")
+    s_in = {k: v.to(dev0) for k, v in s_in.items()}
+    with torch.inference_mode():
+        if n_gpus > 0:
+            with torch.amp.autocast("cuda", dtype=torch.float16):
+                raw_out = sig_mdl.get_text_features(**s_in)
+        else:
+            raw_out = sig_mdl.get_text_features(**s_in)
+        s_qf = raw_out.pooler_output if hasattr(raw_out, "pooler_output") and raw_out.pooler_output is not None else raw_out
+        sig400_chunks[st : st + len(sub_low)] = _l2_norm_t(s_qf).cpu().numpy().astype(np.float32)
+assert np.isfinite(sig400_chunks).all()
+del sig_mdl, sig_proc
+gc.collect()
+if n_gpus > 0:
+    torch.cuda.empty_cache()
+print(f"[{shard_name}:sig400] encoded {len(chunk_texts)} unique chunks in {time.time()-t_start:.1f}s", flush=True)
+
+out_dir = WORK / shard_name
+out_dir.mkdir(parents=True, exist_ok=True)
+
+def _wjsonl(path, rows):
+    with path.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+_wjsonl(out_dir / "query_plans.jsonl", plans)
+_wjsonl(out_dir / "chunk_rows.jsonl", chunk_rows)
+np.save(out_dir / "pe_bigg_chunk_vectors.npy", pe_bigg_chunks)
+np.save(out_dir / "dfn_chunk_vectors.npy", dfn_chunks)
+np.save(out_dir / "pe_l_chunk_vectors.npy", pe_l_chunks)
+np.save(out_dir / "sig400_chunk_vectors.npy", sig400_chunks)
+
+f_names = (
+    "query_plans.jsonl", "chunk_rows.jsonl",
+    "pe_bigg_chunk_vectors.npy", "dfn_chunk_vectors.npy",
+    "pe_l_chunk_vectors.npy", "sig400_chunk_vectors.npy",
+)
+files_info = {fn: {"sha256": sha256_file(out_dir / fn), "bytes": (out_dir / fn).stat().st_size} for fn in f_names}
+mean_llm = round(sum(len(p["visual_clauses"]) for p in plans) / max(1, len(plans)), 4)
+mean_rule = round(sum(len(p["rule_visual_clauses"]) for p in plans) / max(1, len(plans)), 4)
+receipt = {
+    "status": "SUCCESS",
+    "shard_name": shard_name,
+    "llm_model": {"model_id": QWEN_ID, "revision": QWEN_REV, "license": "apache-2.0", "prompt_version": "extractive-v2"},
+    "stats": {
+        "query_count": len(plans),
+        "short_rule_count": short_rule_count,
+        "llm_queue_count": len(llm_queue),
+        "llm_valid_count": llm_valid_count,
+        "llm_fallback_count": llm_fallback_count,
+        "llm_valid_rate": round(llm_valid_count / max(1, len(llm_queue)), 4),
+        "unique_chunk_count": len(chunk_rows),
+        "mean_clauses_llm": mean_llm,
+        "mean_clauses_rule": mean_rule,
+        "peak_vram_mb_qwen": peak_vram_mb_qwen,
+    },
+    "devices": devices,
+    "elapsed_seconds": round(time.time() - t_start, 2),
+    "files": files_info,
+}
+(out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+print("LLM CHUNK SHARD DONE:", shard_name, receipt["elapsed_seconds"], "s", flush=True)
+'''
+
+
 def run_vlm_rerank_job(
     target_label: str,
     candidates_file: Path,
     *,
+    model_variant: str = "3b_nf4",
     push: bool = False,
     accelerator: str = "gpu",
     num_slices: int = 1,
@@ -2797,6 +3259,7 @@ def run_vlm_rerank_job(
     shard_name = f"vlm_{target_label}" + (f"_p{int(slice_index)}" if int(num_slices) > 1 else "")
     payload_obj = {
         "shard_name": shard_name,
+        "model_variant": str(model_variant),
         "items": [
             {
                 "query_id": str(r["query_id"]),
@@ -2823,7 +3286,54 @@ def run_vlm_rerank_job(
         push=push,
         accelerator=acc,
     )
-    res.update({"shard_name": shard_name, "query_count": len(rows), "num_slices": int(num_slices), "slice_index": int(slice_index)})
+    res.update({
+        "shard_name": shard_name,
+        "model_variant": str(model_variant),
+        "query_count": len(rows),
+        "num_slices": int(num_slices),
+        "slice_index": int(slice_index),
+    })
+    return res
+
+
+def run_llm_chunk_job(
+    target: str,
+    *,
+    protocol_root: Path,
+    allow_sealed_test: bool = False,
+    push: bool = False,
+    accelerator: str = "gpu",
+    smoke_limit: int = 0,
+) -> dict[str, Any]:
+    """Launch Kaggle Qwen2.5-1.5B-Instruct query chunking + 4-backbone chunk encoding shard."""
+    resolved_target = "test_1ka_queries_only" if target == "test_1ka" else target
+    _, base_queries, _ = _collect_target_payload(
+        protocol_root,
+        resolved_target,
+        allow_sealed_test=allow_sealed_test,
+    )
+    shard_name = f"llm_chunk_{target}"
+    payload_obj = {
+        "shard_name": shard_name,
+        "base_queries": base_queries,
+        "smoke_limit": int(smoke_limit),
+    }
+    gz_bytes = gzip.compress(json.dumps(payload_obj, separators=(",", ":")).encode("utf-8"), compresslevel=9)
+    b64 = _pack_source_b64(_MINIMAL_SRC_FILES, {"llm_chunk_payload.json.gz": gz_bytes})
+    launcher = f"SOURCE = {b64!r}\n" + _LLM_CHUNK_SHARD_TEMPLATE.lstrip("\n")
+    slug_safe = shard_name.replace("_", "-")
+    acc = str(accelerator).lower()
+    acc_tag = "" if acc == "gpu" else f"-{acc}"
+    res = _write_and_push_kernel(
+        kernel_dir=KAGGLE_WORK_DIR / shard_name,
+        kernel_id=f"lvhuylong/videntra-msr-{slug_safe}{acc_tag}-20261123",
+        title=f"VIDENTRA MSR {slug_safe.replace('-', ' ').upper()} 20261123",
+        launcher_code=launcher,
+        datasets=(),
+        push=push,
+        accelerator=acc,
+    )
+    res.update({"shard_name": shard_name, "query_count": len(base_queries)})
     return res
 
 
@@ -2872,11 +3382,20 @@ def main() -> int:
     p_vlm = sub.add_parser("vlm-rerank-shard")
     p_vlm.add_argument("--target-label", required=True)
     p_vlm.add_argument("--candidates-file", type=Path, required=True)
+    p_vlm.add_argument("--model-variant", choices=("3b_nf4", "7b_nf4"), default="3b_nf4")
     p_vlm.add_argument("--push", action="store_true")
     p_vlm.add_argument("--accelerator", choices=("gpu", "cpu"), default="gpu")
     p_vlm.add_argument("--num-slices", type=int, default=1)
     p_vlm.add_argument("--slice-index", type=int, default=0)
     p_vlm.add_argument("--smoke-limit", type=int, default=0)
+
+    p_llm = sub.add_parser("llm-chunk-shard")
+    p_llm.add_argument("--target", choices=("val_tune", "val_confirm", "val_4000", "test_1ka"), required=True)
+    p_llm.add_argument("--protocol-root", type=Path, default=PROTOCOL_ROOT)
+    p_llm.add_argument("--allow-sealed-test", action="store_true")
+    p_llm.add_argument("--push", action="store_true")
+    p_llm.add_argument("--accelerator", choices=("gpu", "cpu"), default="gpu")
+    p_llm.add_argument("--smoke-limit", type=int, default=0)
 
     p_st = sub.add_parser("status")
     p_st.add_argument("--kernel-id", required=True)
@@ -2905,10 +3424,20 @@ def main() -> int:
         res = run_vlm_rerank_job(
             args.target_label,
             args.candidates_file,
+            model_variant=args.model_variant,
             push=args.push,
             accelerator=args.accelerator,
             num_slices=args.num_slices,
             slice_index=args.slice_index,
+            smoke_limit=args.smoke_limit,
+        )
+    elif args.cmd == "llm-chunk-shard":
+        res = run_llm_chunk_job(
+            args.target,
+            protocol_root=args.protocol_root,
+            allow_sealed_test=args.allow_sealed_test,
+            push=args.push,
+            accelerator=args.accelerator,
             smoke_limit=args.smoke_limit,
         )
     elif args.cmd == "status":

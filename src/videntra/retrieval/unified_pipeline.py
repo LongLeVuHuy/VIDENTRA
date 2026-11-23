@@ -110,6 +110,7 @@ from videntra.ranking.features import (
     extract_ltr_features_32d,
 )
 from videntra.ranking.learned_ranker import DEFAULT_LTR_MODEL_PATH, LearnedRankerLTR
+from videntra.ranking.vlm_reranker import Qwen25VLReranker
 
 logger = logging.getLogger(__name__)
 _WORD_TOK_RE = re.compile(r"\b[a-z0-9à-ỹ]+\b")
@@ -595,6 +596,9 @@ class UnifiedMultimodalSearchPipeline:
         videoprism_union_k: int = 30,
         videoprism_rerank_top_k: int = 20,
         videoprism_rerank_weight: float = 0.08,
+        vlm_reranker: Qwen25VLReranker | None = None,
+        vlm_rerank_enabled: bool | None = None,
+        vlm_score_cache_path: Path | str | None = None,
     ):
         self.db_path = resolve_env_db_path(db_path)
         self.faiss_path = resolve_env_faiss_path(faiss_path)
@@ -762,17 +766,22 @@ class UnifiedMultimodalSearchPipeline:
             )
         else:
             env_llm = os.environ.get("VIDENTRA_LLM_ENABLED", "").strip().lower()
-            explicit_llm_enabled = (
-                bool(llm_enabled)
-                if llm_enabled is not None
-                else env_llm in ("1", "true", "yes", "on")
+            if llm_enabled is not None:
+                resolved_llm_flag: bool | None = bool(llm_enabled)
+            elif env_llm in ("1", "true", "yes", "on"):
+                resolved_llm_flag = True
+            elif env_llm in ("0", "false", "no", "off"):
+                resolved_llm_flag = False
+            else:
+                # "auto" or unset: enable only when CUDA and local weights are both available.
+                resolved_llm_flag = None
+            probe_llm = LocalSmallLLMBackend(
+                enabled=resolved_llm_flag,
+                prompt_version=self.query_plan_prompt_version,
             )
-            if explicit_llm_enabled:
+            if probe_llm.enabled:
                 self.query_decomposer = AdaptiveQueryDecomposer(
-                    llm_backend=LocalSmallLLMBackend(
-                        enabled=True,
-                        prompt_version=self.query_plan_prompt_version,
-                    ),
+                    llm_backend=probe_llm,
                     enable_disk_cache=use_disk_cache,
                     query_plan_prompt_version=self.query_plan_prompt_version,
                 )
@@ -817,6 +826,15 @@ class UnifiedMultimodalSearchPipeline:
         self._token_idf_cache: dict[str, float] = {}
         self._default_token_idf: float = 1.0
         self.spatial_action_verifier = SpatialActionVerifier(window_pad_sec=2.0)
+        self.vlm_reranker: Qwen25VLReranker | None = (
+            vlm_reranker
+            if vlm_reranker is not None
+            else Qwen25VLReranker(
+                enabled=vlm_rerank_enabled,
+                score_cache_path=vlm_score_cache_path,
+                device=device,
+            )
+        )
 
         if not lazy_load:
             self._initialize()
@@ -5491,6 +5509,38 @@ class UnifiedMultimodalSearchPipeline:
                     ))
 
         final_results.sort(key=lambda m: float(m.ranking_score), reverse=True)
+        vlm_rerank_stats: dict[str, Any] = {"enabled": False, "applied": False}
+        if (
+            self.vlm_reranker is not None
+            and self.vlm_reranker.enabled
+            and ablation_config not in ("A0", "A1", "A2")
+            and len(final_results) >= 2
+        ):
+            ordered_vid_scores: list[tuple[str, float]] = []
+            seen_vlm_vids: set[str] = set()
+            for mom in final_results:
+                vid_s = str(mom.video_id)
+                if vid_s not in seen_vlm_vids:
+                    seen_vlm_vids.add(vid_s)
+                    ordered_vid_scores.append((vid_s, float(mom.ranking_score)))
+            vid_paths: dict[str, Path] = {}
+            if self.db_conn is not None and ordered_vid_scores:
+                k_lim = max(2, int(self.vlm_reranker.fusion_config.top_k_rerank))
+                cand_vids = [v for v, _ in ordered_vid_scores[:k_lim]]
+                placeholders = ",".join("?" for _ in cand_vids)
+                for row_vid, row_fp in self.db_conn.execute(
+                    f"SELECT video_id, file_path FROM Videos WHERE video_id IN ({placeholders});",
+                    cand_vids,
+                ).fetchall():
+                    if row_fp:
+                        vid_paths[str(row_vid)] = Path(str(row_fp))
+            new_vid_order, vlm_rerank_stats = self.vlm_reranker.rerank_video_scores(
+                query, ordered_vid_scores, vid_paths
+            )
+            if vlm_rerank_stats.get("applied"):
+                rank_pos = {v: idx for idx, v in enumerate(new_vid_order)}
+                final_results.sort(key=lambda m: (rank_pos.get(str(m.video_id), len(new_vid_order)), -float(m.ranking_score)))
+
         self._active_query_sims = None
         t_boundary_end = time.perf_counter()
 
@@ -5672,6 +5722,8 @@ class UnifiedMultimodalSearchPipeline:
             "clip_consensus_stats": clip_consensus_stats,
             "videoprism_stats": videoprism_stats,
             "temporal_rerank_stats": temporal_rerank_stats,
+            "vlm_rerank_enabled": bool(self.vlm_reranker is not None and self.vlm_reranker.enabled),
+            "vlm_rerank_stats": vlm_rerank_stats,
             "query_plan_mode": routing_plan.routing_mode if routing_plan is not None else None,
             "query_plan_cache_hit": routing_plan.cache_hit if routing_plan is not None else None,
             "llm_enabled": bool(getattr(getattr(self.query_decomposer, "llm_backend", None), "enabled", False)),
