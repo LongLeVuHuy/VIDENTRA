@@ -16,7 +16,7 @@
 
 ---
 
-> **Điểm nhấn VIDENTRA (`R9d_videntra_v2_1_3b_6gb`):** Chấm đơn lần trên tập niêm phong **MSR-VTT 1K-A** (`1.000` video / `1.000` truy vấn / `885` source groups), cấu hình mục tiêu 6GB VRAM đạt **`57.20%` Hit@1 (`572/1.000`)**, **`0.6693` MRR@10**, **`79.90%` R@5**, **`87.40%` R@10** và **`91.80%` Stage-1 R@20** — vượt baseline `SigLIP2-Base` (`42.30%`) thêm **`+14.90 pp`**, vượt `VideoPrism-LvT-B` (`48.70%`) thêm **`+8.50 pp`** (`95% Bootstrap CI [+6.21, +10.87] pp`, cứu đúng `+120` câu / mất `-35`, ròng `+85`), và thậm chí nhỉnh hơn cấu hình Cloud tham chiếu `Qwen2.5-VL-7B NF4` (`57.10%` Hit@1 / `0.6670` MRR@10) với mức **peak VRAM đo thực tế chỉ `2,792.7 MB` (`2.73 GB`)** trên `test_1ka`.
+> **Điểm nhấn VIDENTRA (6 Backbones + Stage-2 `Qwen2.5-VL-3B` NF4):** Chấm đơn lần trên tập niêm phong **MSR-VTT 1K-A** (`1.000` video / `1.000` truy vấn / `885` source groups), cấu hình mục tiêu 6GB VRAM đạt **`57.20%` Hit@1 (`572/1.000`)**, **`0.6693` MRR@10**, **`79.90%` R@5**, **`87.40%` R@10** và **`91.80%` Stage-1 R@20** — vượt baseline `SigLIP2-Base` (`42.30%`) thêm **`+14.90 pp`**, vượt `VideoPrism-LvT-B` (`48.70%`) thêm **`+8.50 pp`** (`95% Bootstrap CI [+6.21, +10.87] pp`, cứu đúng `+120` câu / mất `-35`, ròng `+85`), và thậm chí nhỉnh hơn cấu hình Cloud tham chiếu `Qwen2.5-VL-7B NF4` (`57.10%` Hit@1 / `0.6670` MRR@10) với mức **peak VRAM đo thực tế chỉ `2,792.7 MB` (`2.73 GB`)** trên `test_1ka`.
 
 ---
 
@@ -118,7 +118,7 @@ Ngoài ra module cũng hỗ trợ `QB-DIS` ($\tilde{s}_{\mathrm{dis}}(q,v) = \fr
 
 $$\tilde{s}_b(q, \cdot) = 0.50\,\mathcal{Z}_{\mathrm{row}}(s_b) + 0.30\,\mathcal{Z}_{\mathrm{row}}(\tilde{s}_{b,\mathrm{znorm}}) + 0.20\,\mathcal{Z}_{\mathrm{row}}(\tilde{s}_{b,\mathrm{csls}})$$
 
-### 3.4. Hợp Nhất Stage-1 (`R9c`) & Stage-2 VLM Có Cổng Biên (`R9d`) ([`vlm_reranker.py`](src/videntra/ranking/vlm_reranker.py))
+### 3.4. Hợp Nhất Stage-1 (Boltzmann 6 Backbones + ASR/OCR) & Stage-2 VLM Có Cổng Biên ([`vlm_reranker.py`](src/videntra/ranking/vlm_reranker.py))
 Giai đoạn Stage-1 kết hợp xác suất Boltzmann ($\tau_B = 1.5$) trên 6 backbone cùng bằng chứng văn bản `ASR` / `OCR`:
 
 $$S_1(q, \cdot) = \mathcal{Z}_{\mathrm{row}}\!\left(\sum_{b \in \mathcal{B}} w_b\,\mathrm{softmax}\!\left(\frac{\mathcal{Z}_{\mathrm{row}}(\tilde{s}_b(q, \cdot))}{\tau_B}\right)\right) + w_{\mathrm{ASR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{ASR}})\big) + w_{\mathrm{OCR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{OCR}})\big)$$
@@ -205,18 +205,20 @@ VIDENTRA/
 
 Số liệu ghi nhận trực tiếp từ [benchmark/msrvtt_1ka_benchmark_report.md](benchmark/msrvtt_1ka_benchmark_report.md), [benchmark/msrvtt_1ka_benchmark_results.json](benchmark/msrvtt_1ka_benchmark_results.json) và [v2_stage1_state.json](work/msrvtt_protocol_20261122/v2_run/v2_stage1_state.json) (`evaluated_at_utc = 2026-11-23T12:45:20Z`, `seed = 20261123`, `885` source groups trên `test_1ka`):
 
-| Config ID | Mô Tả Kiến Trúc | Tune Hit@1 (`2.000` q) | Confirm Hit@1 (`2.000` q) | Sealed Test **Hit@1** (`1.000` q) | Sealed Test **R@5** | Sealed Test **R@10** | Sealed Test **MRR@10** | Δ Hit@1 vs B1 (95% CI) |
+| Phương pháp | Thành Phần Kết Hợp | Tune Hit@1 (`2.000` q) | Confirm Hit@1 (`2.000` q) | Sealed Test **Hit@1** (`1.000` q) | Sealed Test **R@5** | Sealed Test **R@10** | Sealed Test **MRR@10** | Δ Hit@1 vs VideoPrism (95% CI) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `B0_siglip2_standalone` | Baseline `SigLIP2-Base-384` | — | 36.55% | 42.30% | 65.10% | 74.10% | 0.5207 | -6.40 pp `[-9.42, -3.44]` |
-| `R9_dfn5b_h_standalone` | Đơn lẻ `DFN5B-CLIP-ViT-H-14-378` | 37.95% | 37.70% | 41.60% | 66.70% | 75.50% | 0.5244 | -7.10 pp `[-10.00, -4.25]` |
-| `B1_videoprism_standalone` | Baseline `VideoPrism-LvT-B` (whole + clips) | — | 43.95% | 48.70% | 75.30% | 82.50% | 0.5972 | +0.00 pp (Baseline) |
-| `R9_pe_bigg_standalone` | Đơn lẻ `PE-Core-bigG-14-448` (X-Pool) | 47.15% | 48.45% | 53.60% | 77.40% | 84.60% | 0.6386 | +4.90 pp `[+2.04, +7.73]` |
-| `R8_videntra_v1_champion` | VIDENTRA v1 Champion (3 backbone + QB-CSLS + MP) | 48.20% | 50.20% | 55.60% | 79.00% | 86.80% | 0.6549 | +6.90 pp `[+4.68, +9.13]` |
-| `R9a_6backbone_raw` | Hợp nhất thô 6 backbone | 49.35% | 49.75% | 54.30% | 79.10% | 86.50% | 0.6467 | +5.60 pp `[+3.19, +7.97]` |
-| `R9b_6backbone_qb_dis_znorm_mp` | 6 backbone + 21.2K `QB-Z-Norm`/`CSLS` + MP | 49.85% | 51.15% | 55.90% | 79.70% | 87.40% | 0.6593 | +7.20 pp `[+4.82, +9.58]` |
-| `R9c_6backbone_adapter_multimodal` | R9b + Multimodal `ASR` (`0.18`) + `OCR` (`0.06`) | 49.85% | 51.55% | 56.00% | **79.90%** | **87.40%** | 0.6603 | +7.30 pp `[+4.92, +9.71]` |
-| `R9d_videntra_v2_7b_cloud_ref` | R9c + `Qwen2.5-VL-7B-Instruct` NF4 *(Cloud Ref)* | 50.95% | 51.45% | 57.10% | **79.90%** | **87.40%** | 0.6670 | +8.40 pp `[+6.02, +10.80]` |
-| **`R9d_videntra_v2_1_3b_6gb`** | **R9c + `Qwen2.5-VL-3B-Instruct` NF4 *(6GB Champion)*** | **51.20%** | **51.75%** | **57.20%** | **79.90%** | **87.40%** | **0.6693** | **+8.50 pp `[+6.21, +10.87]`** |
+| **`SigLIP2-Base-384`** | Baseline đơn lẻ (frame 384px, 768d) | — | 36.55% | 42.30% | 65.10% | 74.10% | 0.5207 | -6.40 pp `[-9.42, -3.44]` |
+| **`DFN5B-CLIP-ViT-H-14-378`** | Backbone đơn lẻ (378px, 1024d) | 37.95% | 37.70% | 41.60% | 66.70% | 75.50% | 0.5244 | -7.10 pp `[-10.00, -4.25]` |
+| **`VideoPrism-LvT-B`** | Baseline chuyển động (whole clip + sub-clips, 768d) | — | 43.95% | 48.70% | 75.30% | 82.50% | 0.5972 | +0.00 pp (Baseline) |
+| **`PE-Core-bigG-14-448` (X-Pool)** | Backbone đơn lẻ (448px, 1280d + X-Pool 12 frames) | 47.15% | 48.45% | 53.60% | 77.40% | 84.60% | 0.6386 | +4.90 pp `[+2.04, +7.73]` |
+| **3 Backbones + `QB-CSLS` + Multi-Prompt** | `VideoPrism-LvT-B` + `PE-Core-L-336` + `SigLIP2-SO400M` + ASR BM25 | 48.20% | 50.20% | 55.60% | 79.00% | 86.80% | 0.6549 | +6.90 pp `[+4.68, +9.13]` |
+| **6 Backbones (Hợp nhất thô)** | Cộng trọng số 6 backbones (`PE-bigG`, `PE-L`, `VideoPrism`, `SigLIP2-SO400M`, `DFN5B-H`, `SigLIP2-Base`) | 49.35% | 49.75% | 54.30% | 79.10% | 86.50% | 0.6467 | +5.60 pp `[+3.19, +7.97]` |
+| **6 Backbones + Query-Bank + Multi-Prompt** | 6 Backbones + 21.2K `QB-Z-Norm`/`CSLS` + Multi-Prompt Ensembling | 49.85% | 51.15% | 55.90% | 79.70% | 87.40% | 0.6593 | +7.20 pp `[+4.82, +9.58]` |
+| **Stage-1 Đầy đủ (6 Backbones + `ASR`/`OCR`)** | 6 Backbones + `QB-Z-Norm`/`CSLS` + Multi-Prompt + `ASR` (`0.18`) + `OCR` (`0.06`) | 49.85% | 51.55% | 56.00% | **79.90%** | **87.40%** | 0.6603 | +7.30 pp `[+4.92, +9.71]` |
+| **VIDENTRA + `Qwen2.5-VL-7B` (NF4)** | Stage-1 Đầy đủ + Stage-2 VLM Storyboard `2×4` Top-3 *(Cloud Ref)* | 50.95% | 51.45% | 57.10% | **79.90%** | **87.40%** | 0.6670 | +8.40 pp `[+6.02, +10.80]` |
+| **VIDENTRA + `Qwen2.5-VL-3B` (NF4, 6GB Champion)** | **Stage-1 Đầy đủ + Stage-2 `Qwen2.5-VL-3B-Instruct` NF4 *(RTX 3060 6GB)*** | **51.20%** | **51.75%** | **57.20%** | **79.90%** | **87.40%** | **0.6693** | **+8.50 pp `[+6.21, +10.87]`** |
+
+> *Ghi chú truy vết:* Các mã cấu hình nội bộ dùng cho script kiểm định tự động được lưu giữ nguyên vẹn trong tệp receipt [benchmark/msrvtt_1ka_benchmark_results.json](benchmark/msrvtt_1ka_benchmark_results.json) và [benchmark/msrvtt_1ka_benchmark_report.md](benchmark/msrvtt_1ka_benchmark_report.md).
 
 ### 6.2. Ablation Tách Query Chunks bằng Local LLM (`Qwen2.5-1.5B`) vs Rule-Based
 
@@ -226,7 +228,7 @@ Chạy thực nghiệm có kiểm soát trên Kaggle Dual-T4 với `3.885` truy 
 
 | Cấu hình Stage-1 (`Valid-Confirm`, `2.000` q) | Trọng số $w_{\mathrm{chunk}}$ | Confirm **Hit@1** | Med/Long Subset (`1.865` q) | Confirm **MRR@10** | Stage-1 **R@20** |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`R9c` Baseline (không tách chunk)** | `0.00` | **51.55%** (`1.031/2.000`) | **53.78%** | **0.6286** | 90.20% |
+| **Stage-1 Đầy đủ (không tách chunk)** | `0.00` | **51.55%** (`1.031/2.000`) | **53.78%** | **0.6286** | 90.20% |
 | Rule-Based Chunks (`tuned on Valid-Tune`) | `0.03` | 51.50% (`1.030/2.000`) | 53.73% | 0.6283 | 90.25% |
 | Local LLM `Qwen2.5-1.5B` Chunks (`tuned on Valid-Tune`) | `0.03` | 51.50% (`1.030/2.000`) | 53.73% | 0.6283 | 90.25% |
 | Local LLM `Qwen2.5-1.5B` Chunks (`fixed w=0.08`) | `0.08` | 51.50% (`1.030/2.000`) | 53.73% | 0.6282 | **90.35%** |
