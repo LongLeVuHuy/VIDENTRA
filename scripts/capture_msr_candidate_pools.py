@@ -457,7 +457,7 @@ def capture_pools(
     db_path: Path = Path("data/processed/catalog/corpus_metadata.db"),
     faiss_path: Path = Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"),
     model_dir: Path = Path("models/siglip2"),
-    ltr_model_path: Path | None = Path("models/ranking/videntra_ltr_v1.json"),
+    ltr_model_path: Path | None = Path("models/ranking/videntra_ltr.json"),
     device: str = "cpu",
     seed: int = 20261115,
     temporal_rerank_lambda: float = 0.0,
@@ -903,7 +903,7 @@ def main() -> None:
     parser.add_argument("--db-path", type=Path, default=Path("data/processed/catalog/corpus_metadata.db"))
     parser.add_argument("--faiss-path", type=Path, default=Path("data/processed/visual_keyframes/siglip2_keyframes_768d.faiss"))
     parser.add_argument("--model-dir", type=Path, default=Path("models/siglip2"))
-    parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
+    parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr.json"))
     parser.add_argument("--no-ltr", action="store_true")
     parser.add_argument("--ltr-blend-weight", type=float, default=None)
     parser.add_argument("--a5-preset", choices=("a5_full", "a5_lite", "a5_no_consensus", "a5_no_ltr"), default=None)

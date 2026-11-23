@@ -16,7 +16,7 @@
 
 ---
 
-> **Điểm nhấn VIDENTRA v2.1 (`R9d_videntra_v2_1_3b_6gb`):** Chấm đơn lần trên tập niêm phong **MSR-VTT 1K-A** (`1.000` video / `1.000` truy vấn / `885` source groups), cấu hình mục tiêu 6GB VRAM đạt **`57.20%` Hit@1 (`572/1.000`)**, **`0.6693` MRR@10**, **`79.90%` R@5**, **`87.40%` R@10** và **`91.80%` Stage-1 R@20** — vượt baseline `SigLIP2-Base` (`42.30%`) thêm **`+14.90 pp`**, vượt `VideoPrism-LvT-B` (`48.70%`) thêm **`+8.50 pp`** (`95% Bootstrap CI [+6.21, +10.87] pp`, cứu đúng `+120` câu / mất `-35`, ròng `+85`), và thậm chí nhỉnh hơn cấu hình Cloud tham chiếu `Qwen2.5-VL-7B NF4` (`57.10%` Hit@1 / `0.6670` MRR@10) với mức **peak VRAM đo thực tế chỉ `2,792.7 MB` (`2.73 GB`)** trên `test_1ka`.
+> **Điểm nhấn VIDENTRA (`R9d_videntra_v2_1_3b_6gb`):** Chấm đơn lần trên tập niêm phong **MSR-VTT 1K-A** (`1.000` video / `1.000` truy vấn / `885` source groups), cấu hình mục tiêu 6GB VRAM đạt **`57.20%` Hit@1 (`572/1.000`)**, **`0.6693` MRR@10**, **`79.90%` R@5**, **`87.40%` R@10** và **`91.80%` Stage-1 R@20** — vượt baseline `SigLIP2-Base` (`42.30%`) thêm **`+14.90 pp`**, vượt `VideoPrism-LvT-B` (`48.70%`) thêm **`+8.50 pp`** (`95% Bootstrap CI [+6.21, +10.87] pp`, cứu đúng `+120` câu / mất `-35`, ròng `+85`), và thậm chí nhỉnh hơn cấu hình Cloud tham chiếu `Qwen2.5-VL-7B NF4` (`57.10%` Hit@1 / `0.6670` MRR@10) với mức **peak VRAM đo thực tế chỉ `2,792.7 MB` (`2.73 GB`)** trên `test_1ka`.
 
 ---
 
@@ -28,7 +28,7 @@
 4. [Ngân Sách VRAM RTX 3060 6GB & Tự Động CUDA/CPU](#4-ngân-sách-vram-rtx-3060-6gb--tự-động-cudacpu)
 5. [Cấu Trúc Dự Án & Quy Tắc Zero Leakage 3 Phân Vùng](#5-cấu-trúc-dự-án--quy-tắc-zero-leakage-3-phân-vùng)
 6. [Kết Quả Benchmark Chính Thức](#6-kết-quả-benchmark-chính-thức)
-   - [6.1. MSR-VTT 1K-A Sealed Test (V2.1 3B 6GB vs 7B Cloud Ref & Baselines)](#61-msr-vtt-1k-a-sealed-test-v21-3b-6gb-vs-7b-cloud-ref--baselines)
+   - [6.1. MSR-VTT 1K-A Sealed Test (3B 6GB Champion vs 7B Cloud Ref & Baselines)](#61-msr-vtt-1k-a-sealed-test-3b-6gb-champion-vs-7b-cloud-ref--baselines)
    - [6.2. Ablation Tách Query Chunks bằng Local LLM (Qwen2.5-1.5B) vs Rule-Based](#62-ablation-tách-query-chunks-bằng-local-llm-qwen25-15b-vs-rule-based)
    - [6.3. Benchmark 5 Chiến Lược Trích Xuất Keyframes](#63-benchmark-5-chiến-lược-trích-xuất-keyframes)
 7. [Cài Đặt, Vận Hành CLI & Quản Lý Dataset](#7-cài-đặt-vận-hành-cli--quản-lý-dataset)
@@ -42,7 +42,7 @@ Khác với nhiều mã nguồn truy xuất video chỉ so khớp cosine từ m�
 
 1. **Hợp đồng thời gian chính xác cho Video VFR (`0-based Presentation-Order PTS Ledger`):**
    - Giải mã trực tiếp bằng `PyAV`, đánh chỉ mục frame 0-based theo đúng thứ tự hiển thị và quy đổi mốc thời gian từ `PTS × time_base` thực, tuyệt đối không dùng phép tính xấp xỉ `frame_idx / FPS` vốn trôi lệch trên video *Variable Frame Rate*.
-2. **Trích xuất keyframe thích ứng `hybrid_v2_adaptive` dùng `63-AC pHash` C++ SIMD:**
+2. **Trích xuất keyframe thích ứng `hybrid_adaptive` dùng `63-AC pHash` C++ SIMD:**
    - Thay thế lấy mẫu đều (*uniform sampling*, vốn bỏ lỡ 67.6% điểm cắt cảnh và trùng lặp 35.1%) bằng thuật toán kết hợp phát hiện chuyển cảnh, bộ lọc chớp sáng/motion blur, chọn đỉnh sắc nét cục bộ (*Composite Sharpness Lookahead*) và giới hạn khoảng cách tối đa: đạt **`100.0%` Cut Recall**, **`1.67%` Redundancy**, **`0` vi phạm max-gap**.
 3. **Khử Hubness quy nạp không rò rỉ (`Inductive Train-9K Query-Bank Normalization`):**
    - Tiền tính thống kê độ phổ biến (*hubness*) của từng video trên **`21.219` câu truy vấn sạch thuộc `train_9k_clean`** (đã lọc bỏ mọi `source_group` trùng lặp với Valid/Test). Khi có truy vấn đơn lẻ đến ở runtime, điểm số được chuẩn hóa ngay lập tức bằng **`QB-Z-Norm` + `QB-CSLS` + `QB-DIS`** với độ trễ $O(N_v)$ không phụ thuộc kích thước batch test.
@@ -60,7 +60,7 @@ Khác với nhiều mã nguồn truy xuất video chỉ so khớp cosine từ m�
 flowchart TB
     subgraph OFFLINE["Giai doan Offline — Giai ma, Trich xuat Dac trung & Priors (Zero Test Access)"]
         V["Video Corpus (.mp4)"] --> DEC["PyAV Presentation-Order Decoder<br/>0-based index, exact PTS * time_base"]
-        DEC --> KF["HybridAdaptiveSampler<br/>hybrid_v2_adaptive + 63-AC pHash"]
+        DEC --> KF["HybridAdaptiveSampler<br/>hybrid_adaptive + 63-AC pHash"]
         KF --> VL["6 Backbones Khong-Thoi Gian<br/>PE-bigG-448, DFN5B-H, PE-L-336,<br/>SigLIP2-SO400M, VideoPrism-LvT-B, SigLIP2-Base"]
         KF --> MM["Bang chung Da phuong thuc<br/>RapidOCR, Faster-Whisper ASR,<br/>YOLOv8n + SORT/ByteTrack, Florence-2"]
         QBANK["Train-9K Clean Query Bank<br/>21,219 clean captions"] --> PRIORS["Inductive Video Priors<br/>bank_mean, bank_std, mean_topk, lse_sum"]
@@ -94,9 +94,9 @@ flowchart TB
 Toàn bộ trọng số dưới đây được **tối ưu hoàn toàn trên `Valid-Tune` (`2.000` truy vấn)** và kiểm chứng khóa một lần trên `Valid-Confirm` (`2.000` truy vấn) trước khi chấm `test_1ka`.
 
 ### 3.1. Multi-Prompt Query Ensembling ([`msrvtt_matrix.py`](src/videntra/retrieval/msrvtt_matrix.py))
-Với hàm chuẩn hóa L2 $\operatorname{norm}_2(\mathbf{x}) = \mathbf{x} / \max(\|\mathbf{x}\|_2, 10^{-12})$ và vector truy vấn chuẩn hóa $\hat{\mathbf{q}}(\cdot)$:
+Với hàm chuẩn hóa L2 $\mathrm{norm}_2(\mathbf{x}) = \mathbf{x} / \max(\|\mathbf{x}\|_2, 10^{-12})$ và vector truy vấn chuẩn hóa $\hat{\mathbf{q}}(\cdot)$:
 
-$$\mathbf{q}_{\mathrm{MP}}(q) = \operatorname{norm}_2\!\Big(0.65\,\hat{\mathbf{q}}(q) + 0.25\,\hat{\mathbf{q}}(\text{"a video clip showing "} q) + 0.10\,\hat{\mathbf{q}}(\text{"a video of "} q)\Big)$$
+$$\mathbf{q}_{\mathrm{MP}}(q) = \mathrm{norm}_2\!\Big(0.65\,\hat{\mathbf{q}}(q) + 0.25\,\hat{\mathbf{q}}(\text{a video clip showing } q) + 0.10\,\hat{\mathbf{q}}(\text{a video of } q)\Big)$$
 
 ### 3.2. Gộp Không–Thời Gian Cấp Khung Hình & X-Pool ([`msrvtt_matrix.py`](src/videntra/retrieval/msrvtt_matrix.py))
 Với một video $v$ gồm $F=12$ khung hình (ma trận tương đồng giữa các khung $G_{v,fs} = \hat{\mathbf{f}}_{v,f}^\top \hat{\mathbf{f}}_{v,s}$ và cosine từng khung $s_f = \mathbf{q}_{\mathrm{MP}}^\top \hat{\mathbf{f}}_{v,f}$):
@@ -112,33 +112,33 @@ $$\alpha_f = \frac{\exp\!\big((s_f - \max_k s_k)/\tau_X\big)}{\sum_{j=1}^F \exp\
 ### 3.3. Khử Hubness Qui Nạp qua Train-9K Query Bank ([`vedje_reranker.py`](src/videntra/ranking/vedje_reranker.py))
 Từ tập ngân hàng truy vấn sạch $\mathcal{Q}_{\mathrm{bank}}$ ($|\mathcal{Q}_{\mathrm{bank}}| = 21.219$), mỗi video $v$ có thống kê cột tiền tính offline:
 
-$$\tilde{s}_{\mathrm{znorm}}(q, v) = \frac{s(q, v) - \mu_{\mathcal{Q}_{\mathrm{bank}}}(v)}{\max\!\big(\sigma_{\mathcal{Q}_{\mathrm{bank}}}(v),\, 10^{-4}\big)}, \qquad \tilde{s}_{\mathrm{csls}}(q, v) = s(q, v) - 0.45 \cdot \frac{1}{K}\sum_{r \in \text{Top-}20(\mathcal{Q}_{\mathrm{bank}}, v)} s(r, v)$$
+$$\tilde{s}_{\mathrm{znorm}}(q, v) = \frac{s(q, v) - \mu_{\mathcal{Q}_{\mathrm{bank}}}(v)}{\max\!\big(\sigma_{\mathcal{Q}_{\mathrm{bank}}}(v),\, 10^{-4}\big)}, \qquad \tilde{s}_{\mathrm{csls}}(q, v) = s(q, v) - 0.45 \cdot \frac{1}{K}\sum_{r \in \mathrm{Top}_{20}(\mathcal{Q}_{\mathrm{bank}}, v)} s(r, v)$$
 
-Ngoài ra module cũng hỗ trợ `QB-DIS` ($\tilde{s}_{\mathrm{dis}}(q,v) = \frac{s}{\tau} - \operatorname{logaddexp}(\frac{s}{\tau}, \log\sum_{r \in \mathcal{Q}_{\mathrm{bank}}} e^{s(r,v)/\tau})$). Trên từng backbone $b$, với $\mathcal{Z}_{\mathrm{row}}(\cdot)$ là chuẩn hóa z-score theo từng hàng truy vấn:
+Ngoài ra module cũng hỗ trợ `QB-DIS` ($\tilde{s}_{\mathrm{dis}}(q,v) = \frac{s}{\tau} - \mathrm{logaddexp}(\frac{s}{\tau}, \log\sum_{r \in \mathcal{Q}_{\mathrm{bank}}} e^{s(r,v)/\tau})$). Trên từng backbone $b$, với $\mathcal{Z}_{\mathrm{row}}(\cdot)$ là chuẩn hóa z-score theo từng hàng truy vấn:
 
 $$\tilde{s}_b(q, \cdot) = 0.50\,\mathcal{Z}_{\mathrm{row}}(s_b) + 0.30\,\mathcal{Z}_{\mathrm{row}}(\tilde{s}_{b,\mathrm{znorm}}) + 0.20\,\mathcal{Z}_{\mathrm{row}}(\tilde{s}_{b,\mathrm{csls}})$$
 
 ### 3.4. Hợp Nhất Stage-1 (`R9c`) & Stage-2 VLM Có Cổng Biên (`R9d`) ([`vlm_reranker.py`](src/videntra/ranking/vlm_reranker.py))
 Giai đoạn Stage-1 kết hợp xác suất Boltzmann ($\tau_B = 1.5$) trên 6 backbone cùng bằng chứng văn bản `ASR` / `OCR`:
 
-$$S_1(q, \cdot) = \mathcal{Z}_{\mathrm{row}}\!\left(\sum_{b \in \mathcal{B}} w_b\,\operatorname{softmax}\!\left(\frac{\mathcal{Z}_{\mathrm{row}}(\tilde{s}_b(q, \cdot))}{\tau_B}\right)\right) + w_{\mathrm{ASR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{ASR}})\big) + w_{\mathrm{OCR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{OCR}})\big)$$
+$$S_1(q, \cdot) = \mathcal{Z}_{\mathrm{row}}\!\left(\sum_{b \in \mathcal{B}} w_b\,\mathrm{softmax}\!\left(\frac{\mathcal{Z}_{\mathrm{row}}(\tilde{s}_b(q, \cdot))}{\tau_B}\right)\right) + w_{\mathrm{ASR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{ASR}})\big) + w_{\mathrm{OCR}}\,\log\!\big(1 + \max(0, \mathrm{BM25}_{\mathrm{OCR}})\big)$$
 
-Với các truy vấn có biên phân tách top-1/top-2 chưa đủ chắc chắn ($m_1(q) = S_1(q, v_{(1)}) - S_1(q, v_{(2)}) < \gamma$), Stage-2 đưa lưới ảnh storyboard $2\times 4$ của Top-$K$ ứng viên ($\mathcal{P}_K$) qua **Qwen2.5-VL-3B-Instruct (4-bit NF4)** lấy hiệu log-odds `"Yes"` và `"No"`, sau đó cộng hợp `margin_raw`:
+Với các truy vấn có biên phân tách top-1/top-2 chưa đủ chắc chắn ($m_1(q) = S_1(q, v_{(1)}) - S_1(q, v_{(2)}) < \gamma$), Stage-2 đưa lưới ảnh storyboard $2\times 4$ của `Top-K` ứng viên ($\mathcal{P}_K$) qua **Qwen2.5-VL-3B-Instruct (4-bit NF4)** lấy hiệu log-odds `"Yes"` và `"No"`, sau đó cộng hợp `margin_raw`:
 
-$$\ell_{\mathrm{VLM}}(q, v) = \operatorname{logsumexp}_{t \in \{\text{"Yes"}, \text{"yes"}\}} \log P(t \mid I_{2\times 4}(v), q) - \operatorname{logsumexp}_{t \in \{\text{"No"}, \text{"no"}\}} \log P(t \mid I_{2\times 4}(v), q)$$
+$$\ell_{\mathrm{VLM}}(q, v) = \mathrm{logsumexp}_{t \in \{\mathrm{Yes}, \mathrm{yes}\}} \log P(t \mid I_{2\times 4}(v), q) - \mathrm{logsumexp}_{t \in \{\mathrm{No}, \mathrm{no}\}} \log P(t \mid I_{2\times 4}(v), q)$$
 
 $$S_2(q, v) = \begin{cases} S_1(q, v) + w_{\mathrm{VLM}} \cdot \Big(\ell_{\mathrm{VLM}}(q, v) - \frac{1}{|\mathcal{P}_K|}\sum_{u \in \mathcal{P}_K} \ell_{\mathrm{VLM}}(q, u)\Big), & \text{nếu } m_1(q) < \gamma \text{ và } v \in \mathcal{P}_K, \\ S_1(q, v), & \text{ngược lại.} \end{cases}$$
 
 ### 3.5. Bảng Trọng Số Đã Khóa (`champion_lock_receipt_v2.json`)
 
-| Giai đoạn | Tham số / Thành phần | Ký hiệu | Giá trị khóa (V2.1 6GB) | Ghi chú |
+| Giai đoạn | Tham số / Thành phần | Ký hiệu | Giá trị khóa (6GB Champion) | Ghi chú |
 | :--- | :--- | :---: | :---: | :--- |
 | **Stage-1** | `PE-Core-bigG-14-448` (1280d) | $w_{\mathrm{pe\_bigG}}$ | **`1.40`** | Trọng số lớn nhất, X-Pool 12 frames |
 | **Stage-1** | `PE-Core-L-14-336` (1024d) | $w_{\mathrm{pe\_L}}$ | **`1.10`** | Bổ trợ biểu diễn vùng cận chi tiết |
 | **Stage-1** | `VideoPrism-LvT-B` (768d) | $w_{\mathrm{vp}}$ | **`1.00`** | Backbone chuyển động không–thời gian |
 | **Stage-1** | `SigLIP2-SO400M-384` (1152d) | $w_{\mathrm{s4}}$ | **`0.75`** | ViT sigmoid phân giải cao 384px |
 | **Stage-1** | `DFN5B-CLIP-ViT-H-14-378` (1024d) | $w_{\mathrm{dfn}}$ | **`0.65`** | Dữ liệu tiền huấn luyện DFN-5B |
-| **Stage-1** | `SigLIP2-Base-384` (768d) | $w_{\mathrm{sig}}$ | **`0.40`** | Khớp dense index `hybrid_v2_adaptive` |
+| **Stage-1** | `SigLIP2-Base-384` (768d) | $w_{\mathrm{sig}}$ | **`0.40`** | Khớp dense index `hybrid_adaptive` |
 | **Calibration** | Hubness mix (`raw` / `znorm` / `csls` / `dis`) | $(w_{\mathrm{raw}}, w_{\mathrm{zn}}, w_{\mathrm{csls}}, w_{\mathrm{dis}})$ | **`(0.50, 0.30, 0.20, 0.00)`** | Kèm Boltzmann softmax $\tau_B = 1.50$ |
 | **Multimodal** | `ASR BM25` / `OCR BM25` / `LLM Chunks` | $(w_{\mathrm{ASR}}, w_{\mathrm{OCR}}, w_{\mathrm{chunk}})$ | **`(0.18, 0.06, 0.00)`** | `w_chunk=0` cho MSR-VTT sau ablation |
 | **Stage-2 VLM** | `Qwen2.5-VL-3B-Instruct` (4-bit NF4) | $(w_{\mathrm{VLM}}, K, \gamma, \alpha)$ | **`(+1.35, 3, 5.342474, 0.0)`** | `mode="margin_raw"`, Top-3 storyboard |
@@ -147,7 +147,7 @@ $$S_2(q, v) = \begin{cases} S_1(q, v) + w_{\mathrm{VLM}} \cdot \Big(\ell_{\mathr
 
 ## 4. Ngân Sách VRAM RTX 3060 6GB & Tự Động CUDA/CPU
 
-Mọi mô hình nặng trong VIDENTRA V2.1 được thiết kế để có thể chạy **tuần tự** trong giới hạn **RTX 3060 `6.144 MB` (6GB VRAM)**:
+Mọi mô hình nặng trong VIDENTRA được thiết kế để có thể chạy **tuần tự** trong giới hạn **RTX 3060 `6.144 MB` (6GB VRAM)**:
 
 | Thành phần GPU Online | Định dạng / Cấu hình | Peak VRAM đo thực tế (Kaggle T4) | Ghi chú vận hành cục bộ (`VIDENTRA_*`) |
 | :--- | :--- | :---: | :--- |
@@ -193,15 +193,15 @@ VIDENTRA/
 │   ├── ranking/                         # vlm_reranker.py (3B/7B NF4), cross_modal_adapter.py, vedje_reranker.py
 │   ├── registry/ & evaluation/          # DatasetRegistryManager, cô lập Ground Truth (MediaResolver)
 │   └── api/ & cli.py                    # FastAPI REST, Web Inspector UI, CLI `videntra`
-├── scripts/                             # Điều phối Kaggle GPU, ablation matrix V1/V2/V2.1 & benchmark keyframes
-└── tests/                               # 662+ unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
+├── scripts/                             # Điều phối Kaggle GPU, ablation matrix & benchmark keyframes
+└── tests/                               # 630 unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
 ```
 
 ---
 
 ## 6. Kết Quả Benchmark Chính Thức
 
-### 6.1. MSR-VTT 1K-A Sealed Test (V2.1 3B 6GB vs 7B Cloud Ref & Baselines)
+### 6.1. MSR-VTT 1K-A Sealed Test (3B 6GB Champion vs 7B Cloud Ref & Baselines)
 
 Số liệu ghi nhận trực tiếp từ [benchmark/msrvtt_1ka_benchmark_report.md](benchmark/msrvtt_1ka_benchmark_report.md), [benchmark/msrvtt_1ka_benchmark_results.json](benchmark/msrvtt_1ka_benchmark_results.json) và [v2_stage1_state.json](work/msrvtt_protocol_20261122/v2_run/v2_stage1_state.json) (`evaluated_at_utc = 2026-11-23T12:45:20Z`, `seed = 20261123`, `885` source groups trên `test_1ka`):
 
@@ -239,10 +239,10 @@ Chạy thực nghiệm có kiểm soát trên Kaggle Dual-T4 với `3.885` truy 
 
 | Chiến Lược (`Strategy`) | T3 Hit@1 | T3 MRR | T3 Peak Cosine | T2 Rep Score | T2 Cut Recall | T2 Blank Rate | T2 Redundancy | Vi Phạm Max-Gap | Composite Score | Đủ ĐK Mặc Định |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`hybrid_v2_adaptive` (Mặc định)** | 66.7% | 0.7932 | 0.1329 | 0.9266 | **100.0%** | 0.83% | **1.67%** | **0** | 0.62874 | **Có** |
+| **`hybrid_adaptive` (Mặc định)** | 66.7% | 0.7932 | 0.1329 | 0.9266 | **100.0%** | 0.83% | **1.67%** | **0** | 0.62874 | **Có** |
 | `sharpness_lookahead` | 66.7% | **0.7944** | **0.1334** | **0.9341** | **100.0%** | 0.83% | **1.53%** | **0** | **0.63053** | Có |
 | `shot_medoid_submodular` | 66.7% | 0.7913 | 0.1301 | 0.9129 | **100.0%** | 0.91% | **0.00%** | **0** | 0.62509 | Có |
-| `hybrid_v1_legacy` | 61.1% | 0.7648 | 0.1334 | 0.9280 | 100.0% | 0.98% | 39.28% | 0 | 0.61622 | Có |
+| `hybrid_legacy` | 61.1% | 0.7648 | 0.1334 | 0.9280 | 100.0% | 0.98% | 39.28% | 0 | 0.61622 | Có |
 | `uniform_matched` | 77.8% | 0.8372 | 0.1318 | 0.9289 | 32.4% | 0.18% | 35.12% | 0 | 0.58135 | Không |
 | `uniform_matched_budget` | 66.7% | 0.7927 | 0.1313 | 0.9313 | 44.0% | 0.02% | 33.17% | 0 | 0.57322 | Không |
 
@@ -279,19 +279,19 @@ pip install --no-build-isolation --no-deps -e .
 .\.venv\Scripts\python.exe -B -m videntra serve
 ```
 
-### Tái lập Benchmark V2.1 (Kaggle GPU + CPU Matrix)
+### Tái lập Benchmark (Kaggle GPU + CPU Matrix)
 ```powershell
 # Stage-1 & xuất candidate pool zero-GT
-.\.venv\Scripts\python.exe -B scripts/run_msrvtt_v2_matrix.py stage1-and-export
+.\.venv\Scripts\python.exe -B scripts/run_msrvtt_matrix.py stage1-and-export
 
 # Ablation tách query chunks với Qwen2.5-1.5B trên Kaggle
 .\.venv\Scripts\python.exe -B scripts/run_msrvtt_kaggle_pipeline.py llm-chunk-shard --target val_4000 --push
-.\.venv\Scripts\python.exe -B scripts/run_msrvtt_v2_matrix.py ablate-llm-chunks
+.\.venv\Scripts\python.exe -B scripts/run_msrvtt_matrix.py ablate-llm-chunks
 
 # Stage-2 Qwen2.5-VL-3B NF4 (mặc định 6GB VRAM) trên Tune -> Confirm -> Sealed Test
 .\.venv\Scripts\python.exe -B scripts/run_msrvtt_kaggle_pipeline.py vlm-rerank-shard --target-label val_tune_3b --model-variant 3b_nf4 --candidates-file work/msrvtt_protocol_20261122/v2_run/vlm_candidates_tune.jsonl --push
-.\.venv\Scripts\python.exe -B scripts/run_msrvtt_v2_matrix.py fuse-vlm-and-lock
-.\.venv\Scripts\python.exe -B scripts/run_msrvtt_v2_matrix.py eval-sealed-test --vlm-dir work/msrvtt_protocol_20261122/kaggle_out/vlm3b_test_1ka
+.\.venv\Scripts\python.exe -B scripts/run_msrvtt_matrix.py fuse-vlm-and-lock
+.\.venv\Scripts\python.exe -B scripts/run_msrvtt_matrix.py eval-sealed-test --vlm-dir work/msrvtt_protocol_20261122/kaggle_out/vlm3b_test_1ka
 ```
 
 ---

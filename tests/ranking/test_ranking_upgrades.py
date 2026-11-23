@@ -135,7 +135,7 @@ def test_load_gallery_feature_bank_supports_vl3_shards(tmp_path: Path) -> None:
 
 
 def test_margin_gated_vlm_blending_preserves_confident_queries() -> None:
-    from scripts.run_msrvtt_v2_matrix import _blend_stage1_and_vlm_preds
+    from scripts.run_msrvtt_matrix import _blend_stage1_and_vlm_preds
 
     base_preds = [
         {"query_id": "q_conf", "gallery": "g", "ranked_video_ids": ["v1", "v2", "v3", "v4"]},
@@ -158,7 +158,7 @@ def test_margin_gated_vlm_blending_preserves_confident_queries() -> None:
 
 
 def test_vlm_debiasing_and_margin_raw_fusion() -> None:
-    from scripts.run_msrvtt_v2_matrix import _blend_stage1_and_vlm_preds, _debias_vlm_scores
+    from scripts.run_msrvtt_matrix import _blend_stage1_and_vlm_preds, _debias_vlm_scores
 
     raw_vlm = {
         "q1": {"v1": 2.0, "v2": 1.0, "v3": 0.0},

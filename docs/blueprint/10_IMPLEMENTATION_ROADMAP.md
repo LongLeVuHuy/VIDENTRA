@@ -1,6 +1,6 @@
 # 10 — Roadmap triển khai
 
-**Cập nhật 05/11/2026: blueprint đã được duyệt; M0-CODE-01 hoàn tất.** Xem [tiến độ](../PROGRESS.md). CLI manifests/registry/fixtures và tests M0 đã tồn tại và chạy; các lệnh retrieval/benchmark ở milestone sau vẫn là future contracts.
+**Cập nhật trạng thái thực thi:** Xem tiến độ hiện hành tại [`../PROGRESS.md`](../PROGRESS.md), [`../../PROJECT.md`](../../PROJECT.md) và [`../../README.md`](../../README.md). Các cột mốc cốt lõi từ M0 đến M8 (ingestion PTS ledger, `hybrid_adaptive` sampling, multi-backbone Stage-1, `Qwen2.5-VL-3B` NF4 Stage-2, FastAPI/UI Inspector và benchmark MSR-VTT 3 phân vùng) đã được triển khai và kiểm thử bằng `pytest`; các chỉ tiêu mở rộng ở phần dưới đóng vai trò chuẩn kiểm định tiếp theo.
 
 Bản kế hoạch gốc: **Planning đã tạo repository, tài liệu và audit. Chưa triển khai engine.** Chỉ bắt đầu coding sau review blueprint theo yêu cầu người dùng. Các lệnh `python -m videntra...`, pytest và npm bên dưới là **CLI/test contracts cần tạo ở milestone tương ứng**, chưa tồn tại và chưa chạy. Planning QA dùng script riêng đã có.
 
@@ -33,7 +33,7 @@ Task đầu không cần ingest 10.000 giờ hoặc tải model mới. Backup c�
 - **Đầu vào:** tiny media fixtures, QVH dev subset, media manifests.
 - **Công việc:** O00–O02; sequential frame ledger; audio mapping; xử lý corrupt/duplicate/restart; hybrid sampler có max-gap, shot/burst và text probes.
 - **Đầu ra/module:** `ingestion/probe.py, decode.py, jobs.py`; `timeline/maps.py, ledger.py`; `sampling/hybrid.py, probes.py`; Parquet manifests.
-- **Lệnh kiểm tra:** `python -m videntra ingest --manifest manifests/dev_media.jsonl --resume`; `python -m videntra sampling compare --config configs/experiments/e02.yaml`; `pytest tests/timeline tests/sampling tests/ingestion`.
+- **Lệnh kiểm tra:** `python -m videntra dataset verify`; `python -m videntra doctor --strict`; `python -B scripts/benchmark_keyframe_strategies.py`; `pytest tests/timeline tests/sampling tests/ingestion`.
 - **Cases:** CFR/VFR/B-frames/repeated PTS/nonzero start/audio delay/source offset; seek so với sequential frame hash; max-gap trừ decode holes đã ghi; kill/restart không tạo duplicate.
 - **Metrics/tài nguyên:** E01/E02, decode fps, density, overhead và coverage; CPU/disk, chưa bắt buộc GPU.
 - **Go:** ledger khớp fixtures; không bỏ qua decode failure; đủ trạng thái completeness của 24 clip thật; kiểm tra sampler bằng human events. Thiếu quality data thì dùng policy bảo thủ và gắn provisional.
@@ -45,7 +45,7 @@ Task đầu không cần ingest 10.000 giờ hoặc tải model mới. Backup c�
 - **Đầu vào:** Base224 checkpoint đã archive, chỉ reuse sau hash/license check; dev queries có provenance.
 - **Công việc:** O03/O09 tối thiểu với Flat; normalization parity; stable vector registry; original-query search; provisional windows; tách predictions khỏi evaluator.
 - **Đầu ra/module:** `encoders/siglip2.py`, `indexing/faiss_store.py, ids.py`, `retrieval/visual.py`, `evaluation/metrics.py`; baseline tái lập trên 24 video.
-- **Lệnh kiểm tra:** `python -m videntra index build --config configs/baseline_flat.yaml`; `python -m videntra search --query-file manifests/dev_queries.jsonl --output experiments/m2/predictions.jsonl`; `python -m videntra evaluate --run experiments/m2 --protocol qvh_dev_known_positive`; `pytest tests/encoders tests/indexing tests/retrieval`.
+- **Lệnh kiểm tra:** `python -m videntra dataset list`; `python -B scripts/run_msrvtt_matrix.py stage1-and-export`; `python -B scripts/run_msrvtt_matrix.py eval-sealed-test`; `pytest tests/encoders tests/indexing tests/retrieval`.
 - **Cases:** cosine/Flat parity; rebuild giữ IDs; dtype/norm/NaN; query dài được giữ; runtime không nhận qrels.
 - **Metrics/tài nguyên:** E03, VideoHit/MomentHit/MRR đúng scope, FP16 loss, embedding throughput, peak VRAM; RTX 3060 với batch khởi đầu 16 và giảm thích nghi về 1.
 - **Go:** query trả video/moment/frame thật, phát lại được, truy vết được. Báo baseline đo được; không bịa quality target đạt sẵn.
@@ -57,7 +57,7 @@ Task đầu không cần ingest 10.000 giờ hoặc tải model mới. Backup c�
 - **Đầu vào:** high-resolution probes và audio độc lập; OCR/ASR dev có annotation cùng joint annotation subset.
 - **Công việc:** O04–O07; shared detector/crops; PP-OCRv5 general và VietOCR; PP-OCRv6/VieSVTR có gate; VAD, Whisper-small/PhoWhisper; routing, dedup và provenance.
 - **Đầu ra/module:** `ocr/detection.py, recognition.py, routing.py, tracking.py`; `asr/vad.py, transcription.py, alignment.py`; `evidence/normalize.py, store.py`.
-- **Lệnh kiểm tra:** `python -m videntra evidence build --manifest manifests/dev_media.jsonl --modalities ocr,asr`; `python -m videntra benchmark run --experiment E04`; `pytest tests/ocr tests/asr tests/evidence`.
+- **Lệnh kiểm tra:** `python -B scripts/build_e5_text_index.py`; `python -B scripts/evaluate_multimodal_ablations.py`; `pytest tests/ocr tests/asr tests/evidence`.
 - **Cases:** NFC/dấu Việt; singleton OCR là instant; cùng text ở hai thời điểm không gộp; VAD concatenation maps; no-speech khác missing; code-switch; confidence không phải probability.
 - **Metrics/tài nguyên:** CER/WER, detection/timing errors, fallback ratio, false negatives có confidence cao; GPU jobs tuần tự, thử specialist trên CPU khi phù hợp.
 - **Go:** hai candidate models được thử nhỏ có kiểm soát; chọn routing theo gain/cost; audio timeline đúng. Specialist không có lợi thì giữ interface và dùng primary-only.

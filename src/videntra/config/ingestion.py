@@ -53,11 +53,21 @@ class TimelineConfig:
 
 VALID_SAMPLING_STRATEGIES = (
     "uniform_matched",
-    "hybrid_v1_legacy",
+    "hybrid_legacy",
     "sharpness_lookahead",
     "shot_medoid_submodular",
-    "hybrid_v2_adaptive",
+    "hybrid_adaptive",
 )
+
+SAMPLING_STRATEGY_ALIASES: dict[str, str] = {
+    "hybrid_v2_adaptive": "hybrid_adaptive",
+    "hybrid_v1_legacy": "hybrid_legacy",
+}
+
+
+def normalize_sampling_strategy(strategy: str) -> str:
+    """Resolve legacy versioned strategy names to canonical strategy identifiers."""
+    return SAMPLING_STRATEGY_ALIASES.get(str(strategy), str(strategy))
 
 
 @dataclass(frozen=True)
@@ -76,11 +86,14 @@ class SamplingConfig:
     phash_min_distance: int = 4
     optical_flow_enabled: bool = False
     max_static_gap_seconds: float | None = None
-    strategy: str = "hybrid_v2_adaptive"
+    strategy: str = "hybrid_adaptive"
     lookahead_window_seconds: float = 0.15
     drift_threshold_c: float = 0.38
     min_cut_interval_seconds: float = 0.20
     min_luma_std: float = 8.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "strategy", normalize_sampling_strategy(self.strategy))
 
     def validate(self) -> None:
         if self.lowres_max_dim < 32:

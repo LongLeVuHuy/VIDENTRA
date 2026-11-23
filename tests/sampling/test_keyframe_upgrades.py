@@ -83,7 +83,7 @@ def test_config_roundtrip_and_strategy_validation():
 def test_use_after_free_pixel_clearing_regression():
     """Clearing frame.pixels immediately after process_frame() must NOT corrupt pre-burst pHash or sharpness."""
     cfg = SamplingConfig(
-        strategy="hybrid_v2_adaptive",
+        strategy="hybrid_adaptive",
         max_gap_seconds=5.0,
         burst_fps=4.0,
         burst_pre_seconds=0.5,
@@ -135,8 +135,10 @@ def test_lookahead_avoids_motion_blur_and_wins_sharpness():
         pix = cv2.GaussianBlur(base, (9, 9), 3.0) if abs(t - 2.0) <= 0.05 else base
         frames.append(_make_frame(i, t, pix))
 
-    cfg_v1 = SamplingConfig(strategy="hybrid_v1_legacy", max_gap_seconds=2.0)
-    cfg_v2 = SamplingConfig(strategy="hybrid_v2_adaptive", max_gap_seconds=2.0, lookahead_window_seconds=0.15)
+    cfg_v1 = SamplingConfig(strategy="hybrid_legacy", max_gap_seconds=2.0)
+    cfg_v2 = SamplingConfig(strategy="hybrid_adaptive", max_gap_seconds=2.0, lookahead_window_seconds=0.15)
+    assert SamplingConfig(strategy="hybrid_v2_adaptive").strategy == "hybrid_adaptive"
+    assert SamplingConfig(strategy="hybrid_v1_legacy").strategy == "hybrid_legacy"
     m1 = sample_frames_hybrid(frames, cfg_v1, "v_blur", "r1")
     m2 = sample_frames_hybrid(frames, cfg_v2, "v_blur", "r1")
 
@@ -159,14 +161,14 @@ def test_gradual_dissolve_flash_suppression_and_fade_tail():
         pix = np.clip((1.0 - alpha) * img_a + alpha * img_b, 0, 255).astype(np.uint8)
         dissolve_frames.append(_make_frame(i, i / 15.0, pix))
 
-    m_v1 = sample_frames_hybrid(dissolve_frames, SamplingConfig(strategy="hybrid_v1_legacy", max_gap_seconds=5.0), "dis", "r1")
+    m_v1 = sample_frames_hybrid(dissolve_frames, SamplingConfig(strategy="hybrid_legacy", max_gap_seconds=5.0), "dis", "r1")
     m_v2 = sample_frames_hybrid(
         dissolve_frames,
-        SamplingConfig(strategy="hybrid_v2_adaptive", max_gap_seconds=5.0, drift_threshold_c=0.35),
+        SamplingConfig(strategy="hybrid_adaptive", max_gap_seconds=5.0, drift_threshold_c=0.35),
         "dis",
         "r1",
     )
-    # v2 catches cumulative dissolve drift in the interior [10..40], while v1 sees only endpoints [0, 59]
+    # hybrid_adaptive catches cumulative dissolve drift in the interior [10..40], while hybrid_legacy sees only endpoints [0, 59]
     assert len(m_v1.samples) == 2
     assert any(12 <= s.original_decoded_frame_index <= 42 for s in m_v2.samples)
 
@@ -174,8 +176,8 @@ def test_gradual_dissolve_flash_suppression_and_fade_tail():
     steady = _textured(333, tint=(60, 180, 90))
     flash = np.full_like(steady, 255)
     flash_frames = [_make_frame(i, i / 15.0, flash if i == 20 else steady.copy()) for i in range(45)]
-    m_flash_v1 = sample_frames_hybrid(flash_frames, SamplingConfig(strategy="hybrid_v1_legacy"), "fl", "r1")
-    m_flash_v2 = sample_frames_hybrid(flash_frames, SamplingConfig(strategy="hybrid_v2_adaptive"), "fl", "r1")
+    m_flash_v1 = sample_frames_hybrid(flash_frames, SamplingConfig(strategy="hybrid_legacy"), "fl", "r1")
+    m_flash_v2 = sample_frames_hybrid(flash_frames, SamplingConfig(strategy="hybrid_adaptive"), "fl", "r1")
     assert len(m_flash_v2.shot_cut_ordinals) < len(m_flash_v1.shot_cut_ordinals)
 
     # 3. Pre-fade tail content preservation
@@ -183,7 +185,7 @@ def test_gradual_dissolve_flash_suppression_and_fade_tail():
         _make_frame(i, i * 0.2, np.zeros((64, 80, 3), dtype=np.uint8) if i >= 8 else _textured(444))
         for i in range(15)
     ]
-    m_fade = sample_frames_hybrid(fade_frames, SamplingConfig(strategy="hybrid_v2_adaptive", max_gap_seconds=2.0), "ft", "r1")
+    m_fade = sample_frames_hybrid(fade_frames, SamplingConfig(strategy="hybrid_adaptive", max_gap_seconds=2.0), "ft", "r1")
     by_ord = {s.original_decoded_frame_index: s.reasons for s in m_fade.samples}
     assert 14 in by_ord and "last" in by_ord[14]
     assert any("last_content" in r or o == 7 for o, r in by_ord.items())
@@ -343,4 +345,4 @@ def test_offline_processor_pts_preservation_cli_compare_and_api_ts(tmp_path: Pat
     assert rc == 0
     rep = json.loads((cmp_out / "comparison_report.json").read_text("utf-8"))
     assert len(rep["comparisons"]) == 1
-    assert "hybrid_v2_adaptive" in rep["aggregate_by_strategy"]
+    assert "hybrid_adaptive" in rep["aggregate_by_strategy"]

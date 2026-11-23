@@ -2,7 +2,7 @@
 
 **Blueprint v1.0 · 04/11/2026 · trạng thái: PROPOSED, chờ review thiết kế.** Đây là đặc tả, không phải hệ thống đã triển khai. Cấu hình mục tiêu do người dùng xác nhận: **RTX 3060 6 GB VRAM, RAM 32 GB**; CPU, SSD, TGP GPU và ngân sách lưu trữ chưa xác định. Mọi threshold và budget dưới đây là **giá trị khởi tạo cần kiểm chứng**, không phải kết quả benchmark.
 
-Quy ước bằng chứng: `VERIFIED_SOURCE` = đã đọc nguồn; `VERIFIED_LOCAL` = đã kiểm tra file/receipt; `PROPOSED` = lựa chọn thiết kế; `NOT_MEASURED` = chưa đo; `SYNTHETIC` = dữ liệu minh họa. Experiment IDs E01–E14 được định nghĩa ở [08](08_BENCHMARK_AND_LATENCY_PLAN.md); quyết định D01–D14 ở [11](11_RISKS_AND_DECISION_LOG.md). Pipeline này là nguồn chuẩn khi tài liệu khác có diễn giải ngắn hơn.
+Quy ước bằng chứng: `VERIFIED_SOURCE` = đã đọc nguồn; `VERIFIED_LOCAL` = đã kiểm tra file/receipt; `PROPOSED` = lựa chọn thiết kế; `NOT_MEASURED` = chưa đo; `SYNTHETIC` = dữ liệu minh họa. Xem thêm tổng quan cài đặt tại [`../../README.md`](../../README.md), [`../../PROJECT.md`](../../PROJECT.md) và [`../OFFLINE_STORAGE_SPEC.md`](../OFFLINE_STORAGE_SPEC.md). Pipeline này là nguồn chuẩn hợp đồng khi tài liệu khác có diễn giải ngắn hơn.
 
 ## 13.1. System overview
 
@@ -53,7 +53,7 @@ Mọi stage có `stage_version`, `input_hashes`, `config_hash`, `model_revision`
 
 - **Purpose/input:** tiếp nhận URI được phép, bytes, source ID, dataset split và quyền sử dụng.
 - **Algorithm/library:** SHA-256 streaming; ffprobe JSON streams/format; exact duplicate bằng bytes; near-duplicate pHash/audio fingerprint chỉ tạo cluster, không tự xóa.
-- **Output/format/storage:** `MediaAsset` JSONL + SQLite catalog; media immutable ngoài Git, `data/raw/<sha256>/original.ext` hoặc object URI; registry `manifests/media/`.
+- **Output/format/storage:** `MediaAsset` JSONL + SQLite catalog (`data/processed/catalog/corpus_metadata.db`); media immutable ngoài Git dưới `data/datasets/<dataset_id>/media/` hoặc object URI; dataset registry đồng bộ qua `videntra dataset`.
 - **Timestamp:** lưu container/stream start_time, time_base, edit metadata, source offset và basis; chưa gán time zero bằng nominal FPS.
 - **Error/recovery:** inaccessible→retry; rights unknown→quarantine; hash thay đổi→asset version mới; container parse lỗi→quarantine có reason.
 - **Cache/cost:** O(bytes) I/O; ffprobe cost đo E01. Không claim fingerprint phát hiện mọi duplicate.
@@ -1410,7 +1410,7 @@ Mục tiêu gốc vẫn là warm p50 ≤1 s, p95 ≤3 s cho concurrency 1. Fast 
 
 GPU scheduler trên3060: offline batch jobs độc quyền; competition session ưu tiên retrieval text tower, optional verifier chỉ nếu admission memory estimate+headroom đạt. Giới hạn5GiB là abort threshold phải calibrate trên driver/OS, không model theoretical size. Nếu detector/video verifier chậm, trả results chưa verify; không giữ promise full semantic proof trong2s. E10 đo peak allocated/reserved và NVML total, có CPU staging RAM.
 
-10k h ingestion dự báo bằng **measured** r_decode/r_embed/r_ocr/RTF; dùng sensitivity arithmetic [02](02_PROJECT_REQUIREMENTS.md). Không có số throughput/p95 mới được đo trong planning.
+10k h ingestion dự báo bằng **measured** r_decode/r_embed/r_ocr/RTF; dùng sensitivity arithmetic theo đặc tả tài nguyên (`AGENTS.md` / `README.md`). Không suy diễn số throughput/p95 chưa đo trực tiếp trên phần cứng đích.
 
 ## 13.18. Implementation contracts and acceptance tests
 

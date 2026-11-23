@@ -34,7 +34,6 @@ data/*
 !data/datasets/
 !data/processed/
 !data/cache/
-!data/quarantine/
 
 data/datasets.json
 data/datasets/*
@@ -57,9 +56,6 @@ data/cache/*
 data/cache/*/*
 !data/cache/*/.gitkeep
 
-data/quarantine/*
-!data/quarantine/.gitkeep
-
 # Model checkpoints & weights (keep folder structure via .gitkeep)
 models/*
 !models/.gitkeep
@@ -79,7 +75,7 @@ models/asr/*
 models/detection/*
 !models/detection/.gitkeep
 models/ranking/*
-!models/ranking/videntra_ltr_v1.json
+!models/ranking/videntra_ltr.json
 models/llm/*
 !models/llm/.gitkeep
 

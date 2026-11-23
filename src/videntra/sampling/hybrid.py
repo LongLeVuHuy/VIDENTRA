@@ -11,7 +11,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from videntra.config.ingestion import SamplingConfig, VALID_SAMPLING_STRATEGIES
+from videntra.config.ingestion import (
+    SamplingConfig,
+    VALID_SAMPLING_STRATEGIES,
+    normalize_sampling_strategy,
+)
 from videntra.ingestion.decode import DecodedFrame
 
 
@@ -274,10 +278,9 @@ class HybridAdaptiveSampler:
         self.cfg = config
         self.video_id = video_id
         self.timeline_revision = timeline_revision
-        self.strategy = config.strategy if config.strategy in VALID_SAMPLING_STRATEGIES else "hybrid_v2_adaptive"
-        self.sampler_revision = sampler_revision or (
-            "videntra_hybrid_v1" if self.strategy == "hybrid_v1_legacy" else f"videntra_{self.strategy}"
-        )
+        norm_strategy = normalize_sampling_strategy(config.strategy)
+        self.strategy = norm_strategy if norm_strategy in VALID_SAMPLING_STRATEGIES else "hybrid_adaptive"
+        self.sampler_revision = sampler_revision or f"videntra_{self.strategy}"
 
         self.last_selected_ts_sec: float | None = None
         self.last_selected_phash: int | None = None
@@ -304,7 +307,7 @@ class HybridAdaptiveSampler:
         self.shot_cut_ordinals: set[int] = set()
         self.current_epoch_id: str | None = None
 
-        # Causal lookahead buffer (used by sharpness_lookahead and hybrid_v2_adaptive)
+        # Causal lookahead buffer (used by sharpness_lookahead and hybrid_adaptive)
         self._la_entries: list[_FrameSignalEntry] = []
         self._la_reasons: set[str] = set()
         self._la_mandatory: bool = False
@@ -358,11 +361,11 @@ class HybridAdaptiveSampler:
         )
 
     def _update_soft_quota(self, now_sec: float) -> bool:
-        """Enforce rolling soft target <= soft_target_fps (duration-bounded for hybrid_v2_adaptive)."""
+        """Enforce rolling soft target <= soft_target_fps (duration-bounded for hybrid_adaptive)."""
         window_start = now_sec - self.cfg.soft_window_seconds
         while self.soft_sample_timestamps and self.soft_sample_timestamps[0] < window_start:
             self.soft_sample_timestamps.popleft()
-        if self.strategy == "hybrid_v2_adaptive":
+        if self.strategy == "hybrid_adaptive":
             eff_window = min(self.cfg.soft_window_seconds, max(2.0, now_sec + 1.0))
             max_allowed = math.ceil(self.cfg.soft_target_fps * eff_window)
         else:
@@ -447,11 +450,11 @@ class HybridAdaptiveSampler:
                 if self.last_selected_phash is not None
                 else 999
             )
-            if self.strategy != "hybrid_v1_legacy" and self.recent_phashes:
+            if self.strategy != "hybrid_legacy" and self.recent_phashes:
                 phash_dist = min(phash_dist, min(phash_hamming_distance(h, entry.phash_int) for h in self.recent_phashes))
             if phash_dist <= self.cfg.phash_min_distance:
                 return None
-            if self.strategy == "hybrid_v2_adaptive" and t_sec is not None:
+            if self.strategy == "hybrid_adaptive" and t_sec is not None:
                 min_soft_gap = min(0.45, 0.5 / max(0.5, self.cfg.soft_target_fps))
                 if (t_sec - self.last_soft_commit_ts) < min_soft_gap and "burst" not in reasons:
                     return None
@@ -473,7 +476,7 @@ class HybridAdaptiveSampler:
         return rec
 
     def _effective_lookahead_seconds(self) -> float:
-        if self.strategy not in ("sharpness_lookahead", "hybrid_v2_adaptive"):
+        if self.strategy not in ("sharpness_lookahead", "hybrid_adaptive"):
             return 0.0
         return min(self.cfg.lookahead_window_seconds, 0.45 * self.cfg.max_gap_seconds)
 
@@ -484,7 +487,7 @@ class HybridAdaptiveSampler:
     ) -> float:
         if self.strategy == "sharpness_lookahead":
             return cand.sharpness
-        # hybrid_v2_adaptive composite quality: sharp & clear & representative
+        # hybrid_adaptive composite quality: sharp & clear & representative
         sharp_log = math.log1p(max(0.0, cand.sharpness))
         clarity = min(1.0, max(0.4, cand.luma_std / 32.0))
         centrality = 1.0
@@ -505,7 +508,7 @@ class HybridAdaptiveSampler:
         pool = non_blank if non_blank else cands
 
         mean_hist: np.ndarray | None = None
-        if self.strategy == "hybrid_v2_adaptive" and len(pool) >= 3:
+        if self.strategy == "hybrid_adaptive" and len(pool) >= 3:
             hists = [c.grid_hist for c in pool if c.grid_hist is not None]
             if hists:
                 mean_hist = np.mean(hists, axis=0)
@@ -544,7 +547,7 @@ class HybridAdaptiveSampler:
                 if bf.timestamp_seconds is not None and bf.ordinal != curr_ordinal:
                     diff = abs(bf.timestamp_seconds - target_t)
                     if diff <= tolerance:
-                        if self.strategy == "hybrid_v1_legacy":
+                        if self.strategy == "hybrid_legacy":
                             take = diff < best_diff or (abs(diff - best_diff) < 1e-4 and bf.sharpness > best_sharp)
                         else:
                             take = (not bf.is_blank and bf.sharpness > best_sharp) or (
@@ -556,7 +559,7 @@ class HybridAdaptiveSampler:
                             best_f = bf
             if best_f is None or best_f.ordinal == curr_ordinal:
                 continue
-            if self.strategy != "hybrid_v1_legacy":
+            if self.strategy != "hybrid_legacy":
                 # Respect blank guard, pHash dedup, and soft quota for non-legacy pre-burst
                 if best_f.is_blank:
                     continue
@@ -706,7 +709,7 @@ class HybridAdaptiveSampler:
         raw_cut = (c_i > self.cfg.change_threshold_c) or (d_i > 0.35)
         if not raw_cut:
             return False
-        if self.strategy == "hybrid_v1_legacy" or self.prev_entry is None:
+        if self.strategy == "hybrid_legacy" or self.prev_entry is None:
             return True
 
         t_sec = entry.timestamp_seconds
@@ -916,7 +919,7 @@ class HybridAdaptiveSampler:
             if (
                 not is_cut
                 and not triggered
-                and self.strategy in ("sharpness_lookahead", "hybrid_v2_adaptive")
+                and self.strategy in ("sharpness_lookahead", "hybrid_adaptive")
                 and self.last_selected_hist is not None
                 and t_sec is not None
                 and self.last_selected_ts_sec is not None
@@ -930,7 +933,7 @@ class HybridAdaptiveSampler:
             if t_sec is not None:
                 should_burst = (
                     is_cut and (t_sec - self.last_burst_trigger_ts) >= max(0.5, self.cfg.burst_post_seconds)
-                    if self.strategy == "hybrid_v2_adaptive"
+                    if self.strategy == "hybrid_adaptive"
                     else (triggered or is_cut)
                 )
                 if should_burst:

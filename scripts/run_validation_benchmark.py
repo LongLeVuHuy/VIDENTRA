@@ -209,7 +209,7 @@ class MultimodalBenchmarkRunner:
         model_dir: Path = Path("models/siglip2"),
         device: str = "cpu",
         use_disk_cache: bool = False,
-        ltr_model_path: Path | str | None = Path("models/ranking/videntra_ltr_v1.json"),
+        ltr_model_path: Path | str | None = Path("models/ranking/videntra_ltr.json"),
         enable_spatial_patches: bool = True,
         enable_vlm_caption_lexical: bool = False,
         enable_vlm_caption_dense: bool = False,
@@ -1297,7 +1297,7 @@ def run_benchmark(
     max_msrvtt: int = 100,
     run_all_splits: bool = True,
     allow_insample_eval: bool = False,
-    ltr_model_path: Path | None = Path("models/ranking/videntra_ltr_v1.json"),
+    ltr_model_path: Path | None = Path("models/ranking/videntra_ltr.json"),
     splits: Sequence[str] | str | None = None,
     temporal_rerank_mode: str = "attention",
     temporal_rerank_lambda: float = 0.0,
@@ -2146,7 +2146,7 @@ if __name__ == "__main__":
     parser.add_argument("--single-split-only", action="store_true")
     parser.add_argument("--splits", type=str, default=None, help="Comma-separated splits to evaluate (e.g. dev_150,dev_full_859)")
     parser.add_argument("--allow-insample-eval", action="store_true")
-    parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr_v1.json"))
+    parser.add_argument("--ltr-model-path", type=Path, default=Path("models/ranking/videntra_ltr.json"))
     parser.add_argument("--no-ltr", action="store_true")
     parser.add_argument("--ltr-blend-weight", type=float, default=None)
     parser.add_argument("--a5-preset", choices=("a5_full", "a5_lite", "a5_no_consensus", "a5_no_ltr"), default=None)

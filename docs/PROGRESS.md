@@ -1,5 +1,21 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 23/11/2026 (c) — Chuẩn Hóa Đặt Tên Sạch, Tinh Gọn Repository & Sửa Lỗi MathJax trên GitHub
+
+- **Chuẩn Hóa Đặt Tên Sạch (Version-Free Canonical Naming):**
+  - Chốt tên chiến lược chuẩn `hybrid_adaptive` (mặc định) và `hybrid_legacy` trong [`src/videntra/config/ingestion.py`](../src/videntra/config/ingestion.py) (`VALID_SAMPLING_STRATEGIES`, `SAMPLING_STRATEGY_ALIASES`, `normalize_sampling_strategy`) và [`src/videntra/config/__init__.py`](../src/videntra/config/__init__.py); cập nhật [`src/videntra/sampling/hybrid.py`](../src/videntra/sampling/hybrid.py), [`src/videntra/sampling/compare.py`](../src/videntra/sampling/compare.py), [`src/videntra/ingestion/jobs.py`](../src/videntra/ingestion/jobs.py) cùng kiểm thử alias tại [`tests/sampling/test_keyframe_upgrades.py`](../tests/sampling/test_keyframe_upgrades.py).
+  - Đổi tên mặc định trọng số LTR thành [`models/ranking/videntra_ltr.json`](../models/ranking/videntra_ltr.json) (`DEFAULT_LTR_MODEL_PATH` trong [`src/videntra/config/device.py`](../src/videntra/config/device.py) kèm fallback `videntra_ltr_v1.json`, và [`src/videntra/ranking/learned_ranker.py`](../src/videntra/ranking/learned_ranker.py)).
+  - Đổi tên các tệp vận hành/kiểm thử: `rebuild_corpus_hybrid_v2.py` → [`scripts/rebuild_corpus_hybrid_adaptive.py`](../scripts/rebuild_corpus_hybrid_adaptive.py), `run_msrvtt_v2_matrix.py` → [`scripts/run_msrvtt_matrix.py`](../scripts/run_msrvtt_matrix.py), `test_videntra_v2_upgrades.py` → [`tests/ranking/test_ranking_upgrades.py`](../tests/ranking/test_ranking_upgrades.py), cập nhật toàn bộ callers và quy tắc trong [`AGENTS.md`](../AGENTS.md).
+- **Tinh Gọn Tài Nguyên Lỗi Thời (`data/`, `work/`, `scripts/`, `tests/`, `docs/`):**
+  - Xóa `data/quarantine/`, các thư mục thí nghiệm/sandbox cũ dưới `work/` (giữ lại `work/.gitkeep`, `work/msrvtt_protocol_20261122/`, `work/experiments/keyframe_strategy_benchmark/`), 14 script legacy (Blender/QVH/SFT LoRA), 11 module test legacy (+ `test_qvh_freeze_excludes_sibling_clips` trong [`tests/evaluation/test_split_lock.py`](../tests/evaluation/test_split_lock.py)), `docs/audit/`, `docs/implementation/`, và 9 tài liệu blueprint cũ (`00`..`04`, `07`..`09`, `11`); cập nhật [`.gitignore`](../.gitignore).
+  - Nâng cấp [`docs/OFFLINE_STORAGE_SPEC.md`](OFFLINE_STORAGE_SPEC.md) khớp schema SQLite WAL + FTS5 trong [`src/videntra/storage/database.py`](../src/videntra/storage/database.py) & phân vùng tự mô tả `data/{datasets,processed,cache}/`, đồng thời nâng cấp [`docs/blueprint/README.md`](blueprint/README.md), [`05_VIDENTRA_DETAILED_PIPELINE.md`](blueprint/05_VIDENTRA_DETAILED_PIPELINE.md), [`10_IMPLEMENTATION_ROADMAP.md`](blueprint/10_IMPLEMENTATION_ROADMAP.md) và [`12_NEW_REPOSITORY_STRUCTURE.md`](blueprint/12_NEW_REPOSITORY_STRUCTURE.md).
+- **Sửa Toàn Bộ Công Thức MathJax GitHub & Tài Liệu:**
+  - Thay toàn bộ `\operatorname{...}` không được GitHub MathJax hỗ trợ trong [`README.md`](../README.md) bằng `\mathrm{...}` (`\mathrm{norm}_2`, `\mathrm{logaddexp}`, `\mathrm{softmax}`, `\mathrm{logsumexp}`), chuẩn hóa `\mathrm{Top}_{20}`, `Top-K`, `\{\mathrm{Yes}, \mathrm{yes}\}` / `\{\mathrm{No}, \mathrm{no}\}` và đồng bộ tên chuẩn trong [`README.md`](../README.md) và [`PROJECT.md`](../PROJECT.md).
+- **Kiểm Chứng Toàn Diện:**
+  - `.\.venv\Scripts\python.exe -B -m videntra doctor --strict`: `ready_for_serving = true`, `missing_required = []`.
+  - `.\.venv\Scripts\python.exe -B -m videntra dataset verify`: `ok = true` trên cả 3 tập (`msrvtt` 1,000 + `msrvtt_val_confirm` 2,000 + `msrvtt_val_tune` 2,000 videos, `0` thiếu media/keyframes).
+  - `.\.venv\Scripts\python.exe -B -m pytest -q`: `630 passed` (0 failed, 0 skipped).
+
 ## 23/11/2026 (b) — VIDENTRA v2.1 Tối Ưu RTX 3060 6GB VRAM (`Qwen2.5-VL-3B` NF4 Đạt `57.20%` Hit@1), CUDA Auto-LLM Ablation & Chuẩn Hóa Kho Mã Nguồn
 
 - **Kiến Trúc RTX 3060 6GB VRAM & Chuyển VLM Vào `src/` ([`src/videntra/ranking/vlm_reranker.py`](../src/videntra/ranking/vlm_reranker.py), [`src/videntra/retrieval/unified_pipeline.py`](../src/videntra/retrieval/unified_pipeline.py), [`src/videntra/query/llm.py`](../src/videntra/query/llm.py)):**

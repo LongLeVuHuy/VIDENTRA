@@ -269,7 +269,7 @@ def test_group_kfold_cv_no_leakage_and_training(tmp_path: Path):
         assert "eval_query_ids" in fw and len(fw["eval_query_ids"]) > 0
         assert len(fw["weights"]) == 24
 
-    out_model = tmp_path / "videntra_ltr_v1.json"
+    out_model = tmp_path / "videntra_ltr.json"
     save_ltr_model_json(artifact, out_model)
 
     ranker = LearnedRankerLTR(model_path=out_model)

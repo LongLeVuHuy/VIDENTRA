@@ -3,7 +3,7 @@
 Supports:
   pilot-vp   Run 16-clip + 8-query VideoPrism pilot & inventory all 9,585 MSR-VTT videos on Kaggle.
   vp-shard   Run VideoPrism-LvT-B whole + multi-window + query encoding for a split shard.
-  mm-shard   Run unified PyAV decode -> hybrid_v2_adaptive keyframes, SigLIP2, YOLOv8n + SORT/ByteTrack, RapidOCR.
+  mm-shard   Run unified PyAV decode -> hybrid_adaptive keyframes, SigLIP2, YOLOv8n + SORT/ByteTrack, RapidOCR.
   asr-shard  Run Faster-Whisper small + Silero VAD ASR extraction (in-memory PyAV audio, dual-GPU).
   cap-shard  Run Florence-2-base multi-frame offline captioning + multilingual-e5-small encoding (dual-GPU).
   vl2-shard  Run pinned PE-Core-L-14-336 + SigLIP2-SO400M-384 12-frame & query extraction (dual-GPU).
@@ -968,7 +968,7 @@ def _sample_single_video(vid):
         ord_idx = int(s.original_decoded_frame_index)
         rgb = pixels_cache[ord_idx]
         ts_ms = int(round(s.timestamp_us / 1000.0)) if s.timestamp_us is not None else 0
-        reasons = list(s.reasons) if s.reasons else ["hybrid_v2_adaptive"]
+        reasons = list(s.reasons) if s.reasons else ["hybrid_adaptive"]
         kf_items.append({
             "video_id": vid, "keyframe_id": f"{vid}__kf_{k_idx:05d}", "keyframe_index": k_idx,
             "source_frame_index": ord_idx, "timestamp_ms": ts_ms, "pts_sec": round(float(s.timestamp_seconds), 6),

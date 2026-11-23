@@ -21,7 +21,7 @@ from videntra.ranking.features import (
     extract_ltr_features_batch_32d,
 )
 
-DEFAULT_LTR_MODEL_PATH = Path("models/ranking/videntra_ltr_v1.json")
+DEFAULT_LTR_MODEL_PATH = Path("models/ranking/videntra_ltr.json")
 _SUPPORTED_FEATURE_DIMS = frozenset({18, 22, 24, 32})
 
 # Sensible prior weights aligned with Plan §4.2 when trained artifact is absent.

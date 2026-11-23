@@ -151,7 +151,7 @@ def test_evaluate_query_set_switches_oof_fold_weights_and_collects_degraded():
 
 
 def test_run_benchmark_writes_provenance_and_fails_on_insample_overlap(tmp_path, monkeypatch):
-    ltr_path = tmp_path / "videntra_ltr_v1.json"
+    ltr_path = tmp_path / "videntra_ltr.json"
     ltr_sha = _write_ltr_artifact(
         ltr_path,
         {
@@ -486,7 +486,7 @@ def test_missing_or_corrupt_ltr_fails_early(tmp_path):
 
 
 def test_splits_excludes_heldout_and_records_feature_flags_in_config_and_provenance(tmp_path, monkeypatch):
-    ltr_path = tmp_path / "videntra_ltr_v1.json"
+    ltr_path = tmp_path / "videntra_ltr.json"
     _write_ltr_artifact(
         ltr_path,
         {

@@ -1,24 +1,21 @@
-# VIDENTRA blueprint — mục lục
+# VIDENTRA Architecture & Specification Index
 
-Ngày04/11/2026 · v1.0 PROPOSED · phần cứng đích RTX3060 6GB +32GB RAM.
+Thư mục `docs/blueprint/` lưu trữ các đặc tả kiến trúc, hợp đồng dữ liệu và chuẩn tổ chức mã nguồn cốt lõi của **VIDENTRA**.
 
-Đọc [quyết định](00_EXECUTIVE_DECISION.md) rồi [pipeline đầy đủ](05_VIDENTRA_DETAILED_PIPELINE.md), [schemas/timestamps](06_DATA_SCHEMAS_AND_TIMESTAMPS.md) và [roadmap](10_IMPLEMENTATION_ROADMAP.md). Không triển khai engine trước design review. Không có throughput/p95 hoặc retrieval accuracy mới được đo.
+## Tài liệu Kiến trúc Đang Áp Dụng
 
-| Tài liệu | Nội dung |
-|---|---|
-| [00_EXECUTIVE_DECISION.md](00_EXECUTIVE_DECISION.md) | kiến trúc B tạm chọn, A baseline, C conditional |
-| [01_OLD_PROJECT_RETIREMENT.md](01_OLD_PROJECT_RETIREMENT.md) | inventory, verified backup, migration/deletion gate |
-| [02_PROJECT_REQUIREMENTS.md](02_PROJECT_REQUIREMENTS.md) | requirements, hardware và phép tính10k h |
-| [03_RESEARCH_AND_MODEL_REVIEW.md](03_RESEARCH_AND_MODEL_REVIEW.md) | primary sources, releases, licenses, runnable limitations |
-| [04_ARCHITECTURE_COMPARISON.md](04_ARCHITECTURE_COMPARISON.md) | A/B/C và strategies candidate generation |
-| [05_VIDENTRA_DETAILED_PIPELINE.md](05_VIDENTRA_DETAILED_PIPELINE.md) |18 subsections, stages/algorithms/contracts/examples |
-| [06_DATA_SCHEMAS_AND_TIMESTAMPS.md](06_DATA_SCHEMAS_AND_TIMESTAMPS.md) | exact IDs/PTS/frame/source maps/evidence schemas |
-| [07_GROUND_TRUTH_AND_DATASETS.md](07_GROUND_TRUTH_AND_DATASETS.md) | dataset stack, human review, exposure/anti-leakage |
-| [08_BENCHMARK_AND_LATENCY_PLAN.md](08_BENCHMARK_AND_LATENCY_PLAN.md) | E01–E14, metrics, ablations, resource profiling |
-| [09_COMPETITION_UI_SPEC.md](09_COMPETITION_UI_SPEC.md) | wireframes, TopK, playback/frame-step/API/export |
-| [10_IMPLEMENTATION_ROADMAP.md](10_IMPLEMENTATION_ROADMAP.md) | M0–M9 executable milestone contracts |
-| [11_RISKS_AND_DECISION_LOG.md](11_RISKS_AND_DECISION_LOG.md) | D01–D14, risks, assumptions và validation |
-| [12_NEW_REPOSITORY_STRUCTURE.md](12_NEW_REPOSITORY_STRUCTURE.md) | actual planning vs planned code structure/policies |
+| Tài liệu | Nội dung chính |
+| :--- | :--- |
+| [`05_VIDENTRA_DETAILED_PIPELINE.md`](05_VIDENTRA_DETAILED_PIPELINE.md) | Đặc tả chi tiết luồng Offline Ingestion (`O01–O08`) & Online Retrieval/Evidence Alignment, hợp đồng lỗi và ngân sách tính toán 6GB VRAM |
+| [`06_DATA_SCHEMAS_AND_TIMESTAMPS.md`](06_DATA_SCHEMAS_AND_TIMESTAMPS.md) | Hợp đồng schema JSON/SQLite, chuẩn hóa văn bản NFC, thời gian VFR (`0-based presentation-order`, `PTS × time_base`) và job consistency |
+| [`10_IMPLEMENTATION_ROADMAP.md`](10_IMPLEMENTATION_ROADMAP.md) | Lộ trình triển khai các cột mốc M0–M9, ngưỡng kiểm định chất lượng (Go/No-Go) và kịch bản test cô lập nhãn |
+| [`12_NEW_REPOSITORY_STRUCTURE.md`](12_NEW_REPOSITORY_STRUCTURE.md) | Cấu trúc thư mục chuẩn hiện hành của repository (`src/videntra/`, `scripts/`, `tests/`, `data/`, `validation/`, `test_queries/`), quy tắc đặt tên sạch và chính sách môi trường |
 
-[Repository README](../../README.md) · [Query schema](../schemas/query_graph.schema.json) · [Local backup receipt](../audit/backup_verification.json) · [Supplemental restore](../audit/restore_supplement.json).
+## Tài liệu Liên Quan Khác
 
+- [`../../README.md`](../../README.md) — Tổng quan tính mới, workflow Mermaid Offline/Online, công thức toán học, kết quả benchmark `MSR-VTT 1K-A` & keyframe và hướng dẫn CLI.
+- [`../../PROJECT.md`](../../PROJECT.md) — Danh mục chi tiết các module Python (`src/videntra/`), công cụ vận hành (`scripts/`) và lịch sử hoàn thiện từng giai đoạn.
+- [`../../AGENTS.md`](../../AGENTS.md) — Quy tắc bắt buộc của dự án (Zero Leakage 3 phân vùng, timeline bất biến, tổ chức thư mục tự mô tả, đặt tên sạch).
+- [`../OFFLINE_STORAGE_SPEC.md`](../OFFLINE_STORAGE_SPEC.md) — Đặc tả phân vùng lưu trữ dữ liệu & schema SQLite WAL / FTS5 thực tế.
+- [`../PROGRESS.md`](../PROGRESS.md) — Nhật ký tiến độ triển khai và các mốc đo kiểm thực nghiệm.
+- [`../schemas/`](../schemas/) — Bộ JSON Schema chuẩn (`dataset`, `media_asset`, `frame_record`, `query_graph`, `result`) và fixtures kiểm thử.

@@ -1,188 +1,61 @@
-# VIDENTRA — Offline Storage & Data Architecture Specification
+# Đặc Tả Lưu Trữ Ngoại Tuyến (Offline Storage & Schema Specification)
 
-Tài liệu này mô tả kiến trúc lưu trữ, cấu trúc các bảng dữ liệu trong SQLite `metadata.db`, chỉ mục vector FAISS `faiss_index.bin` và cách liên kết dữ liệu đa phương thức trong quá trình xử lý ngoại tuyến (Offline Processing).
+Tài liệu này mô tả kiến trúc lưu trữ thực tế, phân tách thư mục tự mô tả (`self-documenting`) và cấu trúc các bảng SQLite WAL + FTS5 được triển khai tại [`src/videntra/storage/database.py`](../src/videntra/storage/database.py) và [`src/videntra/config/paths.py`](../src/videntra/config/paths.py).
 
----
+## 1. Phân Tách Lưu Trữ Vật Lý (`data/`)
 
-## 1. Sơ đồ Kiến trúc Lưu trữ Tổng thể
+### 1.1. Kho Dataset Tự Chứa Theo Phân Vùng (`data/datasets/<dataset_id>/`)
+Mỗi bộ dữ liệu được quản lý độc lập qua CLI `videntra dataset` ([`src/videntra/registry/datasets.py`](../src/videntra/registry/datasets.py)) và đồng bộ với `data/datasets.json`:
+- `data/datasets/msrvtt/` — tập niêm phong `MSR-VTT 1K-A` (`1,000` videos, chỉ dùng đánh giá cuối cùng)
+- `data/datasets/msrvtt_val_tune/` — tập `Valid-Tune` (`2,000` videos, chỉ dùng tune siêu tham số)
+- `data/datasets/msrvtt_val_confirm/` — tập `Valid-Confirm` (`2,000` videos, kiểm chứng độc lập & khóa Champion)
 
-Hệ thống lưu trữ phân tầng theo 3 thành phần chính:
+Mỗi thư mục `data/datasets/<dataset_id>/` chứa đầy đủ phân vùng khép kín:
+- `media/` — video `.mp4` gốc bất biến (hoặc symlink/pointer hợp lệ ngoài Git)
+- `keyframes/<video_id>/` — keyframes trích xuất bằng chiến lược mặc định **`hybrid_adaptive`** (`63-AC pHash` + Composite Sharpness Lookahead, JPEG theo 0-based presentation order)
+- `catalog/corpus_metadata.db` — SQLite catalog riêng của dataset (khi chạy khép kín)
+- `embeddings/` — vector embeddings theo từng backbone (`SigLIP2`, `VideoPrism`, `PE-Core-bigG`, `DFN5B-CLIP-H`, `PE-Core-L`, `SigLIP2-SO400M`, `E5`)
+- `evidence/` — trích xuất đa phương thức ngoại tuyến (`OCR`, `ASR`, `YOLO`, `Florence-2`)
+- `provenance/` & `snapshots/` — manifest kiểm toán và snapshot đồng bộ
 
-```mermaid
-erDiagram
-    Videos ||--o{ Keyframes : "has"
-    Videos ||--o{ ASRSegments : "has audio"
-    Videos ||--o{ ASREvidenceGroups : "groups"
-    Keyframes ||--|| KeyframeMap : "1-to-1 FAISS mapping"
-    Keyframes ||--o{ FrameObjects : "detected"
-    Keyframes ||--o{ FrameObjectRuns : "logged"
-    Keyframes ||--o{ OCRObservations : "observed"
-    Keyframes ||--o{ OCREvidenceGroups : "grouped"
-    OCREvidenceGroups ||--|{ OCREvidenceMembers : "contains"
-    OCRObservations ||--|{ OCREvidenceMembers : "participates"
-    ASREvidenceGroups ||--|{ ASREvidenceMembers : "contains"
-    ASRSegments ||--|{ ASREvidenceMembers : "participates"
-    ASRSegments ||--o{ ASRWords : "aligned"
-```
+### 1.2. Kho Chỉ Mục Đã Xử Lý (`data/processed/`) & Cache (`data/cache/`)
+Quản lý tập trung qua `VIDENTRA_*` env vars và [`src/videntra/config/paths.py`](../src/videntra/config/paths.py) (kèm fallback tương thích ngược):
+- `data/processed/catalog/corpus_metadata.db` — SQLite Metadata & Evidence Store (WAL + FTS5)
+- `data/processed/visual_keyframes/`
+  - `siglip2_keyframes_768d.faiss` — FAISS index 768d (Metric: Inner Product / Cosine)
+  - `siglip2_yolo_augmented_864d.npy` — ma trận 864d gắn đặc trưng vật thể `YOLOv8n` + NMS (`IoU > 0.65`)
+- `data/processed/visual_clips/`
+  - `videoprism_whole_clips_768d.faiss` — vector toàn clip `VideoPrism-LvT-B`
+  - `videoprism_subclips_768d.npy` & manifest — vector các cửa sổ sub-clip chuyển động
+- `data/processed/text_evidence/`
+  - `e5_ocr_asr_384d.faiss` & manifest — FAISS dense index cho văn bản `OCR`/`ASR` đa ngôn ngữ (`multilingual-e5-small`)
+- `data/cache/`
+  - `query_embeddings/` — cache vector truy vấn theo từng backbone
+  - `query_plans/` — cache kế hoạch phân rã câu hỏi (`QueryGraph`)
+  - `calibration/` — thống kê chuẩn hóa hubness (`siglip2_keyframe_hubness_radii.npy`, Query-Bank `train_9k_clean` priors)
 
-### Đường dẫn lưu trữ trên đĩa:
-* **Dữ liệu thô ban đầu:** `data/raw/`
-  * Video gốc: `data/raw/<dataset>/media/*.mp4`
-  * Ground Truth & Annotations: `data/raw/<dataset>/GROUNDTRUTH/`
-  * Keyframes trích xuất: `data/raw/keyframes/<video_id>/<frame_index>.jpg`
-  * Thumbnails: `data/raw/thumbnails/<video_id>/<frame_index>.jpg`
-* **Dữ liệu đã xử lý phục vụ tìm kiếm:** `data/processed/`
-  * SQLite Metadata & Bằng chứng: `data/processed/metadata.db`
-  * FAISS Vector Index (SigLIP 2): `data/processed/faiss_index.bin`
-  * File xuất kết quả nộp bài: `data/processed/submission/`
-* **Mô hình AI lưu trên máy local:** `models/`
-  * Visual Embedding: `models/siglip2/`
-  * Object Detection: `models/detection/yolov8n.pt`
-  * OCR Models: `models/ocr/paddleocr_en/`, `models/ocr/vietocr/`
-  * ASR Models: `models/asr/phowhisper_small/`
+*Lưu ý Zero Leakage:* Nhãn truy vấn đánh giá nằm tách biệt trong `validation/msrvtt/{valid_tuning,valid_confirm}/` và `test_queries/msrvtt/test_1ka_benchmark/`; runtime qua `MediaResolver` bị cấm đọc Ground Truth.
 
 ---
 
-## 2. Chi tiết Cấu trúc các Bảng trong `metadata.db`
+## 2. Cấu Trúc Các Bảng Trong `corpus_metadata.db` (SQLite WAL)
 
-### 2.1. Quản lý Video & Keyframes
+Tất cả truy cập đều bật `PRAGMA foreign_keys = ON;`, `PRAGMA journal_mode = WAL;` và đóng kết nối sau từng thao tác (`OfflineMetadataStore` trong [`src/videntra/storage/database.py`](../src/videntra/storage/database.py)):
 
-#### Bảng `Videos`
-Lưu thông tin metadata kỹ thuật của video gốc:
-* `video_id` (TEXT, PK): Mã định danh duy nhất của video (ví dụ: tên file không đuôi).
-* `dataset` (TEXT): Tên bộ dữ liệu (`msrvtt`, `avc`, `qvhighlights`, `textvr`, `tvr`).
-* `file_path` (TEXT): Đường dẫn tuyệt đối tới file video MP4.
-* `duration_ms` (INTEGER): Thời lượng video (mili-giây).
-* `fps` (REAL): Tốc độ khung hình thực tế.
-* `time_base_num`, `time_base_den` (INTEGER): Phân số rational time base (ví dụ `1/1000` hoặc `1/90000`).
-* `width`, `height` (INTEGER): Độ phân giải không gian.
-* `total_frames` (INTEGER): Tổng số frame decoded theo presentation-order.
-* `has_audio` (INTEGER): `1` nếu có audio stream, `0` nếu không có.
-* `status` (TEXT): Trạng thái xử lý (`pending`, `ingested`, `completed`, `error`).
-
-#### Bảng `Keyframes`
-Lưu kết quả trích xuất khung hình từ thuật toán **Hybrid Dynamic Sampling**:
-* `keyframe_id` (TEXT, PK): Định danh dạng `{video_id}__kf_{index:05d}`.
-* `video_id` (TEXT, FK -> Videos): Video sở hữu keyframe.
-* `keyframe_index` (INTEGER): Thứ tự keyframe được chọn trong video (0, 1, 2...).
-* `source_frame_index` (INTEGER): Chỉ số frame gốc (0-based presentation order).
-* `pts` (INTEGER): Presentation Timestamp nguyên bản.
-* `time_base` (TEXT): Chuỗi rational time base.
-* `timestamp_ms` (INTEGER): Thời điểm trình chiếu thực tế tính chính xác theo PTS.
-* `keyframe_path` (TEXT): Đường dẫn file ảnh keyframe JPG.
-* `thumbnail_path` (TEXT): Đường dẫn ảnh thu nhỏ.
-* `faiss_id` (INTEGER, UNIQUE): Ánh xạ 1-1 với chỉ số dòng trong FAISS index.
-* `phash` (TEXT): Chuỗi mã băm nhận thức perceptual hash 64-bit chống trùng lặp.
-* `sampling_reason` (TEXT): Lý do lấy mẫu (`adaptive_luma`, `max_gap`, `shot_cut`, `burst`).
+1. **`Videos`** — Metadata video bất biến & chuẩn thời gian (`video_id` PK, `dataset`, `file_path`, `duration_ms`, `fps`, `time_base_num`, `time_base_den`, `width`, `height`, `total_frames`, `has_audio`, `status`, `created_at`, `updated_at`).
+2. **`Keyframes`** — Các frame đã trích xuất (`keyframe_id` PK, `video_id` FK, `keyframe_index`, `source_frame_index` 0-based presentation order, `pts`, `time_base`, `timestamp_ms`, `keyframe_path`, `thumbnail_path`, `faiss_id` UNIQUE, `phash`, `sampling_reason`, `created_at`).
+3. **`KeyframeMap`** — Bảng ánh xạ nhanh phục vụ truy xuất & xuất chuẩn AIC (`faiss_id` PK, `keyframe_id` UNIQUE FK, `video_id` FK, `pts_time`, `source_frame_index`, `keyframe_path`).
+4. **`ModelVersions`** & **`IndexManifest`** — Sổ đăng ký phiên bản mô hình (`model_id`, `model_name`, `version`, `modality`, `weights_hash`) và manifest FAISS (`vector_dim`, `metric`, `total_vectors`, `index_file_path`, `checksum`, `is_active`).
+5. **`ProcessingJobs`** — Trạng thái job ngoại tuyến theo từng stage (`job_id` PK, `video_id`, `stage`, `status`, `progress_pct`, `error_message`, `worker`, `started_at`, `completed_at`).
+6. **`FrameObjects`** & **`FrameObjectRuns`** — Kết quả detection `YOLOv8n` gắn tọa độ không gian (`detection_id`, `video_id`, `keyframe_id`, `timestamp_ms`, `class_id`, `class_name`, `bbox_x1..y2`, `confidence`, `image_width`, `image_height`) cùng log chứng minh detector đã chạy (`FrameObjectRuns`) để guard phát hiện thiếu vật thể.
+7. **Nhánh OCR (`OCRObservations`, `OCREvidenceGroups`, `OCREvidenceMembers`)** — Lưu nguyên bản quan sát đa mô hình (`raw_text`, `normalized_text`, `bbox_x1..y2`, `confidence`, `language`) và nhóm hợp nhất theo track không-thời gian (`status`: `agreed | partial | disputed | single_model`, `track_id`, `estimated_start_ms`, `estimated_end_ms`).
+8. **Nhánh ASR (`ASRSegments`, `ASRWords`, `ASREvidenceGroups`, `ASREvidenceMembers`)** — Lưu transcript thoại theo đoạn & từ (`start_ms`, `end_ms`, `raw_text`, `normalized_text`, `confidence`, `speaker_id`) và nhóm hợp nhất kèm độ chồng lấn thời gian.
+9. **Tìm kiếm Toàn văn FTS5 (`fts_ocr`, `fts_asr`)** — Bảng ảo SQLite FTS5 (`tokenize='unicode61'`) lập chỉ mục đồng thời `normalized_text` (có dấu) và `unaccented_text` (bỏ dấu), gắn `UNINDEXED` `video_id`, `group_id`, `keyframe_id`/`segment_id`, mốc thời gian `ms`.
 
 ---
 
-### 2.2. Ánh xạ Chỉ mục Vector FAISS (SigLIP 2)
+## 3. Chiến Lược Đảm Bảo Toàn Vẹn Dữ Liệu
 
-#### Bảng `KeyframeMap`
-Quy cách chuẩn tương thích AIC dùng để giải mã kết quả tìm kiếm vector của FAISS:
-* `faiss_id` (INTEGER, PK): Chỉ số dòng của vector trong `faiss_index.bin` ($0, 1, \dots, N-1$).
-* `keyframe_id` (TEXT, UNIQUE): Liên kết sang bảng `Keyframes`.
-* `video_id` (TEXT): Mã video để hiển thị kết quả.
-* `pts_time` (REAL): Thời gian trình chiếu (giây dạng số thực `pts * time_base`).
-* `source_frame_index` (INTEGER): Chỉ số frame gốc.
-* `keyframe_path` (TEXT): Đường dẫn ảnh thumbnail/keyframe.
-
-#### Bảng `IndexManifest`
-Quản lý phiên bản và tính toàn vẹn của file FAISS index:
-* `manifest_id` (TEXT, PK): Định danh phiên bản index.
-* `index_type` (TEXT): Cấu hình index (mặc định `IndexFlatIP`).
-* `vector_dim` (INTEGER): Chiều của vector (768 với SigLIP 2 ViT Base).
-* `metric` (TEXT): Phép đo tương đồng (`inner_product` / `cosine`).
-* `total_vectors` (INTEGER): Tổng số vector được index.
-* `model_id`, `model_version`, `weights_hash` (TEXT): Định danh model và mã băm trọng số.
-* `index_file_path` (TEXT): Đường dẫn file `.bin`.
-* `is_active` (INTEGER): `1` nếu là index đang phục vụ tìm kiếm hiện tại.
-
----
-
-### 2.3. Nhận dạng Vật thể Offline (YOLO / DETR)
-
-#### Bảng `FrameObjects`
-* `detection_id` (TEXT, PK): Định danh bounding box phát hiện.
-* `video_id`, `keyframe_id` (TEXT, FK): Liên kết video và keyframe.
-* `timestamp_ms` (INTEGER): Thời điểm frame xuất hiện.
-* `class_id` (INTEGER), `class_name` (TEXT): Nhãn vật thể (ví dụ: `car`, `person`, `traffic light`).
-* `bbox_x1`, `bbox_y1`, `bbox_x2`, `bbox_y2` (REAL): Tọa độ hộp chuẩn hóa $[0.0, 1.0]$.
-* `confidence` (REAL): Điểm tin cậy của detector ($0.0 - 1.0$).
-* `image_width`, `image_height` (INTEGER): Kích thước gốc của frame.
-* `model_id`, `model_version` (TEXT): Tên và phiên bản mô hình (ví dụ: `yolov8n`).
-
-#### Bảng `FrameObjectRuns`
-Ghi nhận nhật ký chạy detector trên keyframe (kể cả khi frame đó không có bất kỳ vật thể nào):
-* `keyframe_id` (TEXT, PK), `video_id` (TEXT).
-* `object_count` (INTEGER): Số lượng đối tượng tìm thấy.
-* `model_id` (TEXT), `processed_at` (TEXT).
-
----
-
-### 2.4. Bằng chứng Chữ cảnh (OCR) — Hai Model Độc Lập
-
-#### Bảng `OCRObservations`
-Lưu kết quả **nguyên bản** từ từng model (`PP-OCRv5` và `VietOCR`), tuyệt đối không ghi đè:
-* `observation_id` (TEXT, PK): Định danh quan sát OCR.
-* `video_id`, `keyframe_id` (TEXT, FK).
-* `timestamp_ms` (INTEGER): Thời điểm xuất hiện chữ.
-* `model_id` (TEXT): Model nhận dạng (`PP-OCRv5`, `VietOCR`).
-* `raw_text` (TEXT): Chuỗi văn bản thô model xuất ra.
-* `normalized_text` (TEXT): Chuỗi văn bản đã chuẩn hóa Unicode NFC.
-* `bbox_x1`, `bbox_y1`, `bbox_x2`, `bbox_y2` (REAL): Vị trí hộp chữ.
-* `confidence` (REAL): Độ tin cậy ($0.0 - 1.0$).
-* `language` (TEXT): Mã ngôn ngữ (`vi`, `en`).
-
-#### Bảng `OCREvidenceGroups` & `OCREvidenceMembers`
-Gộp bằng chứng từ 2 model tại cùng một vùng không gian (IoU $\ge 0.35$):
-* `group_id` (TEXT, PK): Định danh nhóm bằng chứng.
-* `consensus_text` (TEXT): Văn bản đồng thuận tốt nhất.
-* `status` (TEXT): Trạng thái đối chiếu:
-  * `agreed`: Cả 2 model đều đọc được và có độ tương đồng văn bản $\ge 85\%$.
-  * `partial`: 2 model đọc được nhưng có sự khác biệt một phần ($40\% - 85\%$).
-  * `disputed`: Cùng vị trí nhưng 2 model đưa ra nội dung khác nhau ($< 40\%$).
-  * `single_model`: Chỉ một trong hai model phát hiện được vùng chữ này.
-* `models_involved` (TEXT): Danh sách model tham gia (ví dụ: `PP-OCRv5,VietOCR`).
-* Bảng liên kết `OCREvidenceMembers(group_id, observation_id, model_id)` lưu vết từng quan sát gốc.
-
----
-
-### 2.5. Bằng chứng Giọng nói (ASR) — Hai Model Độc Lập
-
-#### Bảng `ASRSegments`
-Lưu transcript **nguyên bản** từ từng model (`Faster-Whisper` và `PhoWhisper`):
-* `segment_id` (TEXT, PK).
-* `video_id` (TEXT, FK).
-* `model_id` (TEXT): Tên model (`Faster-Whisper`, `PhoWhisper`).
-* `start_ms`, `end_ms` (INTEGER): Đoạn thời gian lời thoại xuất hiện (mili-giây).
-* `raw_text`, `normalized_text` (TEXT): Nội dung lời thoại (Unicode NFC).
-* `confidence` (REAL), `speaker_id` (TEXT, có thể NULL nếu chưa diarization).
-
-#### Bảng `ASREvidenceGroups` & `ASREvidenceMembers`
-Gộp các đoạn lời thoại chồng lấn thời gian (Temporal Overlap $\ge 30\%$):
-* `group_id` (TEXT, PK).
-* `start_ms`, `end_ms` (INTEGER): Khung thời gian hợp nhất.
-* `consensus_text` (TEXT): Lời thoại đồng thuận.
-* `status` (TEXT): Trạng thái đối chiếu (`agreed`, `partial`, `disputed`, `single_model`).
-* `temporal_overlap_ratio` (REAL), `text_similarity` (REAL).
-
----
-
-### 2.6. Tìm kiếm Văn bản Toàn văn Siêu Tốc (SQLite FTS5)
-
-Hệ thống tích hợp 2 bảng ảo SQLite FTS5 tự động đồng bộ:
-1. `fts_ocr`: Lập chỉ mục `normalized_text` (có dấu) và `unaccented_text` (không dấu). Khi người dùng gõ *"Bệnh viện"* hay *"Benh vien"*, FTS5 đều trả về chính xác trong $< 1$ mili-giây và ánh xạ ngược về `group_id` $\rightarrow$ `keyframe_id` $\rightarrow$ `video_id`.
-2. `fts_asr`: Lập chỉ mục lời thoại `normalized_text` và `unaccented_text` phục vụ tìm kiếm thoại tiếng Việt và tiếng Anh.
-
----
-
-## 3. Kiểm Tra Tính Toàn Vẹn Dữ Liệu (Integrity Verification)
-
-Hàm `verify_offline_storage_integrity(db_path, faiss_path)` tự động kiểm tra 5 tiêu chí:
-1. **Đồng bộ FAISS và SQLite:** Số vector `ntotal` trong `faiss_index.bin` bắt buộc phải bằng chính xác số dòng trong `KeyframeMap` và số keyframe có `faiss_id IS NOT NULL`.
-2. **Khóa ngoại hợp lệ (No Orphaned Records):** Mọi keyframe, object detection, OCR observation và ASR segment đều phải trỏ về video hợp lệ trong bảng `Videos`.
-3. **Tính đơn điệu thời gian (Monotonic Timeline):** PTS của các keyframes trong cùng 1 video phải tăng dần liên tục theo `keyframe_index`.
-4. **Tính toàn vẹn của Evidence Groups:** Mọi thành viên trong `OCREvidenceMembers` và `ASREvidenceMembers` phải liên kết đúng với observation/segment gốc.
-5. **Khả năng truy vấn của FTS5:** Đảm bảo các bảng ảo `fts_ocr` và `fts_asr` không bị lỗi index và trả về kết quả chuẩn xác.
+1. **Đồng bộ FAISS ↔ SQLite:** Số vector trong `siglip2_keyframes_768d.faiss` luôn đối chiếu chặt với khóa `faiss_id` trong `Keyframes` và `KeyframeMap`; sai lệch cấu trúc bị chặn sớm qua `videntra doctor --strict` và `videntra dataset verify`.
+2. **Không Suy Diễn Sai Thời Gian VFR:** Timestamp luôn tính từ `pts * time_base` của stream decoded theo presentation order; `source_frame_index` là duy nhất 0-based.
+3. **Tính Bất Biến & Tái Lập:** Dữ liệu mới bổ sung hoặc tái trích xuất sử dụng ID quyết định dựa trên `compute_recipe_hash(recipe_spec)` (`make_deterministic_record_id`), chạy trong transaction `BEGIN IMMEDIATE` có rollback tự động khi lỗi.

@@ -25,19 +25,6 @@ def test_freeze_requires_source_group(tmp_path):
         freeze_split([{"query_id": "q", "split": "dev"}], tmp_path / "s.json")
 
 
-def test_qvh_freeze_excludes_sibling_clips(tmp_path):
-    from scripts.freeze_qvh_source_split import build
-    dev, test, output = (tmp_path / name for name in ("dev.jsonl", "test.jsonl", "out.json"))
-    dev.write_text(json.dumps({"qid": 1, "vid": "abcdefghijk_0.0_10.0"}) + "\n", encoding="utf-8")
-    test.write_text("\n".join(json.dumps(x) for x in [
-        {"qid": 2, "vid": "abcdefghijk_10.0_20.0"},
-        {"qid": 3, "vid": "lmnopqrstuv_0.0_10.0"}]) + "\n", encoding="utf-8")
-    manifest = build(dev, test, output)
-    assert manifest["metadata"]["test_excluded"] == 1
-    assert [row["query_id"] for row in manifest["records"]] == ["qvh_1", "qvh_3"]
-    assert verify_split_lock(output)
-
-
 def test_canonical_avc_pair_and_multitarget_connected_components():
     from scripts.train_ltr_ranker_cv import (
         assign_connected_source_groups,

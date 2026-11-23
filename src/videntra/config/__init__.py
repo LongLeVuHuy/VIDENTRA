@@ -16,7 +16,9 @@ from .ingestion import (
     TimelineConfig,
     SamplingConfig,
     JobPolicyConfig,
+    SAMPLING_STRATEGY_ALIASES,
     VALID_SAMPLING_STRATEGIES,
+    normalize_sampling_strategy,
 )
 from .paths import (
     CACHE_MIGRATION_MAP,
@@ -79,7 +81,9 @@ __all__ = [
     "TimelineConfig",
     "SamplingConfig",
     "JobPolicyConfig",
+    "SAMPLING_STRATEGY_ALIASES",
     "VALID_SAMPLING_STRATEGIES",
+    "normalize_sampling_strategy",
     "CACHE_MIGRATION_MAP",
     "CACHE_SUBDIRS",
     "DEFAULT_AUGMENTED_EMBEDDINGS_PATH",

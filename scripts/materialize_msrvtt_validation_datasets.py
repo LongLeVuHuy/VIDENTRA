@@ -286,7 +286,7 @@ def _process_single_video_keyframes(
                     "keyframe_path": rel_kf_path,
                     "faiss_id": int(r["faiss_id"]),
                     "phash": phash_hex,
-                    "sampling_reason": str(r.get("sampling_reason") or "hybrid_v2_adaptive"),
+                    "sampling_reason": str(r.get("sampling_reason") or "hybrid_adaptive"),
                 })
 
         if seen_ords != need_ords:

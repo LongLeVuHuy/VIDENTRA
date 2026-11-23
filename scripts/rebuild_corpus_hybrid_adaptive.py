@@ -1,4 +1,4 @@
-"""Rebuild full 1,324-video VIDENTRA corpus under tuned hybrid_v2_adaptive keyframes.
+"""Rebuild full 1,324-video VIDENTRA corpus under tuned hybrid_adaptive keyframes.
 
 Subcommands:
     sample-local   Sample all videos locally via PyAV + HybridAdaptiveSampler and write atomic JPEGs.
@@ -207,8 +207,8 @@ def _sample_single_video(args: tuple[str, str, int, str, str]) -> tuple[dict[str
     probe, avg_rate, stream_total_frames = _probe_via_pyav(mp4_path)
     duration_s = float(probe.duration_seconds or (db_duration_ms / 1000.0) or 0.0)
     cfg = SamplingConfig.for_duration(duration_s)
-    if cfg.strategy != "hybrid_v2_adaptive":
-        raise RuntimeError(f"Expected hybrid_v2_adaptive config, got {cfg.strategy}")
+    if cfg.strategy != "hybrid_adaptive":
+        raise RuntimeError(f"Expected hybrid_adaptive config, got {cfg.strategy}")
 
     decode_cfg = DecodeConfig(thread_count=2)
     sampler = HybridAdaptiveSampler(config=cfg, video_id=video_id, timeline_revision="rev_0")
@@ -291,7 +291,7 @@ def _sample_single_video(args: tuple[str, str, int, str, str]) -> tuple[dict[str
             "pts_time": round(float(s.timestamp_seconds), 6),
             "keyframe_path": rel_posix,
             "phash": s.phash,
-            "sampling_reason": ",".join(s.reasons) if s.reasons else "hybrid_v2_adaptive",
+            "sampling_reason": ",".join(s.reasons) if s.reasons else "hybrid_adaptive",
         })
 
     pixels_cache.clear()
@@ -322,7 +322,7 @@ def run_sample_local(
     workers: int = 4,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Sample all corpus videos locally under tuned hybrid_v2_adaptive and stage manifests."""
+    """Sample all corpus videos locally under tuned hybrid_adaptive and stage manifests."""
     t0 = time.time()
     conn = sqlite3.connect(str(db_path))
     db_rows = conn.execute(
@@ -399,7 +399,7 @@ def run_sample_local(
         for grp, cnts in sorted(counts_by_group.items())
     }
     summary = {
-        "strategy": "hybrid_v2_adaptive",
+        "strategy": "hybrid_adaptive",
         "video_count": len(videos_meta),
         "keyframe_count": len(all_keyframes),
         "reused_jpegs": total_reused,
@@ -661,7 +661,7 @@ files_meta = {
 }
 receipt = {
     "status": "SUCCESS",
-    "strategy": "hybrid_v2_adaptive",
+    "strategy": "hybrid_adaptive",
     "video_count": len(vid_list),
     "keyframe_count": total_kfs,
     "object_count": len(objects_out),
@@ -865,7 +865,7 @@ def _create_backup(
         resolve_artifact_path(db_path, "text_evidence/e5_ocr_asr_384d.faiss", "faiss_text_e5_384.bin"),
         resolve_artifact_path(db_path, "text_evidence/e5_ocr_asr_manifest.json", "e5_text_manifest.json"),
         hubness_path,
-        Path("models/ranking/videntra_ltr_v1.json"),
+        Path("models/ranking/videntra_ltr.json"),
     ]
     for src in candidates:
         if src.is_file():
@@ -1228,10 +1228,10 @@ def run_ingest_kaggle(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Rebuild corpus under tuned hybrid_v2_adaptive keyframes.")
+    parser = argparse.ArgumentParser(description="Rebuild corpus under tuned hybrid_adaptive keyframes.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_loc = sub.add_parser("sample-local", help="Sample local mp4 corpus via hybrid_v2_adaptive.")
+    p_loc = sub.add_parser("sample-local", help="Sample local mp4 corpus via hybrid_adaptive.")
     p_loc.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     p_loc.add_argument("--raw-dir", type=Path, default=DEFAULT_RAW_DIR)
     p_loc.add_argument("--keyframes-dir", type=Path, default=DEFAULT_KEYFRAMES_DIR)

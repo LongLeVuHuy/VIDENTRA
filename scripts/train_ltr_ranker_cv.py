@@ -5,7 +5,7 @@ installed and requested) on ``dev_full_859`` grouped strictly by
 ``source_video_id`` to prevent video-level leakage. Never touches
 ``heldout_test_201`` or ``test_queries/``.
 
-Saves the compact JSON artifact to ``models/ranking/videntra_ltr_v1.json``.
+Saves the compact JSON artifact to ``models/ranking/videntra_ltr.json``.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from videntra.ranking.learned_ranker import LearnedRankerLTR
 
 DEFAULT_DATASET_PATH = Path("work/ltr_dev859_features.jsonl")
 DEFAULT_VAL_DIR = Path("validation")
-DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr_v1.json")
+DEFAULT_OUTPUT_PATH = Path("models/ranking/videntra_ltr.json")
 
 _FORBIDDEN_PATH_TOKENS = ("heldout_test_201", "heldout", "test_queries")
 

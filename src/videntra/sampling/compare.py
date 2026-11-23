@@ -315,7 +315,7 @@ def compare_sampling_strategies(
             precomputed=precomputed,
         )
         results.append(metrics)
-        if strat == "hybrid_v2_adaptive":
+        if strat == "hybrid_adaptive":
             adaptive_budget = metrics.selected_count
 
     if include_uniform_matched_budget and adaptive_budget is not None and adaptive_budget > 0:

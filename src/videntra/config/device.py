@@ -162,7 +162,12 @@ def collect_environment_report(
     resolved_db = resolve_env_db_path(db_path)
     resolved_faiss = resolve_env_faiss_path(faiss_path)
     resolved_model_dir = Path(model_dir if model_dir is not None else os.environ.get("VIDENTRA_MODEL_DIR", "models/siglip2"))
-    resolved_ltr = Path(ltr_model_path if ltr_model_path is not None else "models/ranking/videntra_ltr_v1.json")
+    if ltr_model_path is not None:
+        resolved_ltr = Path(ltr_model_path)
+    else:
+        canonical_ltr = Path("models/ranking/videntra_ltr.json")
+        legacy_ltr = Path("models/ranking/videntra_ltr_v1.json")
+        resolved_ltr = canonical_ltr if canonical_ltr.is_file() or not legacy_ltr.is_file() else legacy_ltr
     resolved_roots = Path(asset_roots_path if asset_roots_path is not None else "configs/local/asset_roots.json")
     processed_dir = resolve_processed_root(resolved_db)
     data_root = processed_dir.parent if processed_dir.name == "processed" else Path("data")

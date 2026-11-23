@@ -336,7 +336,7 @@ def run_tier2_real_corpus(
             row["dataset"] = ds
             row["video_id"] = v_path.stem
             records_by_strat[strat].append(row)
-            if strat == "hybrid_v2_adaptive":
+            if strat == "hybrid_adaptive":
                 adaptive_budget = q_met.selected_count
 
         if adaptive_budget and adaptive_budget > 0:
@@ -538,7 +538,7 @@ def run_tier3_siglip2_validation(
             pairs = [(s.original_decoded_frame_index, float(s.timestamp_seconds or 0.0)) for s in man.samples]
             selections[strat][vid] = pairs
             u_set.update(o for o, _ in pairs)
-            if strat == "hybrid_v2_adaptive":
+            if strat == "hybrid_adaptive":
                 adaptive_budget = len(pairs)
 
         u_ords = generate_uniform_baseline(frames, budget_count=max(1, adaptive_budget or 1))
