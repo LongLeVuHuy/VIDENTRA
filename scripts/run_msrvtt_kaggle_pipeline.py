@@ -215,13 +215,27 @@ def _collect_target_payload(
         sub = _select_stratified_train_sub(all_train, max_videos=1600)
         vids.extend(r["video_id"] for r in sub)
         for r in sub:
-            for cap in r["captions"][:2]:
+            for cap in r["captions"][:3]:
                 base_queries.append(str(cap["caption"]))
-        # Also include 1 caption per remaining train video as Train-9K Query Bank for QB-CSLS/DSN
+        # Also include 2 captions per remaining train video as Train-9K Query Bank (~10.7K clean queries)
         sub_vids = {r["video_id"] for r in sub}
         for r in all_train:
             if r["video_id"] not in sub_vids and r["captions"]:
-                base_queries.append(str(r["captions"][0]["caption"]))
+                for cap in r["captions"][:2]:
+                    base_queries.append(str(cap["caption"]))
+        expand_variants = False
+    elif target == "train_9k_qbank_20k":
+        all_train = _read_jsonl(m_dir / "train_9k_clean" / "train_videos.jsonl")
+        vids.extend(r["video_id"] for r in all_train)
+        for r in all_train:
+            for cap in (r.get("captions") or [])[:5]:
+                base_queries.append(str(cap["caption"]))
+        expand_variants = False
+    elif target == "train_9k_qbank_queries_only":
+        all_train = _read_jsonl(m_dir / "train_9k_clean" / "train_videos.jsonl")
+        for r in all_train:
+            for cap in (r.get("captions") or [])[:5]:
+                base_queries.append(str(cap["caption"]))
         expand_variants = False
     elif target == "train_qbank_plus_1ka_videos":
         all_train = _read_jsonl(m_dir / "train_9k_clean" / "train_videos.jsonl")
@@ -2046,6 +2060,593 @@ print("VL2 SHARD DONE:", shard_name, receipt["elapsed_seconds"], "s", flush=True
 '''
 
 
+_VL3_SHARD_TEMPLATE = r'''
+import base64
+from concurrent.futures import ThreadPoolExecutor
+import gc
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from importlib import metadata as importlib_metadata
+import zipfile
+
+import numpy as np
+
+WORK = Path("/kaggle/working")
+TEMP = Path("/tmp/videntra_vl3_shard")
+TEMP.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(io.BytesIO(base64.b64decode(SOURCE))) as archive:
+    archive.extractall(TEMP)
+
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+constraints = []
+for pkg in ("numpy", "torch", "torchvision", "transformers", "scipy", "pillow"):
+    try:
+        constraints.append(f"{pkg}=={importlib_metadata.version(pkg)}")
+    except importlib_metadata.PackageNotFoundError:
+        pass
+(TEMP / "constraints.txt").write_text("\n".join(constraints) + "\n", encoding="utf-8")
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q", "-c", str(TEMP / "constraints.txt"),
+     "av==16.0.1", "timm>=1.0.19", "open-clip-torch>=3.1.0", "ftfy", "regex"],
+    check=True,
+)
+sys.path.insert(0, str(TEMP))
+sys.path.insert(0, str(TEMP / "src"))
+
+import av
+from huggingface_hub import snapshot_download
+import open_clip
+from PIL import Image
+import torch
+
+from scripts.prepare_clip_vp_kaggle_bundle import select_bin_center_frames
+from videntra.evaluation.provenance import sha256_file
+from videntra.ingestion.decode import decode_frames
+from videntra.ingestion.probe import probe_media
+''' + _SHARED_QUERY_EXPANDER_CODE + r'''
+PE_BIGG_MODEL_ID = "timm/PE-Core-bigG-14-448"
+PE_BIGG_REVISION = "17aa0c25addfa14198fa2ff73d845a22d433432e"
+PE_BIGG_WEIGHTS_FILE = "open_clip_model.safetensors"
+PE_BIGG_WEIGHTS_SHA256 = "d46f61f93c4c8533d2550ed929effe9ec5b096ec48f78f42a17a050f43093a6a"
+PE_BIGG_LICENSE = "apache-2.0"
+PE_BIGG_DIM = 1280
+
+DFN_MODEL_ID = "apple/DFN5B-CLIP-ViT-H-14-378"
+DFN_REVISION = "01b771ed0d1395ca5ffdd279897d665ebe00dfd2"
+DFN_WEIGHTS_FILE = "open_clip_pytorch_model.bin"
+DFN_WEIGHTS_SHA256 = "c07a17b547d461c60a3cce5062b26bf8545b13de602c4c59d8490361eb716033"
+DFN_LICENSE = "apple-amlr"
+DFN_DIM = 1024
+
+NUM_VL3_FRAMES = 12
+
+t_start = time.time()
+with gzip.open(TEMP / "job_payload.json.gz", "rt", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+shard_name = payload["shard_name"]
+video_ids = [str(v) for v in payload["video_ids"]]
+query_rows_in = expand_and_dedup_queries(payload["base_queries"], payload.get("expand_variants", True))
+
+n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
+dtype = torch.float16 if n_gpus > 0 else torch.float32
+
+mp4_by_vid = {}
+if video_ids:
+    def _prio(p: Path) -> int:
+        s = p.as_posix().lower()
+        if "msrvtt-1ka" in s:
+            return 0
+        if "khoahunhtngng" in s or "testvideo" in s:
+            return 1
+        return 2
+    cands = {}
+    for p in sorted(Path("/kaggle/input").rglob("*.mp4")):
+        cands.setdefault(p.stem, []).append(p)
+    mp4_by_vid = {k: sorted(v, key=_prio)[0] for k, v in cands.items()}
+    missing = [v for v in video_ids if v not in mp4_by_vid]
+    assert not missing, f"Missing videos in {shard_name}: {missing[:10]}"
+
+# Precompute bin-center frame ordinals once per video
+video_recipes = {}
+def _compute_recipe(vid):
+    mpath = mp4_by_vid[vid]
+    records, valid_ts = [], []
+    for f in decode_frames(mpath, include_pixels=False):
+        ts = f.timestamp_seconds
+        records.append((f.ordinal, ts))
+        if ts is not None:
+            valid_ts.append(ts)
+    if not valid_ts:
+        raise ValueError(f"No valid PTS for {vid}")
+    rec = select_bin_center_frames(records, min(valid_ts), max(valid_ts) + 1e-3, num_frames=NUM_VL3_FRAMES)
+    if rec["status"] != "ok":
+        raise ValueError(f"Recipe failed {vid}: {rec}")
+    pr = probe_media(mpath)
+    return vid, rec, pr.selected_video_stream_index
+
+if video_ids:
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for vid, rec, sidx in pool.map(_compute_recipe, video_ids):
+            video_recipes[vid] = (rec, sidx)
+    print(f"[{shard_name}] recipes computed for {len(video_ids)} videos in {time.time()-t_start:.1f}s", flush=True)
+
+def _decode_video_with_recipe(vid):
+    rec, sidx = video_recipes[vid]
+    needed = {int(o) for o in rec["selected_ordinals"]}
+    mpath = mp4_by_vid[vid]
+    dec_imgs = {}
+    with av.open(str(mpath)) as container:
+        stream = next(s for s in container.streams if s.index == sidx)
+        cur_ord, max_ord = 0, max(needed)
+        try:
+            for frame in container.decode(stream):
+                if cur_ord in needed:
+                    dec_imgs[cur_ord] = Image.fromarray(frame.to_ndarray(format="rgb24"), mode="RGB")
+                if cur_ord >= max_ord:
+                    break
+                cur_ord += 1
+        except Exception:
+            if not needed.issubset(dec_imgs.keys()):
+                raise
+    return vid, [dec_imgs[int(o)] for o in rec["selected_ordinals"]]
+
+def _l2_norm_t(x):
+    xf = x.float()
+    return xf / xf.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-12)
+
+def _run_openclip_pass(*, tag, model_id, revision, weights_file, weights_sha256, fallback_arch, dim, ctx_default, img_bs):
+    p_t0 = time.time()
+    local_dir = TEMP / f"mdl_{tag}"
+    snapshot_download(
+        repo_id=model_id,
+        revision=revision,
+        allow_patterns=["open_clip_config.json", weights_file, "*.json", "*.txt"],
+        local_dir=str(local_dir),
+    )
+    assert sha256_file(local_dir / weights_file) == weights_sha256, f"SHA-256 mismatch for {model_id}/{weights_file}"
+
+    models, preprocs, tok = [], [], None
+    for dev in devices:
+        try:
+            mdl, _, pre = open_clip.create_model_and_transforms(f"local-dir:{local_dir}")
+            tk = open_clip.get_tokenizer(f"local-dir:{local_dir}")
+        except Exception:
+            mdl, _, pre = open_clip.create_model_and_transforms(fallback_arch, pretrained=str(local_dir / weights_file))
+            tk = open_clip.get_tokenizer(fallback_arch)
+        mdl = mdl.eval()
+        if n_gpus > 0:
+            mdl = mdl.half()
+        mdl = mdl.to(dev)
+        models.append(mdl)
+        preprocs.append(pre)
+        if tok is None:
+            tok = tk
+        gc.collect()
+
+    ctx_len = int(getattr(models[0], "context_length", ctx_default))
+    # Quick smoke check before full run
+    with torch.inference_mode():
+        try:
+            _tt = tok(["a person walking"], context_length=ctx_len).to(devices[0])
+        except TypeError:
+            _tt = tok(["a person walking"]).to(devices[0])
+        _ = models[0].encode_text(_tt)
+        if video_ids:
+            _im_sz = getattr(preprocs[0].transforms[0], "size", 384)
+            if isinstance(_im_sz, (tuple, list)):
+                _im_sz = int(_im_sz[0])
+            _dummy_im = Image.new("RGB", (int(_im_sz), int(_im_sz)))
+            _ti = preprocs[0](_dummy_im).unsqueeze(0).to(device=devices[0], dtype=dtype)
+            _ = models[0].encode_image(_ti)
+    print(f"[{shard_name}:{tag}] loaded on {devices} (ctx={ctx_len}) in {time.time()-p_t0:.1f}s", flush=True)
+
+    vid_vecs = np.zeros((len(video_ids), dim), dtype=np.float32)
+    frm_vecs = np.zeros((len(video_ids), NUM_VL3_FRAMES, dim), dtype=np.float16)
+
+    def _encode_chunk(imgs, dev_i):
+        dev = devices[dev_i]
+        mdl = models[dev_i]
+        pre = preprocs[dev_i]
+        out = np.zeros((len(imgs), dim), dtype=np.float16)
+        for bs_i in range(0, len(imgs), img_bs):
+            sub = imgs[bs_i : bs_i + img_bs]
+            ten = torch.stack([pre(im) for im in sub]).to(device=dev, dtype=dtype)
+            with torch.inference_mode():
+                if n_gpus > 0:
+                    with torch.amp.autocast("cuda", dtype=torch.float16):
+                        feat = mdl.encode_image(ten)
+                else:
+                    feat = mdl.encode_image(ten)
+                out[bs_i : bs_i + len(sub)] = _l2_norm_t(feat).cpu().numpy().astype(np.float16)
+        return out
+
+    CHUNK_V = 24
+    for c_st in range(0, len(video_ids), CHUNK_V):
+        c_vids = video_ids[c_st : c_st + CHUNK_V]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            decoded = list(pool.map(_decode_video_with_recipe, c_vids))
+        flat_imgs = [im for _, imgs in decoded for im in imgs]
+        if len(devices) >= 2 and len(flat_imgs) >= 2:
+            mid = len(flat_imgs) // 2
+            with ThreadPoolExecutor(max_workers=2) as gpool:
+                f0 = gpool.submit(_encode_chunk, flat_imgs[:mid], 0)
+                f1 = gpool.submit(_encode_chunk, flat_imgs[mid:], 1)
+                chunk_emb = np.vstack([f0.result(), f1.result()])
+        else:
+            chunk_emb = _encode_chunk(flat_imgs, 0)
+        for loc_i in range(len(c_vids)):
+            v_i = c_st + loc_i
+            pf = chunk_emb[loc_i * NUM_VL3_FRAMES : (loc_i + 1) * NUM_VL3_FRAMES]
+            frm_vecs[v_i] = pf
+            pm = pf.astype(np.float32).mean(axis=0)
+            vid_vecs[v_i] = (pm / max(1e-12, float(np.linalg.norm(pm)))).astype(np.float32)
+        done_v = c_st + len(c_vids)
+        if (c_st // CHUNK_V) % 10 == 0 or done_v == len(video_ids):
+            print(f"[{shard_name}:{tag}] {done_v}/{len(video_ids)} videos in {time.time()-p_t0:.1f}s", flush=True)
+
+    q_vecs = np.zeros((len(query_rows_in), dim), dtype=np.float32)
+    Q_BS = 128
+    for st in range(0, len(query_rows_in), Q_BS):
+        texts = [q["query_text"] for q in query_rows_in[st : st + Q_BS]]
+        try:
+            q_tok = tok(texts, context_length=ctx_len).to(devices[0])
+        except TypeError:
+            q_tok = tok(texts).to(devices[0])
+        with torch.inference_mode():
+            if n_gpus > 0:
+                with torch.amp.autocast("cuda", dtype=torch.float16):
+                    qf = models[0].encode_text(q_tok)
+            else:
+                qf = models[0].encode_text(q_tok)
+            q_vecs[st : st + len(texts)] = _l2_norm_t(qf).cpu().numpy().astype(np.float32)
+
+    assert np.isfinite(vid_vecs).all() and np.isfinite(frm_vecs).all() and np.isfinite(q_vecs).all()
+    del models, preprocs, tok
+    gc.collect()
+    if n_gpus > 0:
+        torch.cuda.empty_cache()
+    return vid_vecs, frm_vecs, q_vecs
+
+pe_bg_v, pe_bg_f, pe_bg_q = _run_openclip_pass(
+    tag="pe_bigg",
+    model_id=PE_BIGG_MODEL_ID,
+    revision=PE_BIGG_REVISION,
+    weights_file=PE_BIGG_WEIGHTS_FILE,
+    weights_sha256=PE_BIGG_WEIGHTS_SHA256,
+    fallback_arch="PE-Core-bigG-14-448",
+    dim=PE_BIGG_DIM,
+    ctx_default=72,
+    img_bs=16,
+)
+dfn_v, dfn_f, dfn_q = _run_openclip_pass(
+    tag="dfn5b",
+    model_id=DFN_MODEL_ID,
+    revision=DFN_REVISION,
+    weights_file=DFN_WEIGHTS_FILE,
+    weights_sha256=DFN_WEIGHTS_SHA256,
+    fallback_arch="ViT-H-14-quickgelu",
+    dim=DFN_DIM,
+    ctx_default=77,
+    img_bs=24,
+)
+
+video_rows_out = [
+    {
+        "row_id": idx,
+        "video_id": vid,
+        "selected_ordinals": video_recipes[vid][0]["selected_ordinals"],
+        "selected_pts_sec": video_recipes[vid][0]["selected_timestamps_sec"],
+        "recipe_hash": video_recipes[vid][0]["recipe_hash"],
+    }
+    for idx, vid in enumerate(video_ids)
+]
+
+out_dir = WORK / shard_name
+out_dir.mkdir(parents=True, exist_ok=True)
+np.save(out_dir / "pe_bigg_video_vectors.npy", pe_bg_v)
+np.save(out_dir / "pe_bigg_frame_vectors_fp16.npy", pe_bg_f)
+np.save(out_dir / "pe_bigg_query_vectors.npy", pe_bg_q)
+np.save(out_dir / "dfn_video_vectors.npy", dfn_v)
+np.save(out_dir / "dfn_frame_vectors_fp16.npy", dfn_f)
+np.save(out_dir / "dfn_query_vectors.npy", dfn_q)
+
+def _wjsonl(path, rows):
+    with path.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+_wjsonl(out_dir / "video_rows.jsonl", video_rows_out)
+_wjsonl(out_dir / "query_rows.jsonl", query_rows_in)
+
+f_names = (
+    "pe_bigg_video_vectors.npy", "pe_bigg_frame_vectors_fp16.npy", "pe_bigg_query_vectors.npy",
+    "dfn_video_vectors.npy", "dfn_frame_vectors_fp16.npy", "dfn_query_vectors.npy",
+    "video_rows.jsonl", "query_rows.jsonl",
+)
+files_info = {fn: {"sha256": sha256_file(out_dir / fn), "bytes": (out_dir / fn).stat().st_size} for fn in f_names}
+receipt = {
+    "status": "SUCCESS",
+    "shard_name": shard_name,
+    "models": {
+        "pe_bigg": {"model_id": PE_BIGG_MODEL_ID, "revision": PE_BIGG_REVISION, "weights_sha256": PE_BIGG_WEIGHTS_SHA256, "license": PE_BIGG_LICENSE, "num_frames": NUM_VL3_FRAMES, "dim": PE_BIGG_DIM},
+        "dfn5b_h": {"model_id": DFN_MODEL_ID, "revision": DFN_REVISION, "weights_sha256": DFN_WEIGHTS_SHA256, "license": DFN_LICENSE, "num_frames": NUM_VL3_FRAMES, "dim": DFN_DIM},
+    },
+    "video_count": len(video_rows_out),
+    "query_count": len(query_rows_in),
+    "devices": devices,
+    "elapsed_seconds": round(time.time() - t_start, 2),
+    "files": files_info,
+}
+(out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+print("VL3 SHARD DONE:", shard_name, receipt["elapsed_seconds"], "s", flush=True)
+'''
+
+
+_VLM_RERANK_SHARD_TEMPLATE = r'''
+import base64
+from concurrent.futures import ThreadPoolExecutor
+import gzip
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from importlib import metadata as importlib_metadata
+import zipfile
+
+import numpy as np
+
+WORK = Path("/kaggle/working")
+TEMP = Path("/tmp/videntra_vlm_rerank")
+TEMP.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(io.BytesIO(base64.b64decode(SOURCE))) as archive:
+    archive.extractall(TEMP)
+
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+constraints = []
+for pkg in ("numpy", "torch", "torchvision", "pillow"):
+    try:
+        constraints.append(f"{pkg}=={importlib_metadata.version(pkg)}")
+    except importlib_metadata.PackageNotFoundError:
+        pass
+(TEMP / "constraints.txt").write_text("\n".join(constraints) + "\n", encoding="utf-8")
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q", "-c", str(TEMP / "constraints.txt"),
+     "av==16.0.1", "transformers>=4.49.0,<5.0.0", "accelerate>=1.0.0", "bitsandbytes>=0.45.0"],
+    check=True,
+)
+sys.path.insert(0, str(TEMP))
+sys.path.insert(0, str(TEMP / "src"))
+
+import av
+from PIL import Image
+import torch
+from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
+
+from scripts.prepare_clip_vp_kaggle_bundle import select_bin_center_frames
+from videntra.evaluation.provenance import sha256_file
+from videntra.ingestion.decode import decode_frames
+from videntra.ingestion.probe import probe_media
+
+VLM_7B_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+VLM_7B_REV = "cc594898137f460bfe9f0759e9844b3ce807cfb5"
+VLM_3B_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
+VLM_3B_REV = "66285546d2b821cf421d4f5eb2576359d3770cd3"
+
+t_start = time.time()
+with gzip.open(TEMP / "vlm_payload.json.gz", "rt", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+shard_name = payload["shard_name"]
+items = payload["items"]  # [{query_id, query_text, candidate_video_ids}]
+smoke_limit = int(payload.get("smoke_limit", 0))
+if smoke_limit > 0:
+    items = items[:smoke_limit]
+
+needed_vids = sorted({str(v) for it in items for v in it["candidate_video_ids"]})
+def _prio(p: Path) -> int:
+    s = p.as_posix().lower()
+    if "msrvtt-1ka" in s:
+        return 0
+    if "khoahunhtngng" in s or "testvideo" in s:
+        return 1
+    return 2
+
+cands = {}
+for p in sorted(Path("/kaggle/input").rglob("*.mp4")):
+    cands.setdefault(p.stem, []).append(p)
+mp4_by_vid = {k: sorted(v, key=_prio)[0] for k, v in cands.items()}
+missing = [v for v in needed_vids if v not in mp4_by_vid]
+assert not missing, f"Missing videos in {shard_name}: {missing[:10]}"
+
+n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
+
+def _tie_vlm_weights(mdl):
+    in_emb = mdl.get_input_embeddings()
+    if in_emb is not None and hasattr(mdl, "lm_head") and hasattr(mdl.lm_head, "weight") and mdl.lm_head.weight.shape == in_emb.weight.shape:
+        mdl.lm_head.weight = in_emb.weight
+    if hasattr(mdl, "tie_weights"):
+        try:
+            mdl.tie_weights()
+        except Exception:
+            pass
+    return mdl
+
+def _load_vlm_on_device(dev: str):
+    if n_gpus > 0:
+        try:
+            bnb_cfg = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+            proc = AutoProcessor.from_pretrained(VLM_7B_ID, revision=VLM_7B_REV, use_fast=False)
+            mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                VLM_7B_ID, revision=VLM_7B_REV, quantization_config=bnb_cfg, device_map=dev,
+            )
+            mdl = _tie_vlm_weights(mdl).eval()
+            return mdl, proc, {"model_id": VLM_7B_ID, "revision": VLM_7B_REV, "quant": "nf4_4bit"}
+        except Exception as exc_7b:
+            print(f"[{shard_name} {dev}] 7B NF4 failed ({exc_7b}), falling back to 3B FP16 (no meta tensors)", flush=True)
+            proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
+            mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                VLM_3B_ID, revision=VLM_3B_REV, torch_dtype=torch.float16, low_cpu_mem_usage=False,
+            )
+            mdl = _tie_vlm_weights(mdl).to(dev).eval()
+            return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp16"}
+    proc = AutoProcessor.from_pretrained(VLM_3B_ID, revision=VLM_3B_REV, use_fast=False)
+    mdl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        VLM_3B_ID, revision=VLM_3B_REV, torch_dtype=torch.float32, low_cpu_mem_usage=False,
+    )
+    mdl = _tie_vlm_weights(mdl).eval()
+    return mdl, proc, {"model_id": VLM_3B_ID, "revision": VLM_3B_REV, "quant": "fp32_cpu"}
+
+# Preload models sequentially on main thread (avoids HuggingFace init_empty_weights thread race)
+# and run 1-sample fail-fast Yes/No logit smoke check BEFORE decoding video storyboards.
+vlm_loaded = [_load_vlm_on_device(dev) for dev in devices]
+for dev_i, (mdl, proc, m_info) in enumerate(vlm_loaded):
+    dev = devices[dev_i]
+    tok = proc.tokenizer
+    tok.padding_side = "left"
+    yes_ids = [t[0] for w in ("Yes", "yes") if len(t := tok.encode(w, add_special_tokens=False)) == 1]
+    no_ids = [t[0] for w in ("No", "no") if len(t := tok.encode(w, add_special_tokens=False)) == 1]
+    assert yes_ids and no_ids, f"Missing Yes/No token ids: {yes_ids}, {no_ids}"
+    _smk_txt = proc.apply_chat_template(
+        [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": 'Does this video match: "a dog"? Answer strictly Yes or No.'}]}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    _smk_in = proc(text=[_smk_txt], images=[Image.new("RGB", (896, 336))], padding=True, return_tensors="pt").to(dev)
+    with torch.inference_mode():
+        _logits = mdl(**_smk_in).logits[:, -1, :].float()
+        _lp = torch.log_softmax(_logits, dim=-1)
+        _smoke_score = float((torch.logsumexp(_lp[:, yes_ids], dim=-1) - torch.logsumexp(_lp[:, no_ids], dim=-1)).item())
+    assert np.isfinite(_smoke_score), f"Non-finite smoke score on {dev}: {_smoke_score}"
+    print(f"[{shard_name} {dev}] preloaded & smoke-tested {m_info['model_id']} ({m_info['quant']}) smoke={_smoke_score:.4f} in {time.time()-t_start:.1f}s", flush=True)
+
+# Build compact 2x4 chronological 8-frame storyboard (896x336 JPEG bytes in RAM per video) in single pass
+storyboard_jpg: dict[str, bytes] = {}
+def _build_storyboard(vid):
+    mpath = mp4_by_vid[vid]
+    pr = probe_media(mpath)
+    records, valid_ts = [], []
+    raw_frames = []
+    with av.open(str(mpath)) as container:
+        stream = next(s for s in container.streams if s.index == pr.selected_video_stream_index)
+        tb = float(stream.time_base) if stream.time_base is not None else 0.0
+        for cur_ord, frame in enumerate(container.decode(stream)):
+            ts = float(frame.pts * tb) if (frame.pts is not None and tb > 0.0) else None
+            records.append((cur_ord, ts))
+            if ts is not None:
+                valid_ts.append(ts)
+            raw_frames.append(frame)
+    rec = select_bin_center_frames(records, min(valid_ts), max(valid_ts) + 1e-3, num_frames=8)
+    assert rec["status"] == "ok", f"Storyboard recipe failed {vid}: {rec}"
+    ords = [int(o) for o in rec["selected_ordinals"]]
+    canvas = Image.new("RGB", (896, 336))
+    for i_o, o in enumerate(ords):
+        tile = Image.fromarray(raw_frames[o].to_ndarray(format="rgb24"), mode="RGB").resize((224, 168), Image.BILINEAR)
+        canvas.paste(tile, ((i_o % 4) * 224, (i_o // 4) * 168))
+    raw_frames.clear()
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=88)
+    return vid, buf.getvalue()
+
+with ThreadPoolExecutor(max_workers=6) as pool:
+    for vid, jb in pool.map(_build_storyboard, needed_vids):
+        storyboard_jpg[vid] = jb
+print(f"[{shard_name}] built {len(storyboard_jpg)} 2x4 storyboards in {time.time()-t_start:.1f}s", flush=True)
+
+def _worker(dev_i: int, sub_items: list[dict]):
+    dev = devices[dev_i]
+    mdl, proc, meta_info = vlm_loaded[dev_i]
+    tok = proc.tokenizer
+    tok.padding_side = "left"
+    yes_ids = [t[0] for w in ("Yes", "yes") if len(t := tok.encode(w, add_special_tokens=False)) == 1]
+    no_ids = [t[0] for w in ("No", "no") if len(t := tok.encode(w, add_special_tokens=False)) == 1]
+    assert yes_ids and no_ids, f"Missing Yes/No token ids: {yes_ids}, {no_ids}"
+
+    def _score_batch(imgs_b, prompts_b):
+        inputs = proc(text=prompts_b, images=imgs_b, padding=True, return_tensors="pt").to(dev)
+        with torch.inference_mode():
+            logits = mdl(**inputs).logits[:, -1, :].float()
+            lp = torch.log_softmax(logits, dim=-1)
+            yes_lp = torch.logsumexp(lp[:, yes_ids], dim=-1)
+            no_lp = torch.logsumexp(lp[:, no_ids], dim=-1)
+            return (yes_lp - no_lp).cpu().numpy().astype(float).tolist()
+
+    out_rows = []
+    for idx_q, it in enumerate(sub_items):
+        qtxt = it["query_text"]
+        cids = [str(v) for v in it["candidate_video_ids"]]
+        msg_txt = f'These 8 chronological frames are sampled from a video clip. Does this video match the description: "{qtxt}"? Answer strictly Yes or No.'
+        prompt = proc.apply_chat_template(
+            [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": msg_txt}]}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        imgs = [Image.open(io.BytesIO(storyboard_jpg[v])).convert("RGB") for v in cids]
+        prompts = [prompt] * len(imgs)
+        scores: list[float] = []
+        bs = 8
+        for st in range(0, len(imgs), bs):
+            try:
+                scores.extend(_score_batch(imgs[st : st + bs], prompts[st : st + bs]))
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                for j_s in range(st, min(len(imgs), st + bs)):
+                    scores.extend(_score_batch([imgs[j_s]], [prompts[j_s]]))
+        out_rows.append({"query_id": it["query_id"], "candidate_video_ids": cids, "vlm_scores": [round(s, 6) for s in scores]})
+        if (idx_q + 1) % 50 == 0 or (idx_q + 1) == len(sub_items):
+            print(f"[{shard_name} {dev}] scored {idx_q+1}/{len(sub_items)} queries in {time.time()-t_start:.1f}s", flush=True)
+    return out_rows, meta_info
+
+slices = [items[i::len(devices)] for i in range(len(devices))]
+results_all = []
+used_meta = None
+with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+    for res_rows, m_info in pool.map(lambda p: _worker(p[0], p[1]), enumerate(slices)):
+        results_all.extend(res_rows)
+        if used_meta is None:
+            used_meta = m_info
+
+q_ord = {it["query_id"]: i for i, it in enumerate(items)}
+results_all.sort(key=lambda r: q_ord[r["query_id"]])
+
+out_dir = WORK / shard_name
+out_dir.mkdir(parents=True, exist_ok=True)
+out_gz = out_dir / "vlm_rerank_scores.jsonl.gz"
+with gzip.open(out_gz, "wt", encoding="utf-8") as fh:
+    for r in results_all:
+        fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+receipt = {
+    "status": "SUCCESS",
+    "shard_name": shard_name,
+    "model": used_meta,
+    "query_count": len(results_all),
+    "devices": devices,
+    "elapsed_seconds": round(time.time() - t_start, 2),
+    "files": {"vlm_rerank_scores.jsonl.gz": {"sha256": sha256_file(out_gz), "bytes": out_gz.stat().st_size}},
+}
+(out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+print("VLM RERANK DONE:", shard_name, receipt["elapsed_seconds"], "s", flush=True)
+'''
+
+
 def run_pilot_vp(protocol_root: Path, *, push: bool = False) -> dict[str, Any]:
     m_dir = protocol_root / "manifests"
     expected_by_split: dict[str, list[str]] = {}
@@ -2125,6 +2726,9 @@ def run_shard_job(
     elif kind == "vl2":
         src_files = (*_MINIMAL_SRC_FILES, "scripts/prepare_clip_vp_kaggle_bundle.py")
         template = _VL2_SHARD_TEMPLATE
+    elif kind == "vl3":
+        src_files = (*_MINIMAL_SRC_FILES, "scripts/prepare_clip_vp_kaggle_bundle.py")
+        template = _VL3_SHARD_TEMPLATE
     else:
         raise ValueError(f"Unknown shard kind: {kind}")
 
@@ -2137,6 +2741,8 @@ def run_shard_job(
         shard_name.replace("_", "-")
         .replace("test-1ka-queries-only", "t1ka-qonly")
         .replace("test-1ka-videos-only", "t1kav")
+        .replace("train-9k-qbank-queries-only", "tr9k-qonly")
+        .replace("train-9k-qbank-20k", "tr9k-qb20k")
     )
     title_core = slug_safe.replace("-", " ").upper()
     if (kind == "cap" and target == "val_tune") or (kind == "vl2" and target == "val_confirm"):
@@ -2148,6 +2754,9 @@ def run_shard_job(
     elif kind == "cap":
         kernel_id = f"lvhuylong/videntra-msr-{slug_safe}-r2{acc_tag}-20261122"
         title = f"VIDENTRA MSR {title_core} R2{acc_title} 20261122"
+    elif kind in ("vl3",) or target.startswith("train_9k_qbank"):
+        kernel_id = f"lvhuylong/videntra-msr-{slug_safe}{acc_tag}-20261123"
+        title = f"VIDENTRA MSR {title_core}{acc_title} 20261123"
     else:
         kernel_id = f"lvhuylong/videntra-msr-{slug_safe}{acc_tag}-20261122"
         title = f"VIDENTRA MSR {title_core}{acc_title} 20261122"
@@ -2167,6 +2776,54 @@ def run_shard_job(
         "num_slices": int(num_slices),
         "slice_index": int(slice_index),
     })
+    return res
+
+
+def run_vlm_rerank_job(
+    target_label: str,
+    candidates_file: Path,
+    *,
+    push: bool = False,
+    accelerator: str = "gpu",
+    num_slices: int = 1,
+    slice_index: int = 0,
+    smoke_limit: int = 0,
+) -> dict[str, Any]:
+    """Launch Kaggle Qwen2.5-VL rerank shard over frozen Stage-1 candidate pools (zero GT)."""
+    rows = _read_jsonl(candidates_file)
+    assert_no_gt_leakage(rows, context=f"vlm_rerank_{target_label}")
+    if int(num_slices) > 1:
+        rows = rows[int(slice_index)::int(num_slices)]
+    shard_name = f"vlm_{target_label}" + (f"_p{int(slice_index)}" if int(num_slices) > 1 else "")
+    payload_obj = {
+        "shard_name": shard_name,
+        "items": [
+            {
+                "query_id": str(r["query_id"]),
+                "query_text": str(r["query_text"]),
+                "candidate_video_ids": [str(v) for v in r["candidate_video_ids"]],
+            }
+            for r in rows
+        ],
+        "smoke_limit": int(smoke_limit),
+    }
+    gz_bytes = gzip.compress(json.dumps(payload_obj, separators=(",", ":")).encode("utf-8"), compresslevel=9)
+    src_files = (*_MINIMAL_SRC_FILES, "scripts/prepare_clip_vp_kaggle_bundle.py")
+    b64 = _pack_source_b64(src_files, {"vlm_payload.json.gz": gz_bytes})
+    launcher = f"SOURCE = {b64!r}\n" + _VLM_RERANK_SHARD_TEMPLATE.lstrip("\n")
+    slug_safe = shard_name.replace("_", "-")
+    acc = str(accelerator).lower()
+    acc_tag = "" if acc == "gpu" else f"-{acc}"
+    res = _write_and_push_kernel(
+        kernel_dir=KAGGLE_WORK_DIR / shard_name,
+        kernel_id=f"lvhuylong/videntra-msr-{slug_safe}{acc_tag}-20261123",
+        title=f"VIDENTRA MSR {slug_safe.replace('-', ' ').upper()} 20261123",
+        launcher_code=launcher,
+        datasets=MSRVTT_KAGGLE_DATASETS,
+        push=push,
+        accelerator=acc,
+    )
+    res.update({"shard_name": shard_name, "query_count": len(rows), "num_slices": int(num_slices), "slice_index": int(slice_index)})
     return res
 
 
@@ -2201,7 +2858,7 @@ def main() -> int:
     p_pilot.add_argument("--protocol-root", type=Path, default=PROTOCOL_ROOT)
     p_pilot.add_argument("--push", action="store_true")
 
-    for kind in ("vp-shard", "mm-shard", "asr-shard", "cap-shard", "vl2-shard"):
+    for kind in ("vp-shard", "mm-shard", "asr-shard", "cap-shard", "vl2-shard", "vl3-shard"):
         sp = sub.add_parser(kind)
         sp.add_argument("--target", required=True)
         sp.add_argument("--protocol-root", type=Path, default=PROTOCOL_ROOT)
@@ -2211,6 +2868,15 @@ def main() -> int:
         sp.add_argument("--accelerator", choices=("gpu", "tpu", "cpu"), default="gpu")
         sp.add_argument("--num-slices", type=int, default=1)
         sp.add_argument("--slice-index", type=int, default=0)
+
+    p_vlm = sub.add_parser("vlm-rerank-shard")
+    p_vlm.add_argument("--target-label", required=True)
+    p_vlm.add_argument("--candidates-file", type=Path, required=True)
+    p_vlm.add_argument("--push", action="store_true")
+    p_vlm.add_argument("--accelerator", choices=("gpu", "cpu"), default="gpu")
+    p_vlm.add_argument("--num-slices", type=int, default=1)
+    p_vlm.add_argument("--slice-index", type=int, default=0)
+    p_vlm.add_argument("--smoke-limit", type=int, default=0)
 
     p_st = sub.add_parser("status")
     p_st.add_argument("--kernel-id", required=True)
@@ -2222,7 +2888,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "pilot-vp":
         res = run_pilot_vp(args.protocol_root, push=args.push)
-    elif args.cmd in ("vp-shard", "mm-shard", "asr-shard", "cap-shard", "vl2-shard"):
+    elif args.cmd in ("vp-shard", "mm-shard", "asr-shard", "cap-shard", "vl2-shard", "vl3-shard"):
         kind = args.cmd.split("-")[0]
         res = run_shard_job(
             kind,
@@ -2234,6 +2900,16 @@ def main() -> int:
             accelerator=args.accelerator,
             num_slices=args.num_slices,
             slice_index=args.slice_index,
+        )
+    elif args.cmd == "vlm-rerank-shard":
+        res = run_vlm_rerank_job(
+            args.target_label,
+            args.candidates_file,
+            push=args.push,
+            accelerator=args.accelerator,
+            num_slices=args.num_slices,
+            slice_index=args.slice_index,
+            smoke_limit=args.smoke_limit,
         )
     elif args.cmd == "status":
         out = subprocess.check_output(

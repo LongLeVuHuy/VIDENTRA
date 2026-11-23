@@ -1,5 +1,28 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 23/11/2026 — Hoàn Thiện VIDENTRA v2 (`R9d_videntra_v2_champion`), Bộ Dữ Liệu 3 Phân Vùng Khép Kín & Sealed Benchmark `MSR-VTT 1K-A` Đạt `57.10%` Hit@1
+
+- **Chuẩn Hóa 3 Phân Vùng Dữ Liệu MSR-VTT & Quy Tắc Zero Leakage ([`AGENTS.md`](../AGENTS.md), [`scripts/materialize_msrvtt_validation_datasets.py`](../scripts/materialize_msrvtt_validation_datasets.py)):**
+  - Nạp đầy đủ cục bộ hai tập validation khép kín tại [`data/datasets/msrvtt_val_tune/`](../data/datasets/msrvtt_val_tune/) (`2,000` videos) và [`data/datasets/msrvtt_val_confirm/`](../data/datasets/msrvtt_val_confirm/) (`2,000` videos), mỗi tập đều có đầy đủ `keyframes`, SQLite WAL `catalog/corpus_metadata.db`, FAISS/NumPy vectors (`VideoPrism`, `SigLIP2`, `PE-Core-L-336`, `SigLIP2-SO400M`, `PE-Core-bigG-448`, `DFN5B-CLIP-H`, `E5-384d`), `OCR` (RapidOCR), `ASR` (Faster-Whisper), `YOLOv8n + Kalman` tracks và `Florence-2` captions.
+  - Tách rạch ròi thư mục phân vùng đánh giá: [`validation/msrvtt/valid_tuning/`](../validation/msrvtt/valid_tuning/) (`2,000` videos), [`validation/msrvtt/valid_confirm/`](../validation/msrvtt/valid_confirm/) (`2,000` videos) và [`test_queries/msrvtt/test_1ka_benchmark/`](../test_queries/msrvtt/test_1ka_benchmark/) (`1,000` videos niêm phong chỉ đánh giá một lần duy nhất).
+  - Bổ sung hỗ trợ tự chứa (`catalog/corpus_metadata.db`) trong [`src/videntra/registry/datasets.py`](../src/videntra/registry/datasets.py) và kiểm thử trong [`tests/registry/test_dataset_manager.py`](../tests/registry/test_dataset_manager.py).
+- **Nâng Cấp Thuật Toán VIDENTRA v2 ([`src/videntra/retrieval/msrvtt_matrix.py`](../src/videntra/retrieval/msrvtt_matrix.py), [`src/videntra/ranking/vedje_reranker.py`](../src/videntra/ranking/vedje_reranker.py), [`src/videntra/ranking/cross_modal_adapter.py`](../src/videntra/ranking/cross_modal_adapter.py), [`scripts/run_msrvtt_v2_matrix.py`](../scripts/run_msrvtt_v2_matrix.py)):**
+  - Mở rộng lên **6 backbones không-thời gian & vision-language** (`PE-Core-bigG-14-448` 1280d + X-Pool, `DFN5B-CLIP-ViT-H-14-378` 1024d, `PE-Core-L-14-336` 1024d, `SigLIP2-SO400M-384` 1152d, `VideoPrism-LvT-B` 768d whole + clips, `SigLIP2-Base-384` 768d).
+  - Xây dựng Query Bank sạch **`21,219` captions** thuộc `train_9k_clean` cho toàn bộ 6 backbones trên Kaggle, triển khai chuẩn hóa hubness quy nạp `QB-DIS` (Dynamic Inverted Softmax) + `QB-Z-Norm` + `QB-CSLS` kết hợp Multi-Prompt Ensembling (`R9b`: `Valid-Confirm = 51.15%`, `Sealed Test = 55.90%`).
+  - Huấn luyện `MultiBackboneCrossModalAdapter` thuần trên `train_sub` (`1,444` train / `156` val videos, `8,518` pairs, `24` epochs, `best_val_hit1 = 0.629301`) và hợp nhất tín hiệu `ASR` + `OCR` (`R9c`: `Valid-Confirm = 51.55%`, `MRR@10 = 0.6286`, `Sealed Test = 56.00%`).
+  - Triển khai **Stage-2 Margin-Gated VLM Cross-Encoder** (`Qwen/Qwen2.5-VL-7B-Instruct` lượng tử hóa `nf4_4bit` trên Kaggle Dual-T4, lưới storyboard `2×4` theo trục thời gian, khử thiên vị video không dùng nhãn thật `debias_alpha=0.3`, `mode="margin_raw"`). Phát hiện chính xác nguyên nhân đảo dấu khi `_tie_vlm_weights` chiếu trên embedding `Yes - No` (vì 7B đặt `tie_word_embeddings=False`), kiểm chứng cặp (pairwise) và tinh chỉnh hệ số có dấu thuần trên `Valid-Tune` (`R9c 49.85% -> R9d 50.95%`, `+1.10 pp`), sau đó khóa Champion V2 trên `Valid-Confirm` (**`51.45%`**, `1,029/2,000`, `MRR@10 = 0.6281`, vượt V1 `R8` `50.20%` thêm `+1.25 pp`).
+- **Kết Quả Đánh Giá Đơn Lần Trên Tập Niêm Phong `MSR-VTT 1K-A` (`1,000` queries / `1,000` videos / `885` source groups, [`benchmark/msrvtt_1ka_benchmark_report.md`](../benchmark/msrvtt_1ka_benchmark_report.md)):**
+  - **`B0_siglip2_standalone`**: `42.30%` Hit@1 (`MRR@10 = 0.5207`)
+  - **`B1_videoprism_standalone`**: `48.70%` Hit@1 (`R@5 = 75.30%`, `R@10 = 82.50%`, `MRR@10 = 0.5972`)
+  - **`R8_videntra_v1_champion`**: `55.60%` Hit@1 (`R@5 = 79.00%`, `R@10 = 86.80%`, `MRR@10 = 0.6549`, `+6.90 pp` vs B1)
+  - **`R9_pe_bigg_standalone`**: `53.60%` Hit@1 | **`R9_dfn5b_h_standalone`**: `41.60%` Hit@1
+  - **`R9a_6backbone_raw`**: `54.30%` Hit@1 (`MRR@10 = 0.6467`)
+  - **`R9b_6backbone_qb_dis_znorm_mp`**: `55.90%` Hit@1 (`MRR@10 = 0.6593`)
+  - **`R9c_6backbone_adapter_multimodal`**: `56.00%` Hit@1 (`MRR@10 = 0.6603`)
+  - **`R9d_videntra_v2_champion`**: **`57.10%` Hit@1 (`571/1,000`)**, **`R@5 = 79.90%`**, **`R@10 = 87.40%`**, **`Stage-1 R@20 = 91.80%`**, **`MRR@10 = 0.6670`**, **`+8.40 pp` vs `B1` (`95% CI [+6.02, +10.80] pp`, `+119 rescued / -35 lost`)**, **`+1.50 pp` vs V1 `R8`**.
+- **Tài Liệu & Phụ Thuộc:**
+  - Viết lại hoàn chỉnh [`README.md`](../README.md) hướng GitHub (nêu rõ tính mới so với các dự án khác, sơ đồ pipeline V2, kiến trúc 3-split Zero Leakage, bảng benchmark `MSR-VTT 1K-A` và bảng benchmark 5 chiến lược Keyframes). Cập nhật [`PROJECT.md`](../PROJECT.md) và [`requirements.txt`](../requirements.txt).
+
 ## 23/11/2026 — Chuẩn Hóa Cấu Trúc `data/processed/` & `data/cache/` Tự Mô Tả + SSOT `videntra.config.paths` & Cập Nhật `AGENTS.md`
 
 - **Quy tắc Tổ chức & Đặt tên Tự Mô Tả ([`AGENTS.md`](../AGENTS.md)):**

@@ -197,3 +197,42 @@ def test_cli_dataset_subcommands(tmp_path: Path, capsys) -> None:
     assert cli_main(["dataset", "remove", "--data-root", str(data_root), "--asset-roots", str(roots_cfg), "--name", "cli_ds", "--yes"]) == 0
     out = capsys.readouterr().out
     assert "cli_ds" in out
+
+
+def test_list_and_verify_self_contained_catalog_db(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    data_root = tmp_path / "data"
+    roots_cfg = tmp_path / "configs/local/asset_roots.json"
+    mgr = DatasetRegistryManager(data_root=data_root, asset_roots_path=roots_cfg)
+    mgr.add_dataset("sc_ds")
+    ds_paths = mgr.dataset_paths("sc_ds")
+
+    (ds_paths.media_dir / "v100.mp4").write_bytes(b"mp4")
+    kf = ds_paths.keyframes_dir / "v100" / "000000.jpg"
+    kf.parent.mkdir(parents=True, exist_ok=True)
+    kf.write_bytes(b"jpg")
+
+    for extra_rel in ("catalog/corpus_metadata.db", "embeddings/clip.npy", "evidence/ocr.jsonl"):
+        p = ds_paths.root / extra_rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not extra_rel.endswith(".db"):
+            p.write_bytes(b"data")
+
+    with sqlite3.connect(str(ds_paths.root / "catalog/corpus_metadata.db")) as conn:
+        conn.execute("CREATE TABLE Videos (video_id TEXT PRIMARY KEY, dataset TEXT, file_path TEXT)")
+        conn.execute("CREATE TABLE Keyframes (keyframe_id TEXT PRIMARY KEY, video_id TEXT, keyframe_path TEXT)")
+        conn.execute("INSERT INTO Videos VALUES (?, ?, ?)", ("v100", "sc_ds", "data/datasets/sc_ds/media/v100.mp4"))
+        conn.execute("INSERT INTO Keyframes VALUES (?, ?, ?)", ("v100__0", "v100", "data/datasets/sc_ds/keyframes/v100/000000.jpg"))
+        conn.commit()
+
+    listed = mgr.list_datasets()
+    assert len(listed) == 1
+    assert listed[0]["subdirs"]["catalog"]["file_count"] == 1
+    assert listed[0]["subdirs"]["embeddings"]["file_count"] == 1
+    assert listed[0]["subdirs"]["evidence"]["file_count"] == 1
+
+    ver = mgr.verify("sc_ds")
+    assert ver["ok"] is True
+    assert ver["datasets"][0]["db_videos_checked"] == 1
+    assert ver["datasets"][0]["db_missing_media"] == 0
+    assert ver["datasets"][0]["db_missing_keyframes"] == 0

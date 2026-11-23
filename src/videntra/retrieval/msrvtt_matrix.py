@@ -203,12 +203,24 @@ class GalleryFeatureBank:
     pe_hub_priors: dict[str, np.ndarray] | None = None
     sig400_hub_priors: dict[str, np.ndarray] | None = None
 
+    # Dual flagship vision-language features (PE-Core-bigG-14-448 & DFN5B-CLIP-ViT-H-14-378)
+    pe_bigg_video_vecs: np.ndarray | None = None     # (N_vid, 1280)
+    pe_bigg_frame_vecs: np.ndarray | None = None     # (N_vid, F, 1280)
+    pe_bigg_query_map: dict[str, np.ndarray] = field(default_factory=dict)
+    dfn_video_vecs: np.ndarray | None = None         # (N_vid, 1024)
+    dfn_frame_vecs: np.ndarray | None = None         # (N_vid, F, 1024)
+    dfn_query_map: dict[str, np.ndarray] = field(default_factory=dict)
+    pe_bigg_hub_priors: dict[str, np.ndarray] | None = None
+    dfn_hub_priors: dict[str, np.ndarray] | None = None
+
     def build_derived_caches(
         self,
         train_vp_bank: np.ndarray | None = None,
         train_sig_bank: np.ndarray | None = None,
         train_pe_bank: np.ndarray | None = None,
         train_sig400_bank: np.ndarray | None = None,
+        train_pe_bigg_bank: np.ndarray | None = None,
+        train_dfn_bank: np.ndarray | None = None,
     ) -> None:
         if self.sig_frame_vecs is not None and self.sig_clip_mean_vecs is None:
             means = np.zeros((len(self.video_ids), self.sig_frame_vecs.shape[1]), dtype=np.float32)
@@ -219,21 +231,17 @@ class GalleryFeatureBank:
                     means[idx] = l2_normalize_np(m)
             self.sig_clip_mean_vecs = means
 
-        if train_vp_bank is not None and self.vp_whole_vecs is not None:
-            qb_vp = TrainQueryBankHubness(train_vp_bank, k_hub=20, temperature=0.05)
-            self.vp_hub_priors = qb_vp.compute_video_priors(self.vp_whole_vecs)
-
-        if train_sig_bank is not None and self.sig_clip_mean_vecs is not None:
-            qb_sig = TrainQueryBankHubness(train_sig_bank, k_hub=20, temperature=0.05)
-            self.sig_hub_priors = qb_sig.compute_video_priors(self.sig_clip_mean_vecs)
-
-        if train_pe_bank is not None and self.pe_video_vecs is not None:
-            qb_pe = TrainQueryBankHubness(train_pe_bank, k_hub=20, temperature=0.05)
-            self.pe_hub_priors = qb_pe.compute_video_priors(self.pe_video_vecs)
-
-        if train_sig400_bank is not None and self.sig400_video_vecs is not None:
-            qb_s4 = TrainQueryBankHubness(train_sig400_bank, k_hub=20, temperature=0.05)
-            self.sig400_hub_priors = qb_s4.compute_video_priors(self.sig400_video_vecs)
+        for bank_vecs, vid_vecs, attr in (
+            (train_vp_bank, self.vp_whole_vecs, "vp_hub_priors"),
+            (train_sig_bank, self.sig_clip_mean_vecs, "sig_hub_priors"),
+            (train_pe_bank, self.pe_video_vecs, "pe_hub_priors"),
+            (train_sig400_bank, self.sig400_video_vecs, "sig400_hub_priors"),
+            (train_pe_bigg_bank, self.pe_bigg_video_vecs, "pe_bigg_hub_priors"),
+            (train_dfn_bank, self.dfn_video_vecs, "dfn_hub_priors"),
+        ):
+            if bank_vecs is not None and vid_vecs is not None:
+                qb = TrainQueryBankHubness(bank_vecs, k_hub=20, temperature=0.05)
+                setattr(self, attr, qb.compute_video_priors(vid_vecs))
 
 
 def evaluate_predictions(
@@ -542,6 +550,25 @@ def compute_vl2_gallery_score_matrices(
     out.update(_compute_single_vl2_matrices(
         bank.sig400_video_vecs, bank.sig400_frame_vecs, bank.sig400_query_map, bank.queries, n_vids,
         prefix="s4", use_mp=use_mp, temperature=temperature,
+    ))
+    return out
+
+
+def compute_vl3_gallery_score_matrices(
+    bank: GalleryFeatureBank,
+    *,
+    use_mp: bool = False,
+    temperature: float = 0.05,
+) -> dict[str, np.ndarray]:
+    """Compute vectorized `(N_q, N_v)` PE-Core-bigG and DFN5B-H score matrices via F×F frame Gram matrices."""
+    n_vids = len(bank.video_ids)
+    out = _compute_single_vl2_matrices(
+        bank.pe_bigg_video_vecs, bank.pe_bigg_frame_vecs, bank.pe_bigg_query_map, bank.queries, n_vids,
+        prefix="pe_bigg", use_mp=use_mp, temperature=temperature,
+    )
+    out.update(_compute_single_vl2_matrices(
+        bank.dfn_video_vecs, bank.dfn_frame_vecs, bank.dfn_query_map, bank.queries, n_vids,
+        prefix="dfn", use_mp=use_mp, temperature=temperature,
     ))
     return out
 
@@ -855,6 +882,93 @@ def _find_shard_subdir(root: Path) -> Path:
     raise FileNotFoundError(f"receipt.json not found under {root}")
 
 
+def _load_dual_frame_backbone_dirs(
+    dirs: Sequence[Path],
+    *,
+    video_ids: Sequence[str],
+    vid_to_idx: Mapping[str, int],
+    prefixes: tuple[str, str],
+    default_dims: tuple[int, int],
+    default_frames: int = 12,
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, np.ndarray], np.ndarray | None, np.ndarray | None, dict[str, np.ndarray]]:
+    """Load dual frame+video+query feature shards (reused by both VL2 and VL3)."""
+    p_a, p_b = prefixes
+    a_vid_map: dict[str, np.ndarray] = {}
+    a_fr_map: dict[str, np.ndarray] = {}
+    a_q_map: dict[str, np.ndarray] = {}
+    b_vid_map: dict[str, np.ndarray] = {}
+    b_fr_map: dict[str, np.ndarray] = {}
+    b_q_map: dict[str, np.ndarray] = {}
+    dim_a, dim_b = default_dims
+    n_frames = default_frames
+
+    for raw_d in dirs:
+        if not raw_d.exists():
+            continue
+        sd = _find_shard_subdir(raw_d)
+        vr_path = sd / "video_rows.jsonl"
+        av_path = sd / f"{p_a}_video_vectors.npy"
+        af_path = sd / f"{p_a}_frame_vectors_fp16.npy"
+        bv_path = sd / f"{p_b}_video_vectors.npy"
+        bf_path = sd / f"{p_b}_frame_vectors_fp16.npy"
+        if vr_path.is_file() and av_path.is_file() and bv_path.is_file():
+            v_rows = _read_jsonl_any(vr_path)
+            if v_rows:
+                av_arr = np.load(str(av_path), mmap_mode="r")
+                af_arr = np.load(str(af_path), mmap_mode="r") if af_path.is_file() else None
+                bv_arr = np.load(str(bv_path), mmap_mode="r")
+                bf_arr = np.load(str(bf_path), mmap_mode="r") if bf_path.is_file() else None
+                dim_a = int(av_arr.shape[1])
+                dim_b = int(bv_arr.shape[1])
+                if af_arr is not None and af_arr.ndim == 3:
+                    n_frames = int(af_arr.shape[1])
+                for r_i, row in enumerate(v_rows):
+                    vid = str(row["video_id"])
+                    if vid in vid_to_idx:
+                        a_vid_map[vid] = np.asarray(av_arr[r_i], dtype=np.float32)
+                        b_vid_map[vid] = np.asarray(bv_arr[r_i], dtype=np.float32)
+                        if af_arr is not None:
+                            a_fr_map[vid] = np.asarray(af_arr[r_i], dtype=np.float16)
+                        if bf_arr is not None:
+                            b_fr_map[vid] = np.asarray(bf_arr[r_i], dtype=np.float16)
+
+        aq_path = sd / f"{p_a}_query_vectors.npy"
+        bq_path = sd / f"{p_b}_query_vectors.npy"
+        qr_path = sd / "query_rows.jsonl"
+        if qr_path.is_file() and aq_path.is_file() and bq_path.is_file():
+            aq_arr = np.load(str(aq_path), mmap_mode="r")
+            bq_arr = np.load(str(bq_path), mmap_mode="r")
+            q_rows = _read_jsonl_any(qr_path)
+            for q_i, row in enumerate(q_rows):
+                qsha = str(row["query_text_sha256"])
+                a_q_map[qsha] = np.asarray(aq_arr[q_i], dtype=np.float32)
+                b_q_map[qsha] = np.asarray(bq_arr[q_i], dtype=np.float32)
+
+    a_v = None
+    b_v = None
+    if a_vid_map:
+        a_v = np.zeros((len(video_ids), dim_a), dtype=np.float32)
+        b_v = np.zeros((len(video_ids), dim_b), dtype=np.float32)
+        for vid, vec in a_vid_map.items():
+            a_v[vid_to_idx[vid]] = l2_normalize_np(vec)
+        for vid, vec in b_vid_map.items():
+            b_v[vid_to_idx[vid]] = l2_normalize_np(vec)
+
+    a_f = None
+    if a_fr_map:
+        a_f = np.zeros((len(video_ids), n_frames, dim_a), dtype=np.float16)
+        for vid, fmat in a_fr_map.items():
+            a_f[vid_to_idx[vid]] = fmat
+
+    b_f = None
+    if b_fr_map:
+        b_f = np.zeros((len(video_ids), n_frames, dim_b), dtype=np.float16)
+        for vid, fmat in b_fr_map.items():
+            b_f[vid_to_idx[vid]] = fmat
+
+    return a_v, a_f, a_q_map, b_v, b_f, b_q_map
+
+
 def load_gallery_feature_bank(
     *,
     gallery_name: str,
@@ -865,10 +979,13 @@ def load_gallery_feature_bank(
     asr_dirs: Sequence[Path] = (),
     cap_dirs: Sequence[Path] = (),
     vl2_dirs: Sequence[Path] = (),
+    vl3_dirs: Sequence[Path] = (),
     train_vp_bank: np.ndarray | None = None,
     train_sig_bank: np.ndarray | None = None,
     train_pe_bank: np.ndarray | None = None,
     train_sig400_bank: np.ndarray | None = None,
+    train_pe_bigg_bank: np.ndarray | None = None,
+    train_dfn_bank: np.ndarray | None = None,
 ) -> GalleryFeatureBank:
     """Assemble an inference-only GalleryFeatureBank for one gallery from Kaggle shard outputs."""
     gal_rows = _read_jsonl_any(gallery_manifest_path)
@@ -1063,82 +1180,34 @@ def load_gallery_feature_bank(
             e5_mat[vid_to_idx[vid]] = l2_normalize_np(vec)
         bank.cap_e5_vecs = e5_mat
 
-    # 5. Load dual high-res VL2 features (PE-Core-L-14-336 & SigLIP2-SO400M-384)
-    pe_vid_map: dict[str, np.ndarray] = {}
-    pe_fr_map: dict[str, np.ndarray] = {}
-    s4_vid_map: dict[str, np.ndarray] = {}
-    s4_fr_map: dict[str, np.ndarray] = {}
-    pe_dim, s4_dim, n_vl2_frames = 1024, 1152, 12
+    # 5. Load dual high-res VL2 (PE-Core-L & SigLIP2-SO400M) and VL3 (PE-Core-bigG & DFN5B-H)
+    if vl2_dirs:
+        pv, pf, pq, s4v, s4f, s4q = _load_dual_frame_backbone_dirs(
+            vl2_dirs, video_ids=video_ids, vid_to_idx=vid_to_idx,
+            prefixes=("pe", "sig400"), default_dims=(1024, 1152), default_frames=12,
+        )
+        bank.pe_video_vecs, bank.pe_frame_vecs = pv, pf
+        bank.pe_query_map.update(pq)
+        bank.sig400_video_vecs, bank.sig400_frame_vecs = s4v, s4f
+        bank.sig400_query_map.update(s4q)
 
-    for raw_d in vl2_dirs:
-        if not raw_d.exists():
-            continue
-        sd = _find_shard_subdir(raw_d)
-        vr_path = sd / "video_rows.jsonl"
-        pv_path = sd / "pe_video_vectors.npy"
-        pf_path = sd / "pe_frame_vectors_fp16.npy"
-        sv_path = sd / "sig400_video_vectors.npy"
-        sf_path = sd / "sig400_frame_vectors_fp16.npy"
-        if vr_path.is_file() and pv_path.is_file() and sv_path.is_file():
-            v_rows = _read_jsonl_any(vr_path)
-            if v_rows:
-                pv_arr = np.load(str(pv_path), mmap_mode="r")
-                pf_arr = np.load(str(pf_path), mmap_mode="r") if pf_path.is_file() else None
-                sv_arr = np.load(str(sv_path), mmap_mode="r")
-                sf_arr = np.load(str(sf_path), mmap_mode="r") if sf_path.is_file() else None
-                pe_dim = int(pv_arr.shape[1])
-                s4_dim = int(sv_arr.shape[1])
-                if pf_arr is not None and pf_arr.ndim == 3:
-                    n_vl2_frames = int(pf_arr.shape[1])
-                for r_i, row in enumerate(v_rows):
-                    vid = str(row["video_id"])
-                    if vid in vid_to_idx:
-                        pe_vid_map[vid] = np.asarray(pv_arr[r_i], dtype=np.float32)
-                        s4_vid_map[vid] = np.asarray(sv_arr[r_i], dtype=np.float32)
-                        if pf_arr is not None:
-                            pe_fr_map[vid] = np.asarray(pf_arr[r_i], dtype=np.float16)
-                        if sf_arr is not None:
-                            s4_fr_map[vid] = np.asarray(sf_arr[r_i], dtype=np.float16)
-
-        pq_path = sd / "pe_query_vectors.npy"
-        sq_path = sd / "sig400_query_vectors.npy"
-        qr_path = sd / "query_rows.jsonl"
-        if qr_path.is_file() and pq_path.is_file() and sq_path.is_file():
-            pq_arr = np.load(str(pq_path), mmap_mode="r")
-            sq_arr = np.load(str(sq_path), mmap_mode="r")
-            q_rows = _read_jsonl_any(qr_path)
-            for q_i, row in enumerate(q_rows):
-                qsha = str(row["query_text_sha256"])
-                bank.pe_query_map[qsha] = np.asarray(pq_arr[q_i], dtype=np.float32)
-                bank.sig400_query_map[qsha] = np.asarray(sq_arr[q_i], dtype=np.float32)
-
-    if pe_vid_map:
-        pe_v = np.zeros((len(video_ids), pe_dim), dtype=np.float32)
-        s4_v = np.zeros((len(video_ids), s4_dim), dtype=np.float32)
-        for vid, vec in pe_vid_map.items():
-            pe_v[vid_to_idx[vid]] = l2_normalize_np(vec)
-        for vid, vec in s4_vid_map.items():
-            s4_v[vid_to_idx[vid]] = l2_normalize_np(vec)
-        bank.pe_video_vecs = pe_v
-        bank.sig400_video_vecs = s4_v
-
-    if pe_fr_map:
-        pe_f = np.zeros((len(video_ids), n_vl2_frames, pe_dim), dtype=np.float16)
-        for vid, fmat in pe_fr_map.items():
-            pe_f[vid_to_idx[vid]] = fmat
-        bank.pe_frame_vecs = pe_f
-
-    if s4_fr_map:
-        s4_f = np.zeros((len(video_ids), n_vl2_frames, s4_dim), dtype=np.float16)
-        for vid, fmat in s4_fr_map.items():
-            s4_f[vid_to_idx[vid]] = fmat
-        bank.sig400_frame_vecs = s4_f
+    if vl3_dirs:
+        bgv, bgf, bgq, dfv, dff, dfq = _load_dual_frame_backbone_dirs(
+            vl3_dirs, video_ids=video_ids, vid_to_idx=vid_to_idx,
+            prefixes=("pe_bigg", "dfn"), default_dims=(1280, 1024), default_frames=12,
+        )
+        bank.pe_bigg_video_vecs, bank.pe_bigg_frame_vecs = bgv, bgf
+        bank.pe_bigg_query_map.update(bgq)
+        bank.dfn_video_vecs, bank.dfn_frame_vecs = dfv, dff
+        bank.dfn_query_map.update(dfq)
 
     bank.build_derived_caches(
         train_vp_bank=train_vp_bank,
         train_sig_bank=train_sig_bank,
         train_pe_bank=train_pe_bank,
         train_sig400_bank=train_sig400_bank,
+        train_pe_bigg_bank=train_pe_bigg_bank,
+        train_dfn_bank=train_dfn_bank,
     )
     return bank
 

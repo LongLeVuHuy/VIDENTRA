@@ -104,33 +104,68 @@ class TrainQueryBankHubness:
         self.temperature = max(1e-3, float(temperature))
 
     def compute_video_priors(self, video_vecs: np.ndarray) -> dict[str, np.ndarray]:
-        """Compute per-video mean top-K similarity and log-sum-exp hubness prior over train bank."""
+        """Compute per-video mean top-K, bank stats (QB-Z-Norm), and logsumexp priors (QB-DIS)."""
         v_norm = l2_normalize_np(np.asarray(video_vecs, dtype=np.float32))
         n_vids = v_norm.shape[0]
         if n_vids == 0 or self.train_bank.shape[0] == 0:
+            z = np.zeros(n_vids, dtype=np.float32)
             return {
-                "mean_topk": np.zeros(n_vids, dtype=np.float32),
-                "lse_prior": np.zeros(n_vids, dtype=np.float32),
+                "mean_topk": z.copy(),
+                "mean_top50": z.copy(),
+                "bank_mean": z.copy(),
+                "bank_std": np.ones(n_vids, dtype=np.float32),
+                "lse_prior": z.copy(),
+                "lse_sum_003": z.copy(),
+                "lse_sum_005": z.copy(),
+                "lse_sum_007": z.copy(),
             }
 
         # Chunked matrix multiply to bound peak RAM
         chunk = 1024
         k_eff = min(self.k_hub, self.train_bank.shape[0])
+        k_50 = min(50, self.train_bank.shape[0])
         mean_topk = np.zeros(n_vids, dtype=np.float32)
+        mean_top50 = np.zeros(n_vids, dtype=np.float32)
+        bank_mean = np.zeros(n_vids, dtype=np.float32)
+        bank_std = np.ones(n_vids, dtype=np.float32)
         lse_prior = np.zeros(n_vids, dtype=np.float32)
+        lse_sum_003 = np.zeros(n_vids, dtype=np.float32)
+        lse_sum_005 = np.zeros(n_vids, dtype=np.float32)
+        lse_sum_007 = np.zeros(n_vids, dtype=np.float32)
         bank_t = self.train_bank.T
+
+        def _lse_sum(mat: np.ndarray, tau: float) -> np.ndarray:
+            sc = mat / tau
+            mx = np.max(sc, axis=1, keepdims=True)
+            return (mx[:, 0] + np.log(np.sum(np.exp(sc - mx), axis=1))).astype(np.float32)
 
         for st in range(0, n_vids, chunk):
             ed = min(n_vids, st + chunk)
             sims = (v_norm[st:ed] @ bank_t).astype(np.float32)
             part = np.partition(sims, -k_eff, axis=1)[:, -k_eff:]
             mean_topk[st:ed] = np.mean(part, axis=1)
+            part50 = np.partition(sims, -k_50, axis=1)[:, -k_50:]
+            mean_top50[st:ed] = np.mean(part50, axis=1)
+            bank_mean[st:ed] = np.mean(sims, axis=1)
+            bank_std[st:ed] = np.maximum(1e-4, np.std(sims, axis=1))
             scaled = sims / self.temperature
             m_row = np.max(scaled, axis=1, keepdims=True)
             lse = m_row[:, 0] + np.log(np.mean(np.exp(scaled - m_row), axis=1))
             lse_prior[st:ed] = lse * self.temperature
+            lse_sum_003[st:ed] = _lse_sum(sims, 0.03)
+            lse_sum_005[st:ed] = _lse_sum(sims, 0.05)
+            lse_sum_007[st:ed] = _lse_sum(sims, 0.07)
 
-        return {"mean_topk": mean_topk, "lse_prior": lse_prior}
+        return {
+            "mean_topk": mean_topk,
+            "mean_top50": mean_top50,
+            "bank_mean": bank_mean,
+            "bank_std": bank_std,
+            "lse_prior": lse_prior,
+            "lse_sum_003": lse_sum_003,
+            "lse_sum_005": lse_sum_005,
+            "lse_sum_007": lse_sum_007,
+        }
 
     def score_query_against_gallery(
         self,
@@ -149,6 +184,41 @@ class TrainQueryBankHubness:
             "csls": csls_scores.astype(np.float32),
             "dsn_logits": dsn_logits.astype(np.float32),
         }
+
+
+def apply_qb_dis_matrix(
+    raw_mat: np.ndarray,
+    video_priors: Mapping[str, np.ndarray] | None,
+    *,
+    tau: float = 0.05,
+) -> np.ndarray:
+    """Apply exact single-query Inductive Dynamic Inverted Softmax (QB-DIS) per gallery column."""
+    sims = np.asarray(raw_mat, dtype=np.float64)
+    if video_priors is None:
+        return sims
+    key = {0.03: "lse_sum_003", 0.05: "lse_sum_005", 0.07: "lse_sum_007"}.get(round(float(tau), 2), "lse_sum_005")
+    lse_bank = video_priors.get(key)
+    if lse_bank is None:
+        return sims
+    t = max(1e-3, float(tau))
+    scaled = sims / t
+    denom = np.logaddexp(scaled, np.asarray(lse_bank, dtype=np.float64)[None, :])
+    return scaled - denom
+
+
+def apply_qb_znorm_matrix(
+    raw_mat: np.ndarray,
+    video_priors: Mapping[str, np.ndarray] | None,
+) -> np.ndarray:
+    """Standardize each video column using its offline train-9K query bank mean & std (QB-Z-Norm)."""
+    sims = np.asarray(raw_mat, dtype=np.float64)
+    if video_priors is None:
+        return sims
+    mu = video_priors.get("bank_mean")
+    sd = video_priors.get("bank_std")
+    if mu is None or sd is None:
+        return sims
+    return (sims - np.asarray(mu, dtype=np.float64)[None, :]) / np.maximum(1e-4, np.asarray(sd, dtype=np.float64)[None, :])
 
 
 class VEDJEJointRerankerNet(nn.Module):

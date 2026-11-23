@@ -445,6 +445,17 @@ class DatasetRegistryManager:
                     "file_count": fc,
                     "total_mb": round(tb / (1024.0 * 1024.0), 2),
                 }
+            for extra_name in ("catalog", "embeddings", "evidence"):
+                edir = paths.root / extra_name
+                if edir.is_dir():
+                    fc, tb = _dir_stats(edir)
+                    total_files += fc
+                    total_bytes += tb
+                    subdir_stats[extra_name] = {
+                        "exists": True,
+                        "file_count": fc,
+                        "total_mb": round(tb / (1024.0 * 1024.0), 2),
+                    }
             rows.append({
                 "dataset_id": ds_id,
                 "root": paths.root.as_posix(),
@@ -596,11 +607,17 @@ class DatasetRegistryManager:
             if asset_roots.get(ds_id) != expected_root:
                 errors.append(f"asset_roots.json mismatch for {ds_id}: expected {expected_root!r}, got {asset_roots.get(ds_id)!r}")
 
+            ds_db = resolved_db
+            if db_path is None:
+                local_catalog_db = paths.root / "catalog" / "corpus_metadata.db"
+                if local_catalog_db.is_file():
+                    ds_db = local_catalog_db
+
             db_checked = 0
             db_missing_media = 0
             db_missing_kfs = 0
-            if resolved_db.is_file():
-                conn = sqlite3.connect(f"file:{resolved_db}?mode=ro", uri=True)
+            if ds_db.is_file():
+                conn = sqlite3.connect(f"file:{ds_db}?mode=ro", uri=True)
                 cur = conn.cursor()
                 tbls = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
                 if "Videos" in tbls:

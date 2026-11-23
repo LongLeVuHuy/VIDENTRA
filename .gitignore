@@ -40,6 +40,8 @@ data/datasets.json
 data/datasets/*
 !data/datasets/.gitkeep
 !data/datasets/msrvtt/
+!data/datasets/msrvtt_val_tune/
+!data/datasets/msrvtt_val_confirm/
 data/datasets/*/*
 !data/datasets/*/.gitkeep
 
@@ -96,6 +98,10 @@ validation/qvhighlights/*
 !validation/qvhighlights/.gitkeep
 validation/msrvtt/*
 !validation/msrvtt/.gitkeep
+!validation/msrvtt/valid_tuning/
+!validation/msrvtt/valid_confirm/
+validation/msrvtt/*/*
+!validation/msrvtt/*/.gitkeep
 validation/textvr/*
 !validation/textvr/.gitkeep
 validation/tvr/*
@@ -114,6 +120,9 @@ test_queries/qvhighlights/*
 !test_queries/qvhighlights/.gitkeep
 test_queries/msrvtt/*
 !test_queries/msrvtt/.gitkeep
+!test_queries/msrvtt/test_1ka_benchmark/
+test_queries/msrvtt/*/*
+!test_queries/msrvtt/*/.gitkeep
 test_queries/textvr/*
 !test_queries/textvr/.gitkeep
 test_queries/tvr/*
