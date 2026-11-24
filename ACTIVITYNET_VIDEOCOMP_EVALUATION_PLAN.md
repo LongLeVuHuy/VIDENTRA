@@ -1,6 +1,6 @@
 # Kế hoạch đánh giá VIDENTRA bằng ActivityNet Captions và VideoComp
 
-**Ngày lập 24/11/2026 · Trạng thái đề xuất**
+**Ngày lập 24/11/2026 · Trạng thái: Phase A đã hoàn tất triển khai & kiểm thử trên CPU (toàn bộ P0/P1, Semi-Markov DP chuỗi ≥4 sự kiện, Directional Order Margin, Evaluator, Split-Lock 40/40/20 & Modal L4/L40S Worker Scaffold); Phase B chờ tải dữ liệu và cấp quyền chạy Modal GPU**
 
 Mục tiêu là đo xem VIDENTRA có tìm đúng video, định vị đủ từng sự kiện và nhận ra mô tả sai thứ tự hay không. Máy cá nhân chạy các bước CPU và giữ ground truth. Modal L4 xử lý suy luận nhẹ, L40S xử lý embedding nặng. Chọn GPU bằng số đo trên cùng một lô tune. Giữ một phép đo riêng cho cấu hình online 6 GiB phục vụ mục tiêu RTX 3060 dài hạn.
 

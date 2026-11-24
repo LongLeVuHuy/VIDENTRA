@@ -62,6 +62,7 @@ class RankedMoment:
     evidence_frame_indices: tuple[int, ...] = ()
     unresolved_predicates: tuple[str, ...] = ()
     structural_score: float = 0.0
+    event_spans: tuple[dict[str, Any], ...] = ()
 
     def to_result_dict(
         self,
@@ -78,7 +79,7 @@ class RankedMoment:
 
         rep_us = int(round(t_sec * 1_000_000))
 
-        return {
+        payload: dict[str, Any] = {
             "video_id": self.video_id,
             "source_video_id": source_video_id or self.video_id,
             "moment_start_seconds": round(start_sec, 4),
@@ -130,6 +131,9 @@ class RankedMoment:
                 "run_id": "m2_visual_run",
             },
         }
+        if self.event_spans:
+            payload["event_spans"] = [dict(sp) for sp in self.event_spans]
+        return payload
 
 
 class VisualRetrievalEngine:

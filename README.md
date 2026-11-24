@@ -189,12 +189,12 @@ VIDENTRA/
 ├── src/videntra/
 │   ├── query/                           # QueryComplexityGate, AdaptiveQueryDecomposer (llm.py, rules.py)
 │   ├── sampling/ & timeline/            # HybridAdaptiveSampler (5 strategies), 0-based PTS ledger
-│   ├── indexing/ & retrieval/           # Augmented 864d, unified_pipeline.py (SSOT), msrvtt_matrix.py
-│   ├── ranking/                         # vlm_reranker.py (3B/7B NF4), cross_modal_adapter.py, vedje_reranker.py
-│   ├── registry/ & evaluation/          # DatasetRegistryManager, cô lập Ground Truth (MediaResolver)
+│   ├── indexing/ & retrieval/           # Augmented 864d, unified_pipeline.py (SSOT + DP đa sự kiện), msrvtt_matrix.py
+│   ├── ranking/                         # vlm_reranker.py (3B/7B NF4, pair cache, low-RAM storyboard), cross_modal_adapter.py
+│   ├── registry/ & evaluation/          # DatasetRegistryManager, MediaResolver, multievent_evaluator.py (Full-chain & VideoComp)
 │   └── api/ & cli.py                    # FastAPI REST, Web Inspector UI, CLI `videntra`
-├── scripts/                             # Điều phối Kaggle GPU, ablation matrix & benchmark keyframes
-└── tests/                               # 630 unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
+├── scripts/                             # Điều phối Kaggle/Modal GPU, split-lock ActivityNet/VideoComp & benchmark keyframes
+└── tests/                               # 643 unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
 ```
 
 ---

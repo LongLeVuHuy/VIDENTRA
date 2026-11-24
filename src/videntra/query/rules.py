@@ -1,6 +1,7 @@
 """Deterministic rule-based query parser mapping natural language to QueryGraph with multi-clause decomposition and 80 COCO synonyms."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -282,48 +283,145 @@ _EN_TOKEN_RE = re.compile(r'\b[a-zA-Z]+\b')
 _VI_WORD_RE = re.compile(r'\b[\wà-ỹ]+\b')
 
 
-def decompose_query_clauses(query: str) -> list[str]:
+@dataclass(frozen=True)
+class EventClause:
+    """Single decomposed event clause with deterministic ID and temporal relation to previous event."""
+
+    clause_id: str
+    text: str
+    relation_to_prev: str = "start"  # "start" | "before" | "simultaneous"
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|;")
+_AFTER_SPLIT_RE = re.compile(r"\b(?:after\s+(?!that\b|which\b)|sau\s+khi\b)", flags=re.IGNORECASE)
+_SIMULTANEOUS_MARKER_RE = re.compile(
+    r"^(?:meanwhile|at\s+the\s+same\s+time|simultaneously|while|trong\s+khi|trong\s+lúc)\b[\s,:-]*",
+    flags=re.IGNORECASE,
+)
+_SEQUENTIAL_MARKER_RE = re.compile(
+    r"^(?:and\s+leads\s+into|leading\s+into|followed\s+by|and\s+then|after\s+that|"
+    r"then|next|finally|before|afterward|afterwards|trước\s+khi|sau\s+đó|rồi|tiếp\s+theo)\b[\s,:-]*",
+    flags=re.IGNORECASE,
+)
+_FORWARD_SPLIT_RE = re.compile(
+    r"\b(?:and\s+leads\s+into|leading\s+into|followed\s+by|and\s+then|after\s+that|"
+    r"at\s+the\s+same\s+time|simultaneously|meanwhile|while|then|next|finally|"
+    r"before|trước\s+khi|sau\s+đó|rồi|tiếp\s+theo|trong\s+khi|trong\s+lúc|and(?=\s+\w+ing))\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_clause_fragment(fragment: str) -> tuple[str, str]:
+    """Strip edge punctuation & discourse connectives, returning (cleaned_text, relation_hint)."""
+    text = fragment.strip().strip(".,;:!?").strip()
+    relation = "before"
+    if _SIMULTANEOUS_MARKER_RE.match(text):
+        relation = "simultaneous"
+        text = _SIMULTANEOUS_MARKER_RE.sub("", text).strip(".,;:!? ").strip()
+    elif _SEQUENTIAL_MARKER_RE.match(text):
+        text = _SEQUENTIAL_MARKER_RE.sub("", text).strip(".,;:!? ").strip()
+    elif text.lower().startswith("and "):
+        text = text[4:].strip(".,;:!? ").strip()
+    return text, relation
+
+
+def decompose_query_event_chain(query: str) -> list[EventClause]:
+    """Decompose multi-sentence or multi-clause descriptions into ordered `EventClause` steps (>=4 supported)."""
     raw = query.strip()
     if not raw:
         return []
 
-    # B11: Check for reverse temporal conjunctions: "after" (not "after that") or "sau khi"
-    after_pattern = r'\b(?:after\s+(?!that\b|which\b)|sau\s+khi\b)'
-    is_after = bool(re.search(after_pattern, raw, flags=re.IGNORECASE))
+    raw_norm = raw.strip().strip(".,;:!?").strip()
+    sentence_parts = [s.strip() for s in _SENTENCE_SPLIT_RE.split(raw) if s.strip()]
+    if not sentence_parts:
+        sentence_parts = [raw]
 
-    if is_after:
-        parts = re.split(after_pattern, raw, maxsplit=1, flags=re.IGNORECASE)
-    else:
-        split_pattern = (
-            r'\b(?:and leads into|leading into|followed by|and then|then|after that|'
-            r'before|trước khi|sau đó|rồi|tiếp theo|and(?=\s+\w+ing))\b|[;]'
-        )
-        parts = re.split(split_pattern, raw, flags=re.IGNORECASE)
-
-    cleaned = []
+    ordered_pairs: list[tuple[str, str]] = []
     first_subject = ""
-    for idx, p in enumerate(parts):
-        p_clean = p.strip()
-        words = p_clean.split()
-        if len(words) < 2:
+
+    for sent in sentence_parts:
+        sent_clean, sent_rel = _normalize_clause_fragment(sent)
+        if not sent_clean:
             continue
-        if idx == 0 and len(words) >= 2:
-            if words[0].lower() in ("a", "an", "the", "two", "three", "four", "five", "multiple"):
-                first_subject = f"{words[0]} {words[1]}"
-        elif idx > 0 and first_subject and words[0].lower().endswith("ing"):
-            p_clean = f"{first_subject} {p_clean}"
-        if p_clean.lower() != raw.lower():
-            cleaned.append(p_clean)
 
-    # B11: When conjunction is "after" / "sau khi", Clause 2 occurs before Clause 1 in time (t1 <= t2)
-    if is_after and len(cleaned) == 2:
-        cleaned = [cleaned[1], cleaned[0]]
+        if _AFTER_SPLIT_RE.search(sent_clean):
+            sub_parts = _AFTER_SPLIT_RE.split(sent_clean, maxsplit=1)
+            if len(sub_parts) == 2:
+                first_frag, _ = _normalize_clause_fragment(sub_parts[0])
+                second_frag, _ = _normalize_clause_fragment(sub_parts[1])
+                if len(first_frag.split()) >= 2 and len(second_frag.split()) >= 2:
+                    ordered_pairs.append((second_frag, sent_rel))
+                    ordered_pairs.append((first_frag, "before"))
+                    continue
 
+        tokens = _FORWARD_SPLIT_RE.split(sent_clean)
+        next_rel = sent_rel
+        local_idx = 0
+        for tok in tokens:
+            if tok is None or not tok.strip():
+                continue
+            tok_low = tok.strip().lower()
+            if _FORWARD_SPLIT_RE.fullmatch(tok.strip()):
+                if re.fullmatch(
+                    r"while|meanwhile|at\s+the\s+same\s+time|simultaneously|trong\s+khi|trong\s+lúc",
+                    tok_low,
+                ):
+                    next_rel = "simultaneous"
+                else:
+                    next_rel = "before"
+                continue
+
+            frag, frag_rel = _normalize_clause_fragment(tok)
+            words = frag.split()
+            if len(words) < 2:
+                continue
+
+            eff_rel = "simultaneous" if ("simultaneous" in (frag_rel, next_rel)) else next_rel
+            if not ordered_pairs and local_idx == 0:
+                if words[0].lower() in ("a", "an", "the", "two", "three", "four", "five", "multiple"):
+                    first_subject = f"{words[0]} {words[1]}"
+            elif first_subject and words[0].lower().endswith("ing") and (local_idx > 0 or ordered_pairs):
+                frag = f"{first_subject} {frag}"
+
+            ordered_pairs.append((frag, eff_rel))
+            local_idx += 1
+            next_rel = "before"
+
+    # Deduplicate consecutive duplicates while retaining full chain length (>=4 supported)
+    deduped: list[tuple[str, str]] = []
+    for txt, rel in ordered_pairs:
+        if txt.lower() == raw_norm.lower() and len(ordered_pairs) > 1:
+            continue
+        if deduped and deduped[-1][0].lower() == txt.lower():
+            continue
+        deduped.append((txt, rel))
+
+    if len(deduped) < 2:
+        return [EventClause(clause_id="e0", text=raw, relation_to_prev="start")]
+
+    chain: list[EventClause] = []
+    for idx, (txt, rel) in enumerate(deduped):
+        chain.append(
+            EventClause(
+                clause_id=f"e{idx}",
+                text=txt,
+                relation_to_prev="start" if idx == 0 else rel,
+            )
+        )
+    return chain
+
+
+def decompose_query_clauses(query: str) -> list[str]:
+    """Preserve `[original_query, clause_0, clause_1, ...]` with no 3-clause truncation."""
+    raw = query.strip()
+    if not raw:
+        return []
+    chain = decompose_query_event_chain(raw)
     result = [raw]
-    if len(cleaned) >= 2:
-        for c in cleaned[:3]:
-            if c not in result:
-                result.append(c)
+    if len(chain) >= 2:
+        for ec in chain:
+            if ec.text not in result and ec.text.lower() != raw.lower():
+                result.append(ec.text)
     return result
 
 

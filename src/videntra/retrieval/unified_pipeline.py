@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from collections import defaultdict, OrderedDict
+from dataclasses import replace as dataclass_replace
 import hashlib
 import heapq
 import logging
@@ -34,7 +35,9 @@ import torch
 
 from videntra.query.rules import (
     COCO_SYNONYM_MAP,
+    EventClause,
     decompose_query_clauses,
+    decompose_query_event_chain,
     extract_object_requirements,
     normalize_object_requirements,
 )
@@ -63,8 +66,10 @@ from videntra.indexing.augmented_vector import (
     deduplicate_and_filter_frame_objects,
 )
 from videntra.retrieval.alignment import (
+    EventChainLocalizationResult,
     align_sequential_keyframe_clauses,
     compute_temporal_pool_score,
+    localize_event_chain_dp,
     query_guided_temporal_attention_score,
     shot_aware_graph_diffusion,
     temporal_sinkhorn_alignment_score,
@@ -3257,6 +3262,7 @@ class UnifiedMultimodalSearchPipeline:
             else None
         )
         self.last_routing_plan = routing_plan
+        event_chain_raw: list[EventClause] = []
         use_llm_clauses = (
             routing_plan is not None
             and routing_plan.routing_mode == "llm_compact"
@@ -3264,8 +3270,11 @@ class UnifiedMultimodalSearchPipeline:
         )
         if use_llm_clauses:
             clauses = list(routing_plan.visual_clauses)  # type: ignore[union-attr]
+        elif ablation_config not in ("A0", "A1"):
+            event_chain_raw = decompose_query_event_chain(query)
+            clauses = decompose_query_clauses(query)
         else:
-            clauses = decompose_query_clauses(query) if ablation_config not in ("A0", "A1") else [query]
+            clauses = [query]
         obj_reqs = extract_object_requirements(query) if ablation_config != "A0" else []
         if not obj_reqs and routing_plan is not None and routing_plan.object_requirements:
             obj_reqs = normalize_object_requirements(routing_plan.object_requirements)
@@ -3319,25 +3328,66 @@ class UnifiedMultimodalSearchPipeline:
 
         p1 = query
         p2 = f"a video frame showing {query}"
+        active_event_chain: list[EventClause] = []
         if use_llm_clauses:
-            sub_clauses = [
+            llm_subs = [
                 c
                 for c in routing_plan.visual_clauses  # type: ignore[union-attr]
                 if not is_redundant_visual_clause(c, query)
-            ][:4]
+            ][:12]
             if (
-                not sub_clauses
+                not llm_subs
                 and not routing_plan.ocr_phrases  # type: ignore[union-attr]
                 and not routing_plan.asr_phrases  # type: ignore[union-attr]
                 and ablation_config not in ("A0", "A1")
             ):
-                sub_clauses = [
-                    c
-                    for c in decompose_query_clauses(query)
-                    if not is_redundant_visual_clause(c, query)
-                ][:3]
+                fallback_chain = [
+                    ec for ec in decompose_query_event_chain(query)
+                    if not is_redundant_visual_clause(ec.text, query)
+                ][:12]
+                active_event_chain = [
+                    EventClause(
+                        clause_id=ec.clause_id,
+                        text=ec.text,
+                        relation_to_prev="start" if i == 0 else ec.relation_to_prev,
+                    )
+                    for i, ec in enumerate(fallback_chain)
+                ]
+            else:
+                active_event_chain = [
+                    EventClause(
+                        clause_id=f"e{i}",
+                        text=c,
+                        relation_to_prev="start" if i == 0 else "before",
+                    )
+                    for i, c in enumerate(llm_subs)
+                ]
         else:
-            sub_clauses = [c for c in clauses if not is_redundant_visual_clause(c, query)][:3]
+            if event_chain_raw and len(event_chain_raw) >= 2:
+                filtered_ec = [
+                    ec for ec in event_chain_raw if not is_redundant_visual_clause(ec.text, query)
+                ][:12]
+                active_event_chain = [
+                    EventClause(
+                        clause_id=ec.clause_id,
+                        text=ec.text,
+                        relation_to_prev="start" if i == 0 else ec.relation_to_prev,
+                    )
+                    for i, ec in enumerate(filtered_ec)
+                ]
+            else:
+                rule_subs = [c for c in clauses if not is_redundant_visual_clause(c, query)][:12]
+                active_event_chain = [
+                    EventClause(
+                        clause_id=f"e{i}",
+                        text=c,
+                        relation_to_prev="start" if i == 0 else "before",
+                    )
+                    for i, c in enumerate(rule_subs)
+                ]
+        sub_clauses = [ec.text for ec in active_event_chain]
+        sub_clause_ids = [ec.clause_id for ec in active_event_chain]
+        sub_clause_rels = [ec.relation_to_prev for ec in active_event_chain]
 
         t_parse_end = time.perf_counter()
 
@@ -3412,6 +3462,7 @@ class UnifiedMultimodalSearchPipeline:
         search_depth = min(ntotal_aug, int(round(self.search_depth * density_scale)))
         visual_candidates: list[dict[str, Any]] = []
         video_anchor_windows: dict[str, tuple[float, float]] = {}
+        video_event_chains: dict[str, EventChainLocalizationResult] = {}
         video_min_clause_sim: dict[str, float] = {}
         stage2_retrieval_path = "uninitialized"
         active_sims_768_all: np.ndarray | None = None
@@ -3544,6 +3595,10 @@ class UnifiedMultimodalSearchPipeline:
 
                     seq_score = 0.0
                     anchor_win: tuple[float, float] | None = None
+                    cand_ords = [
+                        int(kf.get("source_frame_index", i_k))
+                        for i_k, kf in enumerate(kf_list)
+                    ]
                     if use_se_viterbi:
                         w_ocr_v = 0.7 if routing_plan.has_explicit_ocr_intent else 0.4
                         w_asr_v = 0.7 if routing_plan.has_explicit_asr_intent else 0.4
@@ -3555,17 +3610,23 @@ class UnifiedMultimodalSearchPipeline:
                             routing_plan.asr_phrases,
                         )
                         viterbi_availability[cvid] = modal_avail
-                        vit_res = viterbi_subevent_localization(
+                        chain_res = localize_event_chain_dp(
                             timestamps_sec=cand_ts,
                             event_vis_curves=clause_frame_sims,
+                            clause_ids=sub_clause_ids,
+                            clause_texts=sub_clauses,
+                            relations_to_prev=sub_clause_rels,
                             event_ocr_curves=ocr_curves,
                             event_asr_curves=asr_curves,
                             event_weights=[(1.0, w_ocr_v, w_asr_v)] * len(sub_q_864),
+                            frame_ordinals=cand_ords,
+                            v_dur_sec=self.video_durations.get(cvid),
                             max_gap_sec=35.0,
                         )
-                        if vit_res is not None:
-                            seq_score = float(vit_res.avg_score)
-                            anchor_win = (float(vit_res.start_sec), float(vit_res.end_sec))
+                        if chain_res is not None:
+                            seq_score = float(chain_res.avg_score)
+                            anchor_win = (float(chain_res.overall_start_sec), float(chain_res.overall_end_sec))
+                            video_event_chains[cvid] = chain_res
                     if anchor_win is None:
                         seq_score, anchor_win = align_sequential_keyframe_clauses(
                             cand_matrix=cand_mat,
@@ -3574,6 +3635,19 @@ class UnifiedMultimodalSearchPipeline:
                             max_transition_sec=35.0,
                             precomputed_clause_curves=clause_frame_sims,
                         )
+                        if len(sub_clauses) >= 2 and clause_frame_sims.shape[0] >= 2:
+                            chain_res_vis = localize_event_chain_dp(
+                                timestamps_sec=cand_ts,
+                                event_vis_curves=clause_frame_sims,
+                                clause_ids=sub_clause_ids,
+                                clause_texts=sub_clauses,
+                                relations_to_prev=sub_clause_rels,
+                                frame_ordinals=cand_ords,
+                                v_dur_sec=self.video_durations.get(cvid),
+                                max_gap_sec=45.0,
+                            )
+                            if chain_res_vis is not None:
+                                video_event_chains[cvid] = chain_res_vis
                     if len(sub_clauses) >= 2 and clause_frame_sims.shape[0] >= 2:
                         t_sot_score = temporal_sinkhorn_alignment_score(
                             clause_frame_sims,
@@ -5460,6 +5534,8 @@ class UnifiedMultimodalSearchPipeline:
             s_orig_idx, e_orig_idx, rep_orig_idx, ev_indices = _resolve_moment_frame_indices(
                 kf_list, start_sec, end_sec, best_idx
             )
+            chain_obj = video_event_chains.get(vid)
+            ev_spans_tuple = chain_obj.to_dict_list() if chain_obj is not None else ()
             final_results.append(RankedMoment(
                 moment_id=f"{vid}_{round(start_sec, 1)}_{round(end_sec, 1)}",
                 video_id=vid,
@@ -5472,6 +5548,7 @@ class UnifiedMultimodalSearchPipeline:
                 ranking_score=round(float(moment.ranking_score), 5),
                 match_status=moment.match_status,
                 evidence_frame_indices=ev_indices,
+                event_spans=ev_spans_tuple,
             ))
 
             # Soft-NMS Multi-Peak Proposals for Top-1 Video (enabled in A5):
@@ -5534,12 +5611,65 @@ class UnifiedMultimodalSearchPipeline:
                 ).fetchall():
                     if row_fp:
                         vid_paths[str(row_vid)] = Path(str(row_fp))
+            focus_intervals_by_id = {
+                vid_s: [(float(sp.start_sec), float(sp.end_sec)) for sp in video_event_chains[vid_s].spans]
+                for vid_s, _ in ordered_vid_scores[: max(2, int(self.vlm_reranker.fusion_config.top_k_rerank))]
+                if vid_s in video_event_chains and video_event_chains[vid_s].spans
+            }
             new_vid_order, vlm_rerank_stats = self.vlm_reranker.rerank_video_scores(
-                query, ordered_vid_scores, vid_paths
+                query,
+                ordered_vid_scores,
+                vid_paths,
+                focus_intervals_by_id=focus_intervals_by_id or None,
             )
             if vlm_rerank_stats.get("applied"):
-                rank_pos = {v: idx for idx, v in enumerate(new_vid_order)}
-                final_results.sort(key=lambda m: (rank_pos.get(str(m.video_id), len(new_vid_order)), -float(m.ranking_score)))
+                k_rerank = max(2, int(vlm_rerank_stats.get("top_k_rerank") or self.vlm_reranker.fusion_config.top_k_rerank))
+                reranked_head = [str(v) for v in new_vid_order[: min(len(new_vid_order), k_rerank)]]
+                head_set = set(reranked_head)
+                tail_max = max(
+                    [float(m.ranking_score) for m in final_results if str(m.video_id) not in head_set]
+                    + [float(m.ranking_score) for m in cand_moments if str(m.video_id) not in head_set],
+                    default=0.0,
+                )
+                pre_head_max = max(
+                    [float(m.ranking_score) for m in final_results if str(m.video_id) in head_set],
+                    default=tail_max,
+                )
+                step_delta = 0.05
+                ceiling_score = max(tail_max + step_delta * len(reranked_head), pre_head_max + 0.01)
+                post_vlm_score_by_vid = {
+                    vid_s: round(ceiling_score - rank_i * step_delta, 5)
+                    for rank_i, vid_s in enumerate(reranked_head)
+                }
+
+                def _rewrite_moments_post_vlm(seq: Sequence[RankedMoment]) -> list[RankedMoment]:
+                    out_seq: list[RankedMoment] = []
+                    for m in seq:
+                        vid_s = str(m.video_id)
+                        if vid_s in post_vlm_score_by_vid:
+                            base_vlm_sc = post_vlm_score_by_vid[vid_s]
+                            is_sec = "+multi_window" in str(m.match_status)
+                            adj_sc = round(base_vlm_sc - (1e-4 if is_sec else 0.0), 5)
+                            out_seq.append(
+                                dataclass_replace(
+                                    m,
+                                    ranking_score=adj_sc,
+                                    score_type="vlm_reranked",
+                                )
+                            )
+                        else:
+                            out_seq.append(m)
+                    out_seq.sort(
+                        key=lambda m: (
+                            -float(m.ranking_score),
+                            str(m.video_id),
+                            float(m.moment_start_seconds),
+                        )
+                    )
+                    return out_seq
+
+                final_results = _rewrite_moments_post_vlm(final_results)
+                cand_moments = _rewrite_moments_post_vlm(cand_moments)
 
         self._active_query_sims = None
         t_boundary_end = time.perf_counter()
@@ -5565,7 +5695,7 @@ class UnifiedMultimodalSearchPipeline:
         }
         union_candidate_ids = list(dict.fromkeys([*visual_candidate_ids, *lex_ordered_vids, *caption_ordered_vids]))
         ranked_video_ids_default = [
-            m.video_id for m in self._build_ranked_videos(cand_moments, cand_moments, top_k=top_k)
+            m.video_id for m in self._build_ranked_videos(final_results, cand_moments, top_k=top_k)
         ]
 
         def _trace_moment_rows(moments_seq: Sequence[RankedMoment]) -> list[dict[str, Any]]:
@@ -5614,7 +5744,7 @@ class UnifiedMultimodalSearchPipeline:
             pre_fusion_vis_map.items(),
             key=lambda item: (-float(item[1]), str(item[0])),
         )
-        after_rerank_videos = self._build_ranked_videos(cand_moments, cand_moments, top_k=20)
+        after_rerank_videos = self._build_ranked_videos(final_results, cand_moments, top_k=20)
         stage_traces: dict[str, Any] = {
             "before_base_fusion": {
                 "visual_candidates": [

@@ -610,3 +610,362 @@ def compute_temporal_pool_score(
             q_arr, f_arr, tau=tau, disp_penalty=disp_penalty
         )
     return float(pool_score), float(spike_gap)
+
+
+@dataclass(frozen=True)
+class EventSpanPrediction:
+    """Per-event localized interval anchored by presentation-order PTS & 0-based frame ordinals."""
+
+    clause_id: str
+    clause_text: str
+    relation_to_prev: str
+    start_sec: float
+    end_sec: float
+    anchor_index: int
+    anchor_sec: float
+    start_frame_index: int
+    end_frame_index: int
+    score: float
+    status: str = "supported"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "clause_id": self.clause_id,
+            "clause_text": self.clause_text,
+            "relation_to_prev": self.relation_to_prev,
+            "start_sec": round(float(self.start_sec), 4),
+            "end_sec": round(float(self.end_sec), 4),
+            "anchor_index": int(self.anchor_index),
+            "anchor_sec": round(float(self.anchor_sec), 4),
+            "start_frame_index": int(self.start_frame_index),
+            "end_frame_index": int(self.end_frame_index),
+            "score": round(float(self.score), 6),
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class EventChainLocalizationResult:
+    """Multi-event Semi-Markov DP result with per-event spans and Directional Order Margin."""
+
+    total_score: float
+    avg_score: float
+    reverse_avg_score: float
+    directional_order_margin: float
+    spans: tuple[EventSpanPrediction, ...]
+    overall_start_sec: float
+    overall_end_sec: float
+    all_supported: bool
+
+    def to_dict_list(self) -> tuple[dict[str, object], ...]:
+        return tuple(sp.to_dict() for sp in self.spans)
+
+
+def _solve_chain_dp_path(
+    ts: Sequence[float],
+    phi: np.ndarray,
+    relations: Sequence[str],
+    *,
+    max_gap_sec: float,
+    lambda_gap: float,
+    lambda_same: float,
+    simultaneous_max_delta_sec: float,
+) -> tuple[float, list[int]] | None:
+    """Solve forward DP path over `(K, M_v)` event curves respecting `before` vs `simultaneous`."""
+    k_events, m_v = phi.shape
+    if m_v == 0 or k_events == 0:
+        return None
+    if k_events == 1:
+        best_idx = int(np.argmax(phi[0]))
+        return float(phi[0, best_idx]), [best_idx]
+
+    dp = np.full((k_events, m_v), -np.inf, dtype=np.float64)
+    parent = np.full((k_events, m_v), -1, dtype=np.int32)
+    dp[0] = phi[0].astype(np.float64)
+
+    for k in range(1, k_events):
+        rel = relations[k] if k < len(relations) else "before"
+        for i in range(m_v):
+            t_curr = ts[i]
+            emit = float(phi[k, i])
+            best_val = -np.inf
+            best_prev = -1
+            if rel == "simultaneous":
+                for j in range(m_v):
+                    dt_abs = abs(t_curr - ts[j])
+                    if dt_abs > float(simultaneous_max_delta_sec):
+                        continue
+                    prev_val = dp[k - 1, j]
+                    if prev_val == -np.inf:
+                        continue
+                    cand = prev_val + emit - 0.005 * dt_abs
+                    if cand > best_val:
+                        best_val = cand
+                        best_prev = j
+            if best_prev == -1:
+                for j in range(i + 1):
+                    prev_val = dp[k - 1, j]
+                    if prev_val == -np.inf:
+                        continue
+                    dt = max(0.0, t_curr - ts[j])
+                    excess_gap = max(0.0, dt - float(max_gap_sec))
+                    same_pen = float(lambda_same) if (m_v >= 2 and j == i and rel != "simultaneous") else 0.0
+                    cand = prev_val + emit - float(lambda_gap) * excess_gap - same_pen
+                    if cand > best_val:
+                        best_val = cand
+                        best_prev = j
+            dp[k, i] = best_val
+            parent[k, i] = best_prev
+
+    best_last = int(np.argmax(dp[k_events - 1]))
+    best_total = float(dp[k_events - 1, best_last])
+    if not np.isfinite(best_total):
+        return None
+
+    path = [best_last]
+    curr = best_last
+    for k in range(k_events - 1, 0, -1):
+        curr = int(parent[k, curr])
+        if curr < 0:
+            return None
+        path.append(curr)
+    path.reverse()
+    return best_total, path
+
+
+def localize_event_chain_dp(
+    timestamps_sec: Sequence[float],
+    event_vis_curves: Sequence[Sequence[float] | np.ndarray],
+    *,
+    clause_ids: Sequence[str] | None = None,
+    clause_texts: Sequence[str] | None = None,
+    relations_to_prev: Sequence[str] | None = None,
+    event_ocr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_asr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_weights: Sequence[tuple[float, float, float]] | None = None,
+    frame_ordinals: Sequence[int] | None = None,
+    v_dur_sec: float | None = None,
+    max_gap_sec: float = 45.0,
+    lambda_gap: float = 0.02,
+    lambda_same: float = 0.08,
+    simultaneous_max_delta_sec: float = 8.0,
+    missing_evidence_threshold: float = 0.05,
+) -> EventChainLocalizationResult | None:
+    """Semi-Markov DP multi-event localizer emitting per-clause PTS intervals + Directional Order Margin."""
+    from videntra.localization.refine import expand_boundary_contrast
+
+    ts = [float(t) for t in timestamps_sec]
+    m_v = len(ts)
+    vis_mat = np.asarray(event_vis_curves, dtype=np.float32)
+    if vis_mat.ndim == 1:
+        vis_mat = vis_mat.reshape(1, -1)
+    k_events = int(vis_mat.shape[0]) if vis_mat.size > 0 else 0
+    if m_v == 0 or k_events == 0 or vis_mat.shape != (k_events, m_v):
+        return None
+
+    ocr_mat = (
+        np.asarray(event_ocr_curves, dtype=np.float32)
+        if event_ocr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    asr_mat = (
+        np.asarray(event_asr_curves, dtype=np.float32)
+        if event_asr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    phi = np.empty((k_events, m_v), dtype=np.float32)
+    for k in range(k_events):
+        w_vis, w_ocr, w_asr = (
+            event_weights[k] if event_weights is not None else (1.0, 0.6, 0.5)
+        )
+        phi[k] = float(w_vis) * vis_mat[k] + float(w_ocr) * ocr_mat[k] + float(w_asr) * asr_mat[k]
+
+    eff_cids = [str(clause_ids[k]) if (clause_ids and k < len(clause_ids)) else f"e{k}" for k in range(k_events)]
+    eff_txts = [str(clause_texts[k]) if (clause_texts and k < len(clause_texts)) else "" for k in range(k_events)]
+    eff_rels = [
+        ("start" if k == 0 else str(relations_to_prev[k]))
+        if (relations_to_prev and k < len(relations_to_prev))
+        else ("start" if k == 0 else "before")
+        for k in range(k_events)
+    ]
+    eff_ords = (
+        [int(frame_ordinals[i]) for i in range(m_v)]
+        if (frame_ordinals is not None and len(frame_ordinals) == m_v)
+        else list(range(m_v))
+    )
+
+    fwd = _solve_chain_dp_path(
+        ts,
+        phi,
+        eff_rels,
+        max_gap_sec=max_gap_sec,
+        lambda_gap=lambda_gap,
+        lambda_same=lambda_same,
+        simultaneous_max_delta_sec=simultaneous_max_delta_sec,
+    )
+    if fwd is None:
+        return None
+    fwd_total, path = fwd
+    fwd_avg = fwd_total / float(k_events)
+
+    rev_avg = fwd_avg
+    has_order_edge = any(r == "before" for r in eff_rels[1:])
+    if k_events >= 2 and has_order_edge:
+        rev_phi = phi[::-1]
+        rev_rels = ["start"] + ["before"] * (k_events - 1)
+        rev_sol = _solve_chain_dp_path(
+            ts,
+            rev_phi,
+            rev_rels,
+            max_gap_sec=max_gap_sec,
+            lambda_gap=lambda_gap,
+            lambda_same=lambda_same,
+            simultaneous_max_delta_sec=simultaneous_max_delta_sec,
+        )
+        if rev_sol is not None:
+            rev_avg = float(rev_sol[0]) / float(k_events)
+    order_margin = float(fwd_avg - rev_avg)
+
+    eff_dur = float(v_dur_sec) if v_dur_sec is not None else max(ts[-1] + 2.0, 2.0)
+    per_ev_max_dur_ratio = min(0.60, max(0.28, 1.1 / float(k_events)))
+    raw_starts: list[float] = []
+    raw_ends: list[float] = []
+    for k in range(k_events):
+        anchor_idx = path[k]
+        st_k, et_k = expand_boundary_contrast(
+            ts=ts,
+            curve=phi[k].tolist(),
+            v_dur=eff_dur,
+            anchor_idx=anchor_idx,
+            anchor_window=None,
+            decay_lambda=0.015,
+            c_thresh=0.45,
+            max_gap_sec=4.0,
+            max_dur_ratio=per_ev_max_dur_ratio,
+        )
+        anchor_t = ts[anchor_idx]
+        st_k = min(float(st_k), anchor_t)
+        et_k = max(float(et_k), anchor_t)
+        if et_k <= st_k:
+            st_k = max(0.0, anchor_t - 0.5)
+            et_k = min(eff_dur, max(st_k + 0.25, anchor_t + 0.5))
+        raw_starts.append(st_k)
+        raw_ends.append(et_k)
+
+    # Order-preserving midpoint valley clamping ONLY for adjacent sequential `before` edges
+    for k in range(1, k_events):
+        if eff_rels[k] != "before":
+            continue
+        if raw_ends[k - 1] <= raw_starts[k]:
+            continue
+        t_a = ts[path[k - 1]]
+        t_b = ts[path[k]]
+        if t_b <= t_a + 1e-6:
+            cut_t = t_a
+        else:
+            between = [
+                (m, ts[m], float(phi[k - 1, m] + phi[k, m]))
+                for m in range(m_v)
+                if t_a <= ts[m] <= t_b
+            ]
+            if between:
+                cut_t = min(between, key=lambda item: item[2])[1]
+            else:
+                cut_t = 0.5 * (t_a + t_b)
+            if t_b > t_a + 0.1:
+                cut_t = min(max(cut_t, t_a + 0.05), t_b - 0.05)
+            else:
+                cut_t = 0.5 * (t_a + t_b)
+        raw_ends[k - 1] = max(raw_starts[k - 1] + 0.05, min(raw_ends[k - 1], cut_t))
+        raw_starts[k] = min(raw_ends[k] - 0.05, max(raw_starts[k], cut_t))
+
+    spans: list[EventSpanPrediction] = []
+    all_supported = True
+    for k in range(k_events):
+        anchor_idx = path[k]
+        st_k = round(float(raw_starts[k]), 3)
+        et_k = round(max(st_k + 0.05, float(raw_ends[k])), 3)
+        s_pos = min(range(m_v), key=lambda idx: abs(ts[idx] - st_k))
+        e_pos = min(range(m_v), key=lambda idx: abs(ts[idx] - et_k))
+        s_ord = eff_ords[min(s_pos, anchor_idx)]
+        e_ord = eff_ords[max(e_pos, anchor_idx)]
+        ev_score = float(phi[k, anchor_idx])
+        peak_k = float(np.max(phi[k]))
+        status = (
+            "supported"
+            if (peak_k >= float(missing_evidence_threshold) and ev_score >= float(missing_evidence_threshold))
+            else "missing"
+        )
+        if status != "supported":
+            all_supported = False
+        spans.append(
+            EventSpanPrediction(
+                clause_id=eff_cids[k],
+                clause_text=eff_txts[k],
+                relation_to_prev=eff_rels[k],
+                start_sec=st_k,
+                end_sec=et_k,
+                anchor_index=int(anchor_idx),
+                anchor_sec=round(float(ts[anchor_idx]), 3),
+                start_frame_index=int(min(s_ord, e_ord)),
+                end_frame_index=int(max(s_ord, e_ord)),
+                score=ev_score,
+                status=status,
+            )
+        )
+
+    return EventChainLocalizationResult(
+        total_score=float(fwd_total),
+        avg_score=float(fwd_avg),
+        reverse_avg_score=float(rev_avg),
+        directional_order_margin=order_margin,
+        spans=tuple(spans),
+        overall_start_sec=min(sp.start_sec for sp in spans),
+        overall_end_sec=max(sp.end_sec for sp in spans),
+        all_supported=all_supported,
+    )
+
+
+def score_videocomp_order(
+    timestamps_sec: Sequence[float],
+    event_vis_curves: Sequence[Sequence[float] | np.ndarray],
+    *,
+    relations_to_prev: Sequence[str] | None = None,
+    max_gap_sec: float = 45.0,
+    beta_order: float = 1.0,
+) -> dict[str, float]:
+    """Score VideoComp pairs combining mean event match, DP forward order & Directional Order Margin."""
+    vis_mat = np.asarray(event_vis_curves, dtype=np.float32)
+    if vis_mat.ndim == 1:
+        vis_mat = vis_mat.reshape(1, -1)
+    if vis_mat.size == 0 or len(timestamps_sec) != vis_mat.shape[1]:
+        return {
+            "event_max_mean": 0.0,
+            "forward_avg": 0.0,
+            "reverse_avg": 0.0,
+            "directional_order_margin": 0.0,
+            "combined_score": 0.0,
+        }
+    event_max_mean = float(np.mean(np.max(vis_mat, axis=1)))
+    chain_res = localize_event_chain_dp(
+        timestamps_sec=timestamps_sec,
+        event_vis_curves=vis_mat,
+        relations_to_prev=relations_to_prev,
+        max_gap_sec=max_gap_sec,
+    )
+    if chain_res is None:
+        return {
+            "event_max_mean": event_max_mean,
+            "forward_avg": event_max_mean,
+            "reverse_avg": event_max_mean,
+            "directional_order_margin": 0.0,
+            "combined_score": event_max_mean,
+        }
+    comb = 0.5 * event_max_mean + 0.5 * chain_res.avg_score + float(beta_order) * chain_res.directional_order_margin
+    return {
+        "event_max_mean": event_max_mean,
+        "forward_avg": float(chain_res.avg_score),
+        "reverse_avg": float(chain_res.reverse_avg_score),
+        "directional_order_margin": float(chain_res.directional_order_margin),
+        "combined_score": float(comb),
+    }
