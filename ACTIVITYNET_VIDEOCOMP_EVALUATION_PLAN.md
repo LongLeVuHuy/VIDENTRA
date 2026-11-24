@@ -1,6 +1,6 @@
 # Kế hoạch đánh giá VIDENTRA bằng ActivityNet Captions và VideoComp
 
-**Ngày lập 24/11/2026 · Trạng thái: Phase A đã hoàn tất triển khai & kiểm thử trên CPU (toàn bộ P0/P1, Semi-Markov DP chuỗi ≥4 sự kiện, Directional Order Margin, Evaluator, Split-Lock 40/40/20 & Modal L4/L40S Worker Scaffold); Phase B chờ tải dữ liệu và cấp quyền chạy Modal GPU**
+**Ngày lập 24/11/2026 · Cập nhật kết quả 25/11/2026 · Trạng thái: Đã hoàn tất trọn vẹn Phase A & Phase B (Sync `16.514` media lên Modal Volume, khóa split `40/40/20` `0` giao, Pilot `NVIDIA A10` vs `L40S`, trích `48` PTS frames × 3 backbone `0` lỗi, Sweep `Tune`, khóa Champion `Valid-Confirm` qua cổng Go/No-Go & 95% CI, chấm single-shot Sealed `Test` + `644 passed` trên `pytest`)**
 
 Mục tiêu là đo xem VIDENTRA có tìm đúng video, định vị đủ từng sự kiện và nhận ra mô tả sai thứ tự hay không. Máy cá nhân chạy các bước CPU và giữ ground truth. Modal L4 xử lý suy luận nhẹ, L40S xử lý embedding nặng. Chọn GPU bằng số đo trên cùng một lô tune. Giữ một phép đo riêng cho cấu hình online 6 GiB phục vụ mục tiêu RTX 3060 dài hạn.
 
@@ -66,3 +66,16 @@ Các mã GPU trong bảng là lựa chọn cho Modal Function khi triển khai. 
 | **P1 · Storyboard và OOM** | Hàm storyboard giữ mọi frame đã decode trong RAM để chọn tám ảnh; nhánh OOM thử lại từng ảnh dù batch có thể đã là 1. | Chọn ordinal qua ledger, decode có giới hạn bộ nhớ quanh vùng ứng viên cho từng sự kiện. Kiểm tra ordinal/PTS, peak RAM theo độ dài video và fallback khi một ảnh đã vượt VRAM. [Storyboard và reranker](src/videntra/ranking/vlm_reranker.py) |
 
 Ba mục P0 quyết định liệu số đo có phản ánh khả năng tìm **đủ và đúng thứ tự sự kiện**. Hai mục P1 nên hoàn thành trước khi mở rộng pilot lên toàn corpus, vì chúng tác động trực tiếp tới RAM và số lượt inference phải trả phí.
+
+## 6. Kết quả thực nghiệm Phase B (Đã đo trên Local CPU + Modal GPU)
+
+1. **Pilot Cố Định GPU (`32` videos × `48` frames = `1.536` frames, `128` texts, `0` lỗi):**
+   - `NVIDIA A10` (thay thế fallback cho `L4` khi thiếu tải, `$1.10/hr`): `493.64s` tổng (`419.76s` steady-state), `274.44 videos/hr`, `$0.4008/100 videos`.
+   - `NVIDIA L40S` (`$1.95/hr`): `425.50s` tổng (`295.63s` steady-state), `389.67 videos/hr`, `$0.5004/100 videos`, sai số cosine vs `A10` ở mức `mean_cos = 1.00001` → chọn **`L40S`** để trích dense embeddings (`Tune` `51.168`, `Valid-Confirm` `51.744`, `Test` `25.440` frames, `0` decode errors).
+   - **Profile 6 GiB Online VLM (`Qwen2.5-VL-3B-Instruct` 4-bit NF4 `batch_size=1`):** Pilot `NVIDIA A10` ghi nhận NVML peak **`3.985,81 MiB`** (`pytorch_peak_allocated = 2.580,52 MiB`, `0` OOM); cold shards trên `NVIDIA A10G`/`A10`/`L40S` đạt `4.163–4.940 MiB <= 6.144 MiB`. Đã sửa lỗi tích lũy `Params4bit` qua nhiều shard ấm bằng `gc.collect()` + `torch.cuda.synchronize()`/`empty_cache()`/`ipc_collect()` trong `unload()`.
+2. **Quyết định Ablation & Khóa Champion (`Tune` → `Valid-Confirm` → Sealed `Test`):**
+   - Khóa ngưỡng thăng hạng tối thiểu `+1.0 pp` trên `Tune` sau khi quan sát cộng điểm `Qwen2.5-VL-3B` trên video dài làm tụt VideoComp trên `Valid-Confirm` (`48.48%` vs **`54.44%`** CPU 3-Axis).
+   - **Valid-Confirm Lock (`go_no_go_gate_passed = true`, `vlm_peak_vram_mib = 3,985.81 MiB`):** ActivityNet Captions `Full-Chain Hit@1 = 21.50%` (`86/400`, `95% CI = [+17.50, +25.50] pp`); VideoComp `All = 54.44%` (`ActivityNet-Comp = 47.43%`, `YouCook2-Comp = 69.37%`, `95% CI = [+18.32, +23.50] pp`).
+   - **Sealed `Test` (chấm single-shot, [`benchmark/activitynet_videocomp_benchmark_results.md`](benchmark/activitynet_videocomp_benchmark_results.md)):**
+     - **ActivityNet Captions (`200` q đa sự kiện):** Whole-Paragraph `1.00%`, Viterbi `0.50%`, Independent Clauses `2.50%`, Exact Semi-Markov DP `19.50%`, **Locked Champion `24.50%` (`49/200`)** (`Hit@5 = 26.00%`, `Given-Video = 26.50%`, `Recall@20 = 100.00%`, `95% CI vs Global = [+18.00, +29.50] pp`, `vs Viterbi = [+18.00, +30.00] pp`).
+     - **VideoComp (`628` cặp):** Global Mean `19.53%`, Viterbi `44.63%`, **`3-Axis Compositional Scorer = 47.97%`** (**`YouCook2-Comp = 64.64%`**, `ActivityNet-Comp = 36.61%`, `95% CI vs Global = [+15.02, +24.09] pp`).

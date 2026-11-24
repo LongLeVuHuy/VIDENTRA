@@ -54,8 +54,9 @@ pydantic==2.14.3
 pytest==8.4.2
 psutil==7.2.2
 
-# --- Kaggle GPU Orchestration & Remote V2 Backbones ---
+# --- Kaggle / Modal GPU Orchestration & Remote V2 Backbones ---
 kaggle==2.2.5
+modal==1.6.4
 # Remote Kaggle Dual-T4 shard extraction auto-installs inside Kaggle notebooks:
 # open-clip-torch>=3.2.0
 # timm>=1.0.22

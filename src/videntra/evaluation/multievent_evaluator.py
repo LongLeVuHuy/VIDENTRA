@@ -15,6 +15,26 @@ VIDEOCOMP_DISRUPTION_TYPES: tuple[str, ...] = (
     "segment_mismatch",
 )
 
+VIDEOCOMP_TYPE_ALIASES: dict[str, str] = {
+    "temp_reorder": "temporal_reordering",
+    "temporal_reordering": "temporal_reordering",
+    "action_replace": "action_replacement",
+    "action_replacement": "action_replacement",
+    "seg_mismatch": "segment_mismatch",
+    "segment_mismatch": "segment_mismatch",
+}
+
+
+def normalize_videocomp_type(raw_type: str) -> str:
+    """Normalize official VideoComp short labels (`temp_reorder`, etc.) to canonical names."""
+    key = str(raw_type or "").strip().lower()
+    return VIDEOCOMP_TYPE_ALIASES.get(key, key)
+
+
+def videocomp_us_to_sec(val: int | float) -> float:
+    """Convert VideoComp microsecond integer timestamps to seconds."""
+    return float(val) / 1_000_000.0
+
 
 def compute_tiou(pred_start: float, pred_end: float, gt_start: float, gt_end: float) -> float:
     """Compute 1D temporal Intersection-over-Union over intervals `[start, end)`."""
@@ -360,7 +380,7 @@ def evaluate_videocomp(
     for pair in pairs:
         pid = str(pair.get("pair_id") or pair.get("key") or "")
         dom = str(pair.get("domain") or "unknown")
-        ptype = str(pair.get("type") or "")
+        ptype = normalize_videocomp_type(str(pair.get("type") or ""))
         domains.add(dom)
         b_dom = buckets[(dom, ptype)]
         b_all = overall_type[ptype]

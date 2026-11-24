@@ -163,11 +163,11 @@ def test_activitynet_full_chain_strict_cases() -> None:
 
 def test_videocomp_domains_types_ties_and_all_product() -> None:
     pairs = [
-        {"pair_id": "p1", "domain": "activitynet_comp", "type": "temporal_reordering"},
+        {"pair_id": "p1", "domain": "activitynet_comp", "type": "temp_reorder"},
         {"pair_id": "p2", "domain": "activitynet_comp", "type": "temporal_reordering"},
-        {"pair_id": "p3", "domain": "activitynet_comp", "type": "action_replacement"},
-        {"pair_id": "p4", "domain": "activitynet_comp", "type": "segment_mismatch"},
-        {"pair_id": "p5", "domain": "youcook2_comp", "type": "temporal_reordering"},
+        {"pair_id": "p3", "domain": "activitynet_comp", "type": "action_replace"},
+        {"pair_id": "p4", "domain": "activitynet_comp", "type": "seg_mismatch"},
+        {"pair_id": "p5", "domain": "youcook2_comp", "type": "temp_reorder"},
     ]
     scores = {
         "p1": {"positive_score": 0.9, "negative_score": 0.4},

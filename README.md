@@ -165,7 +165,7 @@ Toàn bộ cây thư mục tuân thủ quy ước **self-documenting** và phân
 
 ```text
 VIDENTRA/
-├── benchmark/                           # Báo cáo & JSON benchmark chính thức (MSR-VTT 1K-A)
+├── benchmark/                           # Báo cáo & JSON benchmark chính thức (MSR-VTT 1K-A, ActivityNet Captions & VideoComp)
 ├── configs/local/                       # Cấu hình asset_roots cục bộ (chỉ track file mẫu .example.json)
 ├── data/
 │   ├── datasets/                        # Gói dataset khép kín quản lý bởi `videntra dataset`
@@ -193,8 +193,8 @@ VIDENTRA/
 │   ├── ranking/                         # vlm_reranker.py (3B/7B NF4, pair cache, low-RAM storyboard), cross_modal_adapter.py
 │   ├── registry/ & evaluation/          # DatasetRegistryManager, MediaResolver, multievent_evaluator.py (Full-chain & VideoComp)
 │   └── api/ & cli.py                    # FastAPI REST, Web Inspector UI, CLI `videntra`
-├── scripts/                             # Điều phối Kaggle/Modal GPU, split-lock ActivityNet/VideoComp & benchmark keyframes
-└── tests/                               # 643 unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
+├── scripts/                             # Điều phối Kaggle/Modal GPU (`run_activitynet_videocomp_pipeline.py`), split-lock & benchmark keyframes
+└── tests/                               # 644 unit/integration tests (cô lập hoàn toàn khỏi Ground Truth)
 ```
 
 ---
@@ -247,6 +247,36 @@ Chạy thực nghiệm có kiểm soát trên Kaggle Dual-T4 với `3.885` truy 
 | `hybrid_legacy` | 61.1% | 0.7648 | 0.1334 | 0.9280 | 100.0% | 0.98% | 39.28% | 0 | 0.61622 | Có |
 | `uniform_matched` | 77.8% | 0.8372 | 0.1318 | 0.9289 | 32.4% | 0.18% | 35.12% | 0 | 0.58135 | Không |
 | `uniform_matched_budget` | 66.7% | 0.7927 | 0.1313 | 0.9313 | 44.0% | 0.02% | 33.17% | 0 | 0.57322 | Không |
+
+### 6.4. ActivityNet Captions (`≥2` Events) & VideoComp Sealed Test (Phase B)
+
+Đánh giá đa sự kiện (full-chain temporal grounding trên toàn gallery) và hiểu cấu trúc/thứ tự hành động trên phân vùng `40 / 40 / 20` tách tuyệt đối theo `source_group_id` (`seed = 20261124`, `0` trùng lặp cặp split, `0` lỗi decode khi trích `48` frames `PTS` × `3` backbone trên Modal `NVIDIA L40S`): `Tune` (`400` ANet + `200` YC2 groups → `1.066` videos / `51.168` frames), `Valid-Confirm` (`400` ANet + `200` YC2 groups → `1.078` videos / `51.744` frames) và `Test` niêm phong (`200` ANet + `100` YC2 groups → `530` videos / `25.440` frames). Chi tiết lưu tại [benchmark/activitynet_videocomp_benchmark_results.md](benchmark/activitynet_videocomp_benchmark_results.md) và [benchmark/activitynet_videocomp_benchmark_results.json](benchmark/activitynet_videocomp_benchmark_results.json).
+
+#### ActivityNet Captions Sealed Test (`200` truy vấn đa sự kiện / `200` video duy nhất)
+
+| Phương pháp | Full-Chain Hit@1 (`tIoU ≥ 0.5`) | Full-Chain Hit@5 | Given-Video Hit@1 | Video Recall@20 | Per-Event `tIoU ≥ 0.5` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Whole-Paragraph Global (`PE-bigG` + `PE-L` + `SigLIP2-400M`)** | 1.00% (`2/200`) | 1.00% | 1.00% | 100.00% | 14.11% |
+| **Viterbi Forward DP (Unified Span Baseline)** | 0.50% (`1/200`) | 0.50% | 0.50% | 100.00% | 13.48% |
+| **Independent Clause Contrast (No Order DP)** | 2.50% (`5/200`) | 3.00% | 3.00% | 100.00% | 27.58% |
+| **Exact 2D Semi-Markov Segment DP + Order Margin** | 19.50% (`39/200`) | 22.00% | 22.50% | 100.00% | **42.19%** |
+| **Exact 2D Semi-Markov DP + Tuned Clause Alignment & Length Penalty** | **24.50%** (`49/200`) | **26.00%** | **26.50%** | **100.00%** | 39.67% |
+
+- **Theo độ dài chuỗi (Champion Sealed Test):** chuỗi `2` sự kiện đạt **65.38%** Full-Chain Hit@1 (`75.00%` Per-Event); chuỗi `3` sự kiện đạt **32.05%** (`47.86%` Per-Event); chuỗi `≥4` sự kiện đạt **7.29%** (`32.28%` Per-Event).
+- **Bootstrap 95% CI theo `source_group_id`:** Champion vượt `Whole-Paragraph Global` **+23.50 pp** `[+18.00, +29.50]` (`48` rescued / `1` lost) và vượt `Viterbi Forward DP` **+24.00 pp** `[+18.00, +30.00]` (`49` rescued / `1` lost). Trên `Valid-Confirm` (`400` q) trước khi mở `Test`, Champion đạt **21.50%** (`86/400`, `95% CI = [+17.50, +25.50]` pp, `86` rescued / `0` lost).
+
+#### VideoComp Sealed Test (`628` cặp = `350` ActivityNet-Comp + `278` YouCook2-Comp)
+
+| Phương pháp | Miền dữ liệu | Temporal Reordering | Action Replacement | Segment Mismatch | `All` (Tích 3 loại) |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Global Mean Cosine (`PE-bigG` + `PE-L` + `SigLIP2-400M`)** | Tổng hợp (`628` cặp) | 45.62% | 60.77% | 70.43% | 19.53% |
+| **Viterbi Forward DP** | Tổng hợp (`628` cặp) | **71.89%** | **78.45%** | 79.13% | 44.63% |
+| **3-Axis Compositional Scorer (Semi-Markov Order + CoM + Min-Clause + Coverage)** | **Tổng hợp (`628` cặp)** | **71.89%** | 77.90% | **85.65%** | **47.97%** |
+| **3-Axis Compositional Scorer (Semi-Markov Order + CoM + Min-Clause + Coverage)** | `ActivityNet-Comp` (`350` cặp) | 61.86% | 73.00% | 81.06% | 36.61% |
+| **3-Axis Compositional Scorer (Semi-Markov Order + CoM + Min-Clause + Coverage)** | `YouCook2-Comp` (`278` cặp) | **83.84%** | **83.95%** | **91.84%** | **64.64%** |
+
+- **Bootstrap 95% CI trên `Test` (`300` source groups):** `3-Axis Compositional Scorer` vượt `Global Mean Cosine` **+19.59 pp** `[+15.02, +24.09]` (`175` rescued / `52` lost). Trên `Valid-Confirm` (`1.630` cặp / `600` groups), cấu hình khóa đạt **54.44%** (`ActivityNet-Comp = 47.43%`, `YouCook2-Comp = 69.37%`, `95% CI = [+18.32, +23.50]` pp).
+- **Telemetry 6 GiB & Ablation Stage-2 VLM:** Đo `Qwen2.5-VL-3B-Instruct` 4-bit NF4 `batch_size=1` trên Modal đạt NVML peak **3.985,81 MiB** (`NVIDIA A10` pilot) và **4.163–4.940 MiB** trên cold shards (`NVIDIA A10G` / `A10` / `L40S`), đều `≤ 6.144 MiB` (`0` OOM); đồng thời đã vá lỗi tích lũy `Params4bit` trong `Qwen25VLReranker.unload()` (`gc.collect()` + `torch.cuda.synchronize()`/`empty_cache()`/`ipc_collect()`). Tuy nhiên, ablation trên `Valid-Confirm` cho thấy cộng VLM storyboard trên video dài làm giảm VideoComp **-5.95 pp** (`48.48%` vs `54.44%`) và không vượt ngưỡng thăng hạng `+1.0 pp` trên Captions, nên Champion khóa nhánh Stage-1+Semi-Markov/3-Axis thuần CPU (`config_sha256 = 11b95014...`).
 
 ---
 

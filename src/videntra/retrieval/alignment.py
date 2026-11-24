@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
 from typing import Sequence
 import numpy as np
 
@@ -926,46 +927,437 @@ def localize_event_chain_dp(
     )
 
 
+def _voronoi_frame_edges(ts: Sequence[float], v_dur_sec: float | None = None) -> tuple[list[float], list[float]]:
+    """Compute contiguous non-overlapping `[left_i, right_i]` intervals around sorted timestamps."""
+    m_v = len(ts)
+    if m_v == 0:
+        return [], []
+    eff_dur = float(v_dur_sec) if v_dur_sec is not None else max(float(ts[-1]) + 2.0, 2.0)
+    if m_v == 1:
+        half = min(2.0, max(0.5, 0.25 * eff_dur))
+        return [max(0.0, float(ts[0]) - half)], [min(eff_dur, max(float(ts[0]) + 0.1, float(ts[0]) + half))]
+
+    mids = [0.5 * (float(ts[i]) + float(ts[i + 1])) for i in range(m_v - 1)]
+    first_half = max(0.25, 0.5 * (float(ts[1]) - float(ts[0])))
+    last_half = max(0.25, 0.5 * (float(ts[-1]) - float(ts[-2])))
+    lefts = [max(0.0, float(ts[0]) - first_half)] + mids
+    rights = mids + [min(eff_dur, max(float(ts[-1]) + 0.1, float(ts[-1]) + last_half))]
+    return lefts, rights
+
+
+def _solve_exact_segment_dp(
+    phi: np.ndarray,
+    left_edges: Sequence[float],
+    right_edges: Sequence[float],
+    relations: Sequence[str],
+    *,
+    max_gap_sec: float = 45.0,
+    lambda_bg: float = 0.30,
+    lambda_peak: float = 0.35,
+    lambda_len: float = 0.04,
+    lambda_gap: float = 0.02,
+    simultaneous_max_delta_sec: float = 8.0,
+) -> tuple[float, list[tuple[int, int]]] | None:
+    """Exact 2D Semi-Markov DP choosing contiguous index spans `[a_k, b_k]` per event via vectorized prefix sums."""
+    k_events, m_v = phi.shape
+    if k_events == 0 or m_v == 0:
+        return None
+
+    phi64 = np.asarray(phi, dtype=np.float64)
+    left_arr = np.asarray(left_edges, dtype=np.float64)
+    right_arr = np.asarray(right_edges, dtype=np.float64)
+    pref = np.zeros((k_events, m_v + 1), dtype=np.float64)
+    pref[:, 1:] = np.cumsum(phi64, axis=1)
+    row_sums = pref[:, -1]
+
+    eff_dur = max(1.0, float(right_arr[-1]) - float(left_arr[0]))
+    l_prior = max(2.0, eff_dur / float(max(1, k_events)))
+
+    idx_1d = np.arange(m_v)
+    a_grid = idx_1d[:, None]
+    b_grid = idx_1d[None, :]
+    tri_mask = b_grid >= a_grid
+    cnt_grid = np.where(tri_mask, (b_grid - a_grid + 1).astype(np.float64), 1.0)
+    out_cnt_grid = float(m_v) - (b_grid - a_grid + 1).astype(np.float64)
+    seg_dur = np.maximum(0.05, right_arr[None, :] - left_arr[:, None])
+    len_pen = np.abs(np.log((seg_dur + 1.0) / (l_prior + 1.0)))
+
+    # Precompute E[k, a, b] over valid intervals 0 <= a <= b < m_v
+    emit_seg = np.full((k_events, m_v, m_v), -np.inf, dtype=np.float64)
+    for k in range(k_events):
+        row = phi64[k]
+        in_sum = pref[k, 1:][None, :] - pref[k, :-1][:, None]
+        mean_in = in_sum / cnt_grid
+        mean_out = np.where(out_cnt_grid > 0.0, (row_sums[k] - in_sum) / np.maximum(1.0, out_cnt_grid), 0.0)
+        peak_mat = np.empty((m_v, m_v), dtype=np.float64)
+        for a in range(m_v):
+            peak_mat[a, a:] = np.maximum.accumulate(row[a:])
+        e_k = (
+            mean_in
+            - float(lambda_bg) * mean_out
+            + float(lambda_peak) * peak_mat
+            - float(lambda_len) * len_pen
+        )
+        emit_seg[k] = np.where(tri_mask, e_k, -np.inf)
+
+    if k_events == 1:
+        best_a, best_b = np.unravel_index(int(np.argmax(emit_seg[0])), (m_v, m_v))
+        return float(emit_seg[0, best_a, best_b]), [(int(best_a), int(best_b))]
+
+    # Precompute invariant transition costs over (a, bp) for non-simultaneous hops
+    bp_grid = idx_1d[None, :]
+    allow_bp_mask = (bp_grid < a_grid) | ((a_grid == 0) & (bp_grid == 0))
+    same_pen = np.where((a_grid == 0) & (bp_grid == 0), 0.12, 0.0)
+    gap_sec = np.maximum(0.0, left_arr[:, None] - right_arr[None, :])
+    excess_gap = np.maximum(0.0, gap_sec - float(max_gap_sec))
+    trans_cost = np.where(allow_bp_mask, float(lambda_gap) * excess_gap + same_pen, np.inf)
+
+    dp = np.full((k_events, m_v, m_v), -np.inf, dtype=np.float64)
+    parent_a = np.full((k_events, m_v, m_v), -1, dtype=np.int32)
+    parent_b = np.full((k_events, m_v, m_v), -1, dtype=np.int32)
+    dp[0] = emit_seg[0]
+    mid_grid = 0.5 * (left_arr[:, None] + right_arr[None, :])
+
+    for k in range(1, k_events):
+        rel = relations[k] if k < len(relations) else "before"
+        prev_best_a = np.argmax(dp[k - 1], axis=0)  # shape (m_v,)
+        prev_best_val = dp[k - 1, prev_best_a, idx_1d]
+
+        # Non-simultaneous best predecessor per `a` (independent of `b`)
+        cand_trans = np.where(
+            np.isfinite(prev_best_val[None, :]) & allow_bp_mask,
+            prev_best_val[None, :] - trans_cost,
+            -np.inf,
+        )
+        best_pb_a = np.argmax(cand_trans, axis=1)
+        best_trans_a = cand_trans[idx_1d, best_pb_a]
+        finite_a = np.isfinite(best_trans_a)
+        best_pa_a = np.where(finite_a, prev_best_a[best_pb_a], -1)
+
+        if rel != "simultaneous":
+            cand_dp = best_trans_a[:, None] + emit_seg[k]
+            valid_cell = tri_mask & finite_a[:, None] & np.isfinite(emit_seg[k])
+            dp[k] = np.where(valid_cell, cand_dp, -np.inf)
+            parent_a[k] = np.where(valid_cell, best_pa_a[:, None], -1)
+            parent_b[k] = np.where(valid_cell, best_pb_a[:, None], -1)
+            continue
+
+        valid_prev = np.argwhere(np.isfinite(dp[k - 1]))
+        for a in range(m_v):
+            for b in range(a, m_v):
+                e_val = emit_seg[k, a, b]
+                if not np.isfinite(e_val):
+                    continue
+                mid_curr = float(mid_grid[a, b])
+                best_val = -np.inf
+                best_pa = -1
+                best_pb = -1
+                for ap, bp in valid_prev:
+                    dt_c = abs(mid_curr - float(mid_grid[ap, bp]))
+                    if dt_c <= float(simultaneous_max_delta_sec):
+                        cand = float(dp[k - 1, ap, bp]) + float(e_val) - 0.01 * dt_c
+                        if cand > best_val:
+                            best_val = cand
+                            best_pa = int(ap)
+                            best_pb = int(bp)
+                if best_pa == -1 and finite_a[a]:
+                    best_val = float(best_trans_a[a] + e_val)
+                    best_pa = int(best_pa_a[a])
+                    best_pb = int(best_pb_a[a])
+                dp[k, a, b] = best_val
+                parent_a[k, a, b] = best_pa
+                parent_b[k, a, b] = best_pb
+
+    flat_idx = int(np.argmax(dp[k_events - 1]))
+    ca, cb = np.unravel_index(flat_idx, (m_v, m_v))
+    best_total = float(dp[k_events - 1, ca, cb])
+    if not np.isfinite(best_total):
+        return None
+
+    spans_idx: list[tuple[int, int]] = [(int(ca), int(cb))]
+    cur_a, cur_b = int(ca), int(cb)
+    for k in range(k_events - 1, 0, -1):
+        pa = int(parent_a[k, cur_a, cur_b])
+        pb = int(parent_b[k, cur_a, cur_b])
+        if pa < 0 or pb < 0:
+            return None
+        spans_idx.append((pa, pb))
+        cur_a, cur_b = pa, pb
+    spans_idx.reverse()
+    return best_total, spans_idx
+
+
+def localize_exact_segment_chain_dp(
+    timestamps_sec: Sequence[float],
+    event_vis_curves: Sequence[Sequence[float] | np.ndarray],
+    *,
+    clause_ids: Sequence[str] | None = None,
+    clause_texts: Sequence[str] | None = None,
+    relations_to_prev: Sequence[str] | None = None,
+    event_ocr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_asr_curves: Sequence[Sequence[float] | np.ndarray] | None = None,
+    event_weights: Sequence[tuple[float, float, float]] | None = None,
+    frame_ordinals: Sequence[int] | None = None,
+    v_dur_sec: float | None = None,
+    max_gap_sec: float = 45.0,
+    lambda_bg: float = 0.30,
+    lambda_peak: float = 0.35,
+    lambda_len: float = 0.04,
+    lambda_gap: float = 0.02,
+    simultaneous_max_delta_sec: float = 8.0,
+    missing_evidence_threshold: float = 0.05,
+) -> EventChainLocalizationResult | None:
+    """Exact 2D Semi-Markov Segment DP optimizing contiguous event spans + Directional Order Margin."""
+    import math as _math  # noqa: F401 (used cleanly below)
+
+    ts = [float(t) for t in timestamps_sec]
+    m_v = len(ts)
+    vis_mat = np.asarray(event_vis_curves, dtype=np.float32)
+    if vis_mat.ndim == 1:
+        vis_mat = vis_mat.reshape(1, -1)
+    k_events = int(vis_mat.shape[0]) if vis_mat.size > 0 else 0
+    if m_v == 0 or k_events == 0 or vis_mat.shape != (k_events, m_v):
+        return None
+
+    ocr_mat = (
+        np.asarray(event_ocr_curves, dtype=np.float32)
+        if event_ocr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    asr_mat = (
+        np.asarray(event_asr_curves, dtype=np.float32)
+        if event_asr_curves is not None
+        else np.zeros((k_events, m_v), dtype=np.float32)
+    )
+    phi = np.empty((k_events, m_v), dtype=np.float32)
+    for k in range(k_events):
+        w_vis, w_ocr, w_asr = (
+            event_weights[k] if event_weights is not None else (1.0, 0.6, 0.5)
+        )
+        phi[k] = float(w_vis) * vis_mat[k] + float(w_ocr) * ocr_mat[k] + float(w_asr) * asr_mat[k]
+
+    eff_cids = [str(clause_ids[k]) if (clause_ids and k < len(clause_ids)) else f"e{k}" for k in range(k_events)]
+    eff_txts = [str(clause_texts[k]) if (clause_texts and k < len(clause_texts)) else "" for k in range(k_events)]
+    eff_rels = [
+        ("start" if k == 0 else str(relations_to_prev[k]))
+        if (relations_to_prev and k < len(relations_to_prev))
+        else ("start" if k == 0 else "before")
+        for k in range(k_events)
+    ]
+    eff_ords = (
+        [int(frame_ordinals[i]) for i in range(m_v)]
+        if (frame_ordinals is not None and len(frame_ordinals) == m_v)
+        else list(range(m_v))
+    )
+
+    left_edges, right_edges = _voronoi_frame_edges(ts, v_dur_sec=v_dur_sec)
+    fwd = _solve_exact_segment_dp(
+        phi,
+        left_edges,
+        right_edges,
+        eff_rels,
+        max_gap_sec=max_gap_sec,
+        lambda_bg=lambda_bg,
+        lambda_peak=lambda_peak,
+        lambda_len=lambda_len,
+        lambda_gap=lambda_gap,
+        simultaneous_max_delta_sec=simultaneous_max_delta_sec,
+    )
+    if fwd is None:
+        return None
+    fwd_total, spans_idx = fwd
+    fwd_avg = fwd_total / float(k_events)
+
+    rev_avg = fwd_avg
+    has_order_edge = any(r == "before" for r in eff_rels[1:])
+    if k_events >= 2 and has_order_edge:
+        rev_rels = ["start"] + ["before"] * (k_events - 1)
+        rev_sol = _solve_exact_segment_dp(
+            phi[::-1],
+            left_edges,
+            right_edges,
+            rev_rels,
+            max_gap_sec=max_gap_sec,
+            lambda_bg=lambda_bg,
+            lambda_peak=lambda_peak,
+            lambda_len=lambda_len,
+            lambda_gap=lambda_gap,
+            simultaneous_max_delta_sec=simultaneous_max_delta_sec,
+        )
+        if rev_sol is not None:
+            rev_avg = float(rev_sol[0]) / float(k_events)
+
+    spans: list[EventSpanPrediction] = []
+    all_supported = True
+    for k, (a, b) in enumerate(spans_idx):
+        sub = phi[k, a : b + 1]
+        local_peak_off = int(np.argmax(sub))
+        anchor_idx = a + local_peak_off
+        st_k = round(float(left_edges[a]), 3)
+        et_k = round(max(st_k + 0.05, float(right_edges[b])), 3)
+        ev_score = float(np.mean(sub))
+        peak_k = float(np.max(phi[k]))
+        status = (
+            "supported"
+            if (peak_k >= float(missing_evidence_threshold) and float(sub[local_peak_off]) >= float(missing_evidence_threshold))
+            else "missing"
+        )
+        if status != "supported":
+            all_supported = False
+        spans.append(
+            EventSpanPrediction(
+                clause_id=eff_cids[k],
+                clause_text=eff_txts[k],
+                relation_to_prev=eff_rels[k],
+                start_sec=st_k,
+                end_sec=et_k,
+                anchor_index=int(anchor_idx),
+                anchor_sec=round(float(ts[anchor_idx]), 3),
+                start_frame_index=int(eff_ords[a]),
+                end_frame_index=int(eff_ords[b]),
+                score=ev_score,
+                status=status,
+            )
+        )
+
+    return EventChainLocalizationResult(
+        total_score=float(fwd_total),
+        avg_score=float(fwd_avg),
+        reverse_avg_score=float(rev_avg),
+        directional_order_margin=float(fwd_avg - rev_avg),
+        spans=tuple(spans),
+        overall_start_sec=min(sp.start_sec for sp in spans),
+        overall_end_sec=max(sp.end_sec for sp in spans),
+        all_supported=all_supported,
+    )
+
+
+def _soft_com_order_concordance(
+    timestamps_sec: Sequence[float],
+    vis_mat: np.ndarray,
+    relations: Sequence[str],
+    *,
+    tau: float = 0.08,
+) -> float:
+    """Compute pairwise chronological rank concordance minus inversion rate via softmax centers-of-mass."""
+    k_events, m_v = vis_mat.shape
+    if k_events < 2 or m_v < 2:
+        return 0.0
+    ts_arr = np.asarray(timestamps_sec, dtype=np.float64)
+    scaled = vis_mat.astype(np.float64) / max(1e-4, float(tau))
+    scaled -= np.max(scaled, axis=1, keepdims=True)
+    probs = np.exp(scaled)
+    probs /= np.sum(probs, axis=1, keepdims=True)
+    com_t = probs @ ts_arr  # shape (k_events,)
+
+    dur = max(1e-3, float(ts_arr[-1] - ts_arr[0]))
+    signed_sum = 0.0
+    pair_cnt = 0
+    for i in range(k_events):
+        for j in range(i + 1, k_events):
+            # Only enforce strict temporal precedence if no purely-simultaneous block sits between i..j
+            if all((relations[r] if r < len(relations) else "before") == "simultaneous" for r in range(i + 1, j + 1)):
+                continue
+            signed_sum += math.tanh(2.5 * float(com_t[j] - com_t[i]) / dur)
+            pair_cnt += 1
+    return float(signed_sum / float(pair_cnt)) if pair_cnt > 0 else 0.0
+
+
 def score_videocomp_order(
     timestamps_sec: Sequence[float],
     event_vis_curves: Sequence[Sequence[float] | np.ndarray],
     *,
     relations_to_prev: Sequence[str] | None = None,
+    global_score: float = 0.0,
     max_gap_sec: float = 45.0,
     beta_order: float = 1.0,
+    beta_com: float = 0.35,
+    beta_min: float = 0.45,
+    beta_cov: float = 0.25,
+    beta_global: float = 0.50,
+    coverage_floor: float = 0.12,
+    use_segment_dp: bool = True,
 ) -> dict[str, float]:
-    """Score VideoComp pairs combining mean event match, DP forward order & Directional Order Margin."""
+    """3-Axis Compositional Scorer targeting Action Replace, Temporal Reordering & Segment Mismatch."""
     vis_mat = np.asarray(event_vis_curves, dtype=np.float32)
     if vis_mat.ndim == 1:
         vis_mat = vis_mat.reshape(1, -1)
     if vis_mat.size == 0 or len(timestamps_sec) != vis_mat.shape[1]:
         return {
             "event_max_mean": 0.0,
+            "min_clause_sim": 0.0,
+            "bottom2_clause_mean": 0.0,
+            "active_clause_coverage": 0.0,
+            "com_concordance": 0.0,
             "forward_avg": 0.0,
             "reverse_avg": 0.0,
             "directional_order_margin": 0.0,
-            "combined_score": 0.0,
+            "global_score": float(global_score),
+            "combined_score": float(global_score),
         }
-    event_max_mean = float(np.mean(np.max(vis_mat, axis=1)))
-    chain_res = localize_event_chain_dp(
-        timestamps_sec=timestamps_sec,
-        event_vis_curves=vis_mat,
-        relations_to_prev=relations_to_prev,
-        max_gap_sec=max_gap_sec,
+
+    k_events = int(vis_mat.shape[0])
+    eff_rels = [
+        ("start" if k == 0 else str(relations_to_prev[k]))
+        if (relations_to_prev and k < len(relations_to_prev))
+        else ("start" if k == 0 else "before")
+        for k in range(k_events)
+    ]
+
+    per_clause_max = np.max(vis_mat, axis=1).astype(np.float64)
+    sorted_peaks = np.sort(per_clause_max)
+    event_max_mean = float(np.mean(per_clause_max))
+    min_clause_sim = float(sorted_peaks[0])
+    bottom2_clause_mean = float(np.mean(sorted_peaks[: min(2, k_events)]))
+
+    # Soft active coverage across all decomposed clauses (flags mismatched/unobserved clauses in sliced clips)
+    active_probs = 1.0 / (1.0 + np.exp(-15.0 * (per_clause_max - float(coverage_floor))))
+    active_clause_coverage = float(np.mean(active_probs))
+
+    com_concordance = _soft_com_order_concordance(timestamps_sec, vis_mat, eff_rels)
+
+    chain_res = (
+        localize_exact_segment_chain_dp(
+            timestamps_sec=timestamps_sec,
+            event_vis_curves=vis_mat,
+            relations_to_prev=eff_rels,
+            max_gap_sec=max_gap_sec,
+        )
+        if use_segment_dp
+        else localize_event_chain_dp(
+            timestamps_sec=timestamps_sec,
+            event_vis_curves=vis_mat,
+            relations_to_prev=eff_rels,
+            max_gap_sec=max_gap_sec,
+        )
     )
     if chain_res is None:
-        return {
-            "event_max_mean": event_max_mean,
-            "forward_avg": event_max_mean,
-            "reverse_avg": event_max_mean,
-            "directional_order_margin": 0.0,
-            "combined_score": event_max_mean,
-        }
-    comb = 0.5 * event_max_mean + 0.5 * chain_res.avg_score + float(beta_order) * chain_res.directional_order_margin
+        fwd_avg = event_max_mean
+        rev_avg = event_max_mean
+        order_margin = 0.0
+    else:
+        fwd_avg = float(chain_res.avg_score)
+        rev_avg = float(chain_res.reverse_avg_score)
+        order_margin = float(chain_res.directional_order_margin)
+
+    comb = (
+        float(beta_global) * float(global_score)
+        + 0.50 * event_max_mean
+        + 0.50 * fwd_avg
+        + float(beta_min) * (0.5 * min_clause_sim + 0.5 * bottom2_clause_mean)
+        + float(beta_order) * order_margin
+        + float(beta_com) * com_concordance
+        + float(beta_cov) * active_clause_coverage
+    )
     return {
         "event_max_mean": event_max_mean,
-        "forward_avg": float(chain_res.avg_score),
-        "reverse_avg": float(chain_res.reverse_avg_score),
-        "directional_order_margin": float(chain_res.directional_order_margin),
+        "min_clause_sim": min_clause_sim,
+        "bottom2_clause_mean": bottom2_clause_mean,
+        "active_clause_coverage": active_clause_coverage,
+        "com_concordance": com_concordance,
+        "forward_avg": fwd_avg,
+        "reverse_avg": rev_avg,
+        "directional_order_margin": order_margin,
+        "global_score": float(global_score),
         "combined_score": float(comb),
     }

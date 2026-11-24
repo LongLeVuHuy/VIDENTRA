@@ -240,3 +240,47 @@ def test_unified_pipeline_end_to_end_four_event_spans() -> None:
     assert [sp["clause_id"] for sp in top_m.event_spans] == ["e0", "e1", "e2", "e3"]
     for i in range(3):
         assert top_m.event_spans[i]["end_sec"] <= top_m.event_spans[i + 1]["start_sec"] + 1e-6
+
+
+def test_exact_segment_dp_and_three_axis_videocomp_disruptions() -> None:
+    from videntra.evaluation.multievent_evaluator import compute_tiou
+    from videntra.retrieval.alignment import localize_exact_segment_chain_dp
+
+    # 30-frame 60s timeline (one frame every 2s), 4 contiguous blocks of length ~14-16s each
+    ts = [float(1 + 2 * i) for i in range(30)]
+    gt_blocks = [(0.0, 14.0), (14.0, 28.0), (28.0, 44.0), (44.0, 60.0)]
+    curves = np.full((4, 30), 0.05, dtype=np.float32)
+    for k, (gs, ge) in enumerate(gt_blocks):
+        for i, t in enumerate(ts):
+            if gs <= t < ge:
+                curves[k, i] = 0.85
+
+    seg_res = localize_exact_segment_chain_dp(
+        timestamps_sec=ts,
+        event_vis_curves=curves,
+        clause_ids=["e0", "e1", "e2", "e3"],
+        relations_to_prev=["start", "before", "before", "before"],
+        v_dur_sec=60.0,
+    )
+    assert seg_res is not None and len(seg_res.spans) == 4
+    assert all(compute_tiou(sp.start_sec, sp.end_sec, gs, ge) >= 0.70 for sp, (gs, ge) in zip(seg_res.spans, gt_blocks))
+    assert seg_res.directional_order_margin > 0.2
+
+    # 1. temp_reorder: swap event 0 and event 3 -> caught by order margin + CoM concordance
+    pos_ord = score_videocomp_order(ts, curves, beta_global=0.0)
+    neg_ord = score_videocomp_order(ts, curves[[3, 1, 2, 0]], beta_global=0.0)
+    assert pos_ord["combined_score"] > neg_ord["combined_score"]
+
+    # 2. action_replace: one corrupted clause misses completely (0.08 vs 0.85) -> caught by min/bottom2 & coverage
+    neg_act_curves = curves.copy()
+    neg_act_curves[2, :] = 0.06
+    neg_act = score_videocomp_order(ts, neg_act_curves, beta_global=0.0)
+    assert pos_ord["min_clause_sim"] > neg_act["min_clause_sim"]
+    assert pos_ord["combined_score"] > neg_act["combined_score"]
+
+    # 3. seg_mismatch: sliced clip covers only [0, 28s] (first 2 events); negative claims events 2 & 3 too
+    sliced_ts = ts[:14]
+    pos_seg = score_videocomp_order(sliced_ts, curves[:2, :14], beta_global=0.0)
+    neg_seg = score_videocomp_order(sliced_ts, curves[:, :14], beta_global=0.0)
+    assert pos_seg["active_clause_coverage"] > neg_seg["active_clause_coverage"]
+    assert pos_seg["combined_score"] > neg_seg["combined_score"]

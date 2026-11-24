@@ -1,5 +1,37 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 25/11/2026 — Hoàn tất Phase B: ActivityNet Captions & VideoComp (Modal GPU Pilot, Tune/Valid-Confirm Lock, Sealed Test & Vá VRAM Leak)
+
+- **Đồng bộ Media lên Modal Volume & Khóa Phân vùng Zero-Leakage 40/40/20:**
+  - Nâng cấp [`scripts/modal_app_functions.py`](../scripts/modal_app_functions.py) (`_ConcatURLReader` range-resume cho archive YouCook2 và `sync_youcook2_to_volume`) + [`scripts/run_activitynet_videocomp_pipeline.py`](../scripts/run_activitynet_videocomp_pipeline.py) (`cmd_lock_splits`). Chạy `sync-media --youcook2-only`: kiểm tra `16.514/16.514` media hợp lệ (`14.924` ActivityNet + `1.590` YouCook2, `0` thiếu).
+  - Chạy `lock-splits` (`seed=20261124`) tách rạch ròi theo `source_group_id` với giao cặp bằng rỗng (`0 / 0 / 0`, `0` quarantined):
+    * `Tune`: `400` nhóm ActivityNet (`400` queries Captions + `1.052` cặp ANet-Comp) & `200` nhóm YouCook2 (`564` cặp YC2-Comp).
+    * `Valid-Confirm`: `400` nhóm ActivityNet (`400` queries Captions + `1.056` cặp ANet-Comp) & `200` nhóm YouCook2 (`574` cặp YC2-Comp).
+    * `Test` (niêm phong): `200` nhóm ActivityNet (`399` records `val_1`+`val_2` → `200` video duy nhất đánh giá + `350` cặp ANet-Comp) & `100` nhóm YouCook2 (`278` cặp YC2-Comp).
+- **Modal GPU Pilot Cố Định & Trích Xuất Feature (`NVIDIA L40S`):**
+  - Chạy `run-pilot` trên cùng shard `32` video × `48` frames (`1.536` decoded frames, `128` texts, `0` lỗi) + `24` cặp `Qwen2.5-VL-3B-Instruct` 4-bit NF4 `batch_size=1` (`work/activitynet_videocomp_20261124/pilot/pilot_gpu_comparison.json`):
+    * Đối chiếu độ lệch số học FP16 (`NVIDIA A10` `$1.10/hr` fallback L4 vs `NVIDIA L40S` `$1.95/hr`): `pe_bigg_frames` `max_abs=0.011719`, `mean_cos=1.00001`; `pe_l_frames` `max_abs=0.000366`, `mean_cos=1.000011`; `sig400_frames` `max_abs=0.001419`, `mean_cos=1.00001`.
+    * Throughput steady-state: `NVIDIA A10` đạt `274.44 videos/hr` (`$0.4008/100 videos`); `NVIDIA L40S` đạt `389.67 videos/hr` (`$0.5004/100 videos`, compute GPU nhanh >2×, không kẹt queue) → khóa `winner_extract_gpu = "L40S"`.
+    * Đo profile 6 GiB VLM `Qwen2.5-VL-3B-Instruct` NF4 `batch_size=1` trên `NVIDIA A10`: `nvml_total_used_mib = 3,985.81 MiB` (`pytorch_peak_allocated_mib = 2,580.52 MiB`), `0` OOM, `within_6gib_budget = true`.
+  - Trích `48` PTS frames × 3 backbone (`PE-Core-bigG-14-448`, `PE-Core-L-14-336`, `SigLIP2-SO400M-384`) trên Modal `NVIDIA L40S` với **0 decode_errors**: `Tune` (`1.066` items, `12.163` texts, `51.168` frames), `Valid-Confirm` (`1.078` items, `12.419` texts, `51.744` frames), `Test` (`530` items, `7.465` texts, `25.440` frames).
+- **Tối Ưu Vector Hóa CPU, Chẩn Đoán VLM Ablation & Vá Rò Rỉ VRAM:**
+  - Vector hóa `_solve_exact_segment_dp` trong [`src/videntra/retrieval/alignment.py`](../src/videntra/retrieval/alignment.py) (`35.883s → 0.3371s` / 100 calls, nhanh **106×**), tối ưu nạp shard `_load_split_feature_store` (`325.29s → 6.537s`, nhanh **50×**), bổ sung multi-thread PyAV `"AUTO"` + `_storyboard_cache` trong [`src/videntra/ranking/vlm_reranker.py`](../src/videntra/ranking/vlm_reranker.py).
+  - Trong lượt chạy `Valid-Confirm` đầu tiên với `use_vlm_videocomp=true`, phát hiện 2 vấn đề và xử lý dứt điểm:
+    1. *VLM Ablation âm tính trên VideoComp:* Ngưỡng chọn VLM thô trên `120` mẫu `Tune` (`+0.26 pp` nhiễu) đã hạ `All` trên `Valid-Confirm` từ **`54.44%`** (`three_axis_compositional` CPU) xuống **`48.48%`** (`-5.95 pp`, `YouCook2-Comp` giảm `-16.36 pp`; biên nhận đối chứng lưu tại `work/activitynet_videocomp_20261124/valid_confirm_vlm_ablation_receipt.json`). Đã nâng ngưỡng thăng hạng VLM trên `Tune` lên **`+1.0 pp` (`min_vlm_promotion_gain = 0.01`)**, từ chối bật VLM nếu không cải thiện thực chất trên CPU Champion.
+    2. *Vá rò rỉ VRAM giữa các shard ấm trên Modal:* Cold container luôn giữ `pytorch_peak_allocated_mib = 2,519–2,573 MiB` (`NVML = 3,569–4,579 MiB`), nhưng container chạy nối tiếp tăng tuyến tính `+1.72 GiB/shard` lên `10,153.38 MiB` do `unload()` thiếu thu hồi vòng tham chiếu `Params4bit`. Đã thêm `gc.collect()` + `torch.cuda.synchronize()` + `torch.cuda.empty_cache()` + `torch.cuda.ipc_collect()` trong [`Qwen25VLReranker.unload`](../src/videntra/ranking/vlm_reranker.py) và [`run_vlm_rerank_pairs_local_or_gpu`](../scripts/modal_videntra_worker.py).
+- **Khóa Champion (`Valid-Confirm`) & Kết Quả Sealed `Test` Chính Thức (`config_sha256 = 11b95014...`):**
+  - **`Valid-Confirm` (`confirm-and-lock --with-vlm`, `go_no_go_gate_passed = true`):**
+    * ActivityNet Captions (`400` q): Champion **`Full-Chain Hit@1 = 21.50%`** (`86/400`), `Hit@5 = 24.00%`, `95% CI = [+17.50, +25.50] pp` vs Global & Viterbi (`86` rescued / `0` lost).
+    * VideoComp (`1.630` cặp / `600` groups): Champion `three_axis_compositional` **`All = 54.44%`** (`ActivityNet-Comp = 47.43%`, `YouCook2-Comp = 69.37%`, `95% CI vs Global = [+18.32, +23.50] pp`, `450` rescued / `109` lost), `vlm_peak_vram_mib = 3,985.81 MiB ≤ 6,144 MiB`.
+  - **Sealed `Test` (`eval-sealed-test --with-vlm` 1 lần duy nhất, [`benchmark/activitynet_videocomp_benchmark_results.json`](../benchmark/activitynet_videocomp_benchmark_results.json)):**
+    * **ActivityNet Captions (`200` q):** `Whole-Paragraph Global = 1.00%`, `Viterbi Forward DP = 0.50%`, `Independent Clause Contrast = 2.50%`, `Exact Semi-Markov DP (untuned) = 19.50%` (`Per-Event = 42.19%`), **Locked Champion = `24.50%` (`49/200`) Full-Chain Hit@1** (`Hit@5 = 26.00%`, `Given-Video = 26.50%`, `Recall@20 = 100.00%`, `Per-Event = 39.67%`; chuỗi `2` sự kiện `65.38%`, `3` sự kiện `32.05%`); `95% CI` vượt Global **`+23.50 pp [+18.00, +29.50]`** và vượt Viterbi **`+24.00 pp [+18.00, +30.00]`**.
+    * **VideoComp (`628` cặp / `300` groups):** `Global Mean Cosine All = 19.53%`, `Viterbi Forward DP All = 44.63%`, **`3-Axis Compositional Scorer All = 47.97%`** (`Temporal Reordering = 71.89%`, `Action Replacement = 77.90%`, `Segment Mismatch = 85.65%`; `ActivityNet-Comp = 36.61%`, **`YouCook2-Comp = 64.64%`**), `95% CI vs Global = +19.59 pp [+15.02, +24.09]` (`175` rescued / `52` lost).
+- **Xác minh Hệ thống & Giới hạn Phần cứng:**
+  - Cập nhật `requirements.txt` (`modal==1.6.4`), [`README.md`](../README.md), [`PROJECT.md`](../PROJECT.md), [`ACTIVITYNET_VIDEOCOMP_EVALUATION_PLAN.md`](../ACTIVITYNET_VIDEOCOMP_EVALUATION_PLAN.md).
+  - `.\.venv\Scripts\python.exe -B -m videntra doctor --strict`: `ready_for_serving = true`, `missing_required = []`.
+  - `.\.venv\Scripts\python.exe -B -m pytest -q`: **`644 passed, 3 warnings in 127.66s`** (`0` failed, `0` skipped; Windows CPU `Intel` 4 threads, `31.89 GB` RAM).
+  - *Giới hạn:* Các phép đo GPU được thực hiện trên Modal cloud (`NVIDIA A10`, `NVIDIA A10G`, `NVIDIA L40S`); latency & end-to-end runtime trực tiếp trên RTX 3060 6GB cục bộ vẫn cần đo bổ sung khi máy cá nhân gắn GPU NVIDIA.
+
 ## 24/11/2026 (b) — Hoàn tất Phase A: Nâng cấp Multi-Event P0/P1, Directional Order Margin & Hạ tầng ActivityNet/VideoComp
 
 - **P0 #1 — Đồng Bộ Thứ Hạng Post-VLM ([`src/videntra/ranking/vlm_reranker.py`](../src/videntra/ranking/vlm_reranker.py), [`src/videntra/retrieval/unified_pipeline.py`](../src/videntra/retrieval/unified_pipeline.py)):**

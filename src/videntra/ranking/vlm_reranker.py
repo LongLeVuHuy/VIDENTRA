@@ -30,8 +30,14 @@ PINNED_VLM_REVISIONS: dict[str, dict[str, str]] = {
 }
 
 DEFAULT_VLM_QUERY_TEMPLATE = (
-    'These 8 chronological frames are sampled from a video clip. '
+    'These {num_frames} chronological frames are sampled from a video clip. '
     'Does this video match the description: "{query_text}"? Answer strictly Yes or No.'
+)
+
+COMPOSITIONAL_VLM_QUERY_TEMPLATE = (
+    'These {num_frames} chronological frames with timestamps #1..#{num_frames} show events from a video clip in time order. '
+    'Check every event order, exact action verbs, and whether the full description matches these frames: "{query_text}". '
+    'Answer strictly Yes or No.'
 )
 
 
@@ -222,6 +228,10 @@ def build_chronological_storyboard_with_meta(
     else:
         with av.open(str(video_path)) as container:
             stream = next(s for s in container.streams if s.index == pr.selected_video_stream_index)
+            try:
+                stream.thread_type = "AUTO"
+            except Exception:
+                pass
             tb = float(stream.time_base) if stream.time_base is not None else 0.0
             for cur_ord, frame in enumerate(container.decode(stream)):
                 ts = float(frame.pts * tb) if (frame.pts is not None and tb > 0.0) else None
@@ -255,6 +265,10 @@ def build_chronological_storyboard_with_meta(
 
     with av.open(str(video_path)) as container:
         stream = next(s for s in container.streams if s.index == pr.selected_video_stream_index)
+        try:
+            stream.thread_type = "AUTO"
+        except Exception:
+            pass
         for cur_ord, frame in enumerate(container.decode(stream)):
             if cur_ord in target_set and cur_ord not in tiles_by_ord:
                 rgb = frame.to_ndarray(format="rgb24")
@@ -439,6 +453,7 @@ class Qwen25VLReranker:
         fusion_config: VLMFusionConfig | None = None,
         batch_size: int | None = None,
         device: str = "auto",
+        num_frames: int = 8,
         annotate_timestamps: bool = False,
         query_template: str | None = None,
         tile_size: tuple[int, int] = (224, 168),
@@ -451,8 +466,10 @@ class Qwen25VLReranker:
         self.processor_revision = (
             processor_revision if processor_revision is not None else self.model_revision
         )
+        self.num_frames = max(1, int(num_frames))
         self.query_template = str(query_template or DEFAULT_VLM_QUERY_TEMPLATE)
-        self.prompt_sha256 = _sha256_text(self.query_template)
+        tmpl_norm = self.query_template.format(query_text="{query_text}", num_frames=self.num_frames)
+        self.prompt_sha256 = _sha256_text(tmpl_norm)
         self.annotate_timestamps = bool(annotate_timestamps)
         self.tile_size = (int(tile_size[0]), int(tile_size[1]))
         self.shrunk_tile_size = (int(shrunk_tile_size[0]), int(shrunk_tile_size[1]))
@@ -494,6 +511,7 @@ class Qwen25VLReranker:
         self._no_ids: list[int] = []
         self._loaded_device: str | None = None
         self.last_score_stats: dict[str, Any] = {}
+        self._storyboard_cache: dict[tuple[Any, ...], tuple[bytes, dict[str, Any]]] = {}
 
     @staticmethod
     def _has_cuda() -> bool:
@@ -711,14 +729,20 @@ class Qwen25VLReranker:
 
     def unload(self) -> None:
         """Release model weights and reclaim CUDA VRAM (critical for 6GB GPUs)."""
+        import gc
+
         self._model = None
         self._processor = None
         self._loaded_device = None
+        self._storyboard_cache.clear()
+        gc.collect()
         try:
             import torch  # type: ignore
 
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
         except Exception:
             pass
 
@@ -754,8 +778,23 @@ class Qwen25VLReranker:
     ) -> tuple[Any, dict[str, Any]]:
         from PIL import Image  # type: ignore
 
+        cache_key = (
+            str(vpath),
+            (int(tile_size[0]), int(tile_size[1])),
+            (float(clip_window[0]), float(clip_window[1])) if clip_window is not None else None,
+            tuple((float(a), float(b)) for a, b in focus_intervals) if focus_intervals else None,
+            int(self.num_frames),
+            bool(self.annotate_timestamps),
+            len(frame_ledger) if frame_ledger is not None else None,
+        )
+        cached = self._storyboard_cache.get(cache_key)
+        if cached is not None:
+            jb, meta = cached
+            return Image.open(io.BytesIO(jb)).convert("RGB"), dict(meta)
+
         jb, meta = build_chronological_storyboard_with_meta(
             vpath,
+            num_frames=self.num_frames,
             tile_size=tile_size,
             clip_start_sec=clip_window[0] if clip_window is not None else None,
             clip_end_sec=clip_window[1] if clip_window is not None else None,
@@ -763,6 +802,7 @@ class Qwen25VLReranker:
             focus_intervals=focus_intervals,
             annotate_timestamps=self.annotate_timestamps,
         )
+        self._storyboard_cache[cache_key] = (jb, dict(meta))
         return Image.open(io.BytesIO(jb)).convert("RGB"), meta
 
     def _score_images(self, sub_imgs: list[Any], sub_prompts: list[str]) -> list[float]:
@@ -876,7 +916,7 @@ class Qwen25VLReranker:
         if not prepared:
             return scores_out
 
-        msg_txt = self.query_template.format(query_text=query_text)
+        msg_txt = self.query_template.format(query_text=query_text, num_frames=self.num_frames)
         prompt = self._processor.apply_chat_template(
             [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": msg_txt}]}],
             tokenize=False,
