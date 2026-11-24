@@ -1,5 +1,9 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 24/11/2026 — Chuyển kế hoạch đánh giá sang Kaggle
+
+- Theo điều kiện phần cứng hiện tại, [kế hoạch ở thư mục gốc](../KAGGLE_ACTIVITYNET_VIDEOCOMP_PLAN.md) dùng Kaggle cho cả index, tune, valid-confirm và test. Tiêu chí tài nguyên là mức dùng quan sát được trên một GPU Kaggle với ngân sách online 6 GiB. Tài liệu quy định cách chia nguồn 40/40/20, chấm trọn chuỗi, đối chứng VLM, lưu output qua nhiều phiên và xử lý OOM. Lượt này chỉ cập nhật tài liệu.
+
 ## 24/11/2026 — Kế hoạch đánh giá ActivityNet Captions, VideoComp và rerank trên RTX 3060 6 GB
 
 - **Split nội bộ đề xuất.** Chia theo nhóm video nguồn xuyên ActivityNet Captions, ActivityNet-Comp và YouCook2-Comp. Gộp các clip, caption, cặp positive/negative, hai bộ annotation validation của ActivityNet và các bản trùng nội dung. Lấy tune 40% và valid-confirm 40% từ nguồn train công khai chưa dùng để học trọng số hoặc priors. Lấy test nội bộ 20% từ nguồn validation công khai chưa dùng. Khi quota bị giới hạn, giảm đồng bộ số nhóm. Tách các nhóm có nguồn hoặc lịch sử không rõ trước khi khóa. Cố định seed, gallery, danh sách query, phiên bản dữ liệu và checksum manifest. [ActivityNet Captions](https://cs.stanford.edu/people/ranjaykrishna/densevid/) · [VideoComp](https://github.com/google-deepmind/video_comp)
