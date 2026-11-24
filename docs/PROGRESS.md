@@ -1,8 +1,13 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+## 24/11/2026 — Phân việc đánh giá giữa CPU máy cá nhân và GPU Modal
+
+- [Kế hoạch ActivityNet Captions và VideoComp ở thư mục gốc](../ACTIVITYNET_VIDEOCOMP_EVALUATION_PLAN.md) chuyển việc chuẩn bị dữ liệu, FAISS/SQLite, DP/Viterbi và evaluator về CPU local. Đề xuất L4 cho suy luận nhẹ, L40S cho embedding nặng, A100-80GB khi pilot cho thấy cần thêm VRAM. Kế hoạch giữ split 40/40/20 theo nguồn và profile online 6 GiB riêng.
+- Đọc lại parser, runtime retrieval, runner đánh giá và VLM reranker. Kiểm tra bằng Python CPU qua `.venv\Scripts\python.exe -B -` với input tổng hợp: rule giữ nguyên query nhưng chỉ trả ba mệnh đề cho câu có bốn hành động; hàm lấy điểm VLM với cache A, yêu cầu A/B trả A và không thử chấm B. Đã ghi ca nghiệm thu cho hai trường hợp này cùng vấn đề thứ hạng, khoảng PTS, mẫu số evaluator và RAM storyboard. Thay đổi chỉ ở tài liệu. Chưa gọi Modal hoặc chạy benchmark.
+
 ## 24/11/2026 — Chuyển kế hoạch đánh giá sang Kaggle
 
-- Theo điều kiện phần cứng hiện tại, [kế hoạch ở thư mục gốc](../KAGGLE_ACTIVITYNET_VIDEOCOMP_PLAN.md) dùng Kaggle cho cả index, tune, valid-confirm và test. Tiêu chí tài nguyên là mức dùng quan sát được trên một GPU Kaggle với ngân sách online 6 GiB. Tài liệu quy định cách chia nguồn 40/40/20, chấm trọn chuỗi, đối chứng VLM, lưu output qua nhiều phiên và xử lý OOM. Lượt này chỉ cập nhật tài liệu.
+- Theo điều kiện phần cứng khi lập [kế hoạch Kaggle tại commit 521335f](https://github.com/LongLeVuHuy/VIDENTRA/blob/521335f56871be777af0a4caec8bb008e2a84377/KAGGLE_ACTIVITYNET_VIDEOCOMP_PLAN.md), tài liệu dùng Kaggle cho cả index, tune, valid-confirm và test. Tiêu chí tài nguyên là mức dùng quan sát được trên một GPU Kaggle với ngân sách online 6 GiB. Tài liệu quy định cách chia nguồn 40/40/20, chấm trọn chuỗi, đối chứng VLM, lưu output qua nhiều phiên và xử lý OOM. Lượt này chỉ cập nhật tài liệu.
 
 ## 24/11/2026 — Kế hoạch đánh giá ActivityNet Captions, VideoComp và rerank trên RTX 3060 6 GB
 

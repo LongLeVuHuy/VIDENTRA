@@ -24,7 +24,7 @@
 - Các files hoặc folders tạm được sinh ra trong lúc chạy thì sau khi chạy xong hãy xóa những file tạm đó để thư mục project luôn gọn gàng
 - Mỗi khi gọi subagents để làm việc thì khi làm xong hãy giải phóng subagents dó
 - Cho phép sử dụng Internet để phân tích và nghiên cứu
-- Những công việc embedding nặng thì mang lên Kaggle notebook để sử dụng GPU của nó
+- Chạy các bước không cần GPU trên CPU máy cá nhân. Dùng GPU Modal theo tải cho embedding và suy luận; xem phân công và cách chọn GPU trong [kế hoạch ActivityNet Captions và VideoComp](ACTIVITYNET_VIDEOCOMP_EVALUATION_PLAN.md).
 - Sau khi hoàn thành sau một công việc gì đó thì cập nhật vào mục PROGRESS.md ở C:\Users\DELL\Desktop\VIDENTRA\docs
 - Cập nhật PROJECT.md về cấu trúc của chương trình
 - Cập nhật file requirements.txt cho các gói thư viện mới cần dùng
