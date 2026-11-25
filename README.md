@@ -262,6 +262,7 @@ Chạy thực nghiệm có kiểm soát trên Kaggle Dual-T4 với `3.885` truy 
 | **Exact 2D Semi-Markov Segment DP + Order Margin** | 19.50% (`39/200`) | 22.00% | 22.50% | 100.00% | **42.19%** |
 | **Exact 2D Semi-Markov DP + Tuned Clause Alignment & Length Penalty** | **24.50%** (`49/200`) | **26.00%** | **26.50%** | **100.00%** | 39.67% |
 
+- **Đúng video và đúng toàn chuỗi.** Trong 200 dự đoán Test đã lưu, Champion chọn đúng video ở hạng 1 cho 188 câu (94%). Trong số đó, 49 câu khớp toàn chuỗi và 139 câu có ít nhất một sự kiện không đạt tIoU 0,5. Trên Tune, giữ nguyên video hạng 1 rồi chia đều thời lượng theo số câu đạt 80/400, so với 81/400 của Champion. [Phân tích prior độ dài và giới hạn của lưới PTS](docs/PROGRESS.md#chan-doan-hit1-activitynet)
 - **Theo độ dài chuỗi (Champion Sealed Test):** chuỗi `2` sự kiện đạt **65.38%** Full-Chain Hit@1 (`75.00%` Per-Event); chuỗi `3` sự kiện đạt **32.05%** (`47.86%` Per-Event); chuỗi `≥4` sự kiện đạt **7.29%** (`32.28%` Per-Event).
 - **Bootstrap 95% CI theo `source_group_id`:** Champion vượt `Whole-Paragraph Global` **+23.50 pp** `[+18.00, +29.50]` (`48` rescued / `1` lost) và vượt `Viterbi Forward DP` **+24.00 pp** `[+18.00, +30.00]` (`49` rescued / `1` lost). Trên `Valid-Confirm` (`400` q) trước khi mở `Test`, Champion đạt **21.50%** (`86/400`, `95% CI = [+17.50, +25.50]` pp, `86` rescued / `0` lost).
 
