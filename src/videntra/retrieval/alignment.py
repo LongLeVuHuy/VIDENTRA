@@ -1361,3 +1361,284 @@ def score_videocomp_order(
         "global_score": float(global_score),
         "combined_score": float(comb),
     }
+
+
+def build_zeroshot_soft_dp_emissions(
+    timestamps_sec: Sequence[float],
+    event_vis_curves: Sequence[Sequence[float] | np.ndarray],
+    *,
+    frame_embeddings: np.ndarray | Sequence[np.ndarray] | None = None,
+    cross_clause_beta: float = 0.70,
+    boundary_bonus: float = 0.08,
+    softmax_tau: float = 0.70,
+    contrast_weight: float = 0.25,
+    softmax_weight: float = 0.40,
+) -> np.ndarray:
+    """Build resolution-invariant zero-shot `(K, M, M)` span emissions without forced `D/M` prior."""
+    vis_mat = np.asarray(event_vis_curves, dtype=np.float64)
+    if vis_mat.ndim == 1:
+        vis_mat = vis_mat.reshape(1, -1)
+    k_events, m_v = vis_mat.shape if vis_mat.size > 0 else (0, 0)
+    if k_events == 0 or m_v == 0 or len(timestamps_sec) != m_v:
+        return np.zeros((0, 0, 0), dtype=np.float64)
+
+    mean_t = np.mean(vis_mat, axis=1, keepdims=True)
+    std_t = np.maximum(1e-6, np.std(vis_mat, axis=1, keepdims=True))
+    z_t = (vis_mat - mean_t) / std_t
+
+    if k_events > 1:
+        other_mean = (np.sum(z_t, axis=0, keepdims=True) - z_t) / float(k_events - 1)
+        cc = z_t - float(cross_clause_beta) * other_mean
+        mx = np.max(z_t, axis=0, keepdims=True)
+        ex = np.exp((z_t - mx) / max(1e-4, float(softmax_tau)))
+        p_cl = ex / np.maximum(1e-9, np.sum(ex, axis=0, keepdims=True))
+    else:
+        cc = z_t.copy()
+        p_cl = np.ones_like(z_t)
+
+    v_diff = np.zeros(m_v, dtype=np.float64)
+    if frame_embeddings is not None:
+        emb_list = (
+            [np.asarray(frame_embeddings, dtype=np.float64)]
+            if isinstance(frame_embeddings, np.ndarray)
+            else [np.asarray(e, dtype=np.float64) for e in frame_embeddings]
+        )
+        valid_embs = [e for e in emb_list if e.ndim == 2 and e.shape[0] == m_v]
+        if valid_embs and m_v >= 2:
+            for emb in valid_embs:
+                norms = np.maximum(1e-9, np.linalg.norm(emb, axis=1, keepdims=True))
+                en = emb / norms
+                d = np.zeros(m_v, dtype=np.float64)
+                d[1:] = 1.0 - np.sum(en[1:] * en[:-1], axis=1)
+                v_diff += d / float(len(valid_embs))
+    v_diff_z = (v_diff - float(np.mean(v_diff))) / max(1e-6, float(np.std(v_diff)))
+
+    ta, tb = np.triu_indices(m_v)
+    cnt = (tb - ta + 1).astype(np.float64)
+    out_cnt = np.maximum(1.0, float(m_v) - cnt)
+    bj_l = v_diff_z[ta]
+    bj_r = np.where(tb + 1 < m_v, v_diff_z[np.minimum(m_v - 1, tb + 1)], 0.0)
+
+    emit = np.full((k_events, m_v, m_v), -np.inf, dtype=np.float64)
+    for k in range(k_events):
+        pref_cc = np.concatenate([[0.0], np.cumsum(cc[k])])
+        pref_p = np.concatenate([[0.0], np.cumsum(p_cl[k])])
+        s_in = pref_cc[tb + 1] - pref_cc[ta]
+        m_in = s_in / cnt
+        m_out = np.where(cnt < m_v, (pref_cc[-1] - s_in) / out_cnt, 0.0)
+        p_sum = pref_p[tb + 1] - pref_p[ta]
+        emit[k, ta, tb] = (
+            (s_in / float(m_v))
+            + float(contrast_weight) * (m_in - 0.5 * m_out)
+            + float(boundary_bonus) * (bj_l + bj_r)
+            + float(softmax_weight) * (p_sum / float(m_v))
+        )
+    return emit
+
+
+def _solve_pairwise_soft_dp(
+    emit_scores: np.ndarray,
+    *,
+    pair_transition_bonus: np.ndarray | None = None,
+    w_gap: float = 0.8,
+    w_ov: float = 0.6,
+    w_edge: float = 0.2,
+    max_ov_ratio: float = 0.5,
+    enforce_end_order: bool = True,
+) -> tuple[float, list[tuple[int, int]]] | None:
+    """Solve exact O(K*M^2) Soft-Overlap Semi-Markov DP (`a_k >= a_{k-1}`, bounded overlap)."""
+    k_events, m_v, m_v2 = emit_scores.shape
+    if k_events == 0 or m_v == 0 or m_v != m_v2:
+        return None
+
+    tri_mask = np.triu(np.ones((m_v, m_v), dtype=bool))
+    idx = np.arange(m_v)
+    e0 = np.where(tri_mask, emit_scores[0].astype(np.float64), -np.inf)
+    if k_events >= 2 and float(w_edge) != 0.0:
+        e0 = e0 - float(w_edge) * (idx[:, None] / float(m_v))
+
+    if k_events == 1:
+        flat0 = int(np.argmax(e0))
+        a0, b0 = divmod(flat0, m_v)
+        val0 = float(e0[a0, b0])
+        if not np.isfinite(val0):
+            return None
+        return val0, [(int(a0), int(b0))]
+
+    a_grid = idx[:, None]
+    bp_grid = idx[None, :]
+    gap_f = np.maximum(0, a_grid - bp_grid - 1) / float(m_v)
+    ov_frames = np.maximum(0, bp_grid - a_grid + 1)
+    ov_f = ov_frames / float(m_v)
+    max_ov_frames = max(0, int(round(float(max_ov_ratio) * float(m_v))))
+    valid_abp = (bp_grid < a_grid) if float(max_ov_ratio) <= 0.0 else (ov_frames <= max_ov_frames)
+    base_trans = np.where(valid_abp, -float(w_gap) * gap_f - float(w_ov) * ov_f, -np.inf)
+
+    dp = np.full((k_events, m_v, m_v), -np.inf, dtype=np.float64)
+    pa = np.full((k_events, m_v, m_v), -1, dtype=np.int32)
+    pb = np.full((k_events, m_v, m_v), -1, dtype=np.int32)
+    dp[0] = e0
+
+    for k in range(1, k_events):
+        prev = dp[k - 1]
+        pref_v = np.maximum.accumulate(prev, axis=0)
+        pref_pa = np.zeros((m_v, m_v), dtype=np.int32)
+        for a_i in range(1, m_v):
+            pref_pa[a_i] = np.where(prev[a_i] > pref_v[a_i - 1], a_i, pref_pa[a_i - 1])
+
+        trans_k = base_trans
+        if pair_transition_bonus is not None and (k - 1) < pair_transition_bonus.shape[0]:
+            # Input `pair_transition_bonus[k-1]` is `[prev_b, curr_a]`; transpose to `[curr_a, prev_b]`
+            trans_k = np.where(valid_abp, base_trans + pair_transition_bonus[k - 1].T, -np.inf)
+
+        cand_a_bp = pref_v + trans_k  # (curr_a, prev_b)
+        ek = np.where(tri_mask, emit_scores[k].astype(np.float64), -np.inf)
+        if k == k_events - 1 and float(w_edge) != 0.0:
+            ek = ek - float(w_edge) * ((m_v - 1 - idx[None, :]) / float(m_v))
+
+        if enforce_end_order:
+            row_max = np.maximum.accumulate(cand_a_bp, axis=1)
+            row_pb = np.zeros((m_v, m_v), dtype=np.int32)
+            for b_i in range(1, m_v):
+                row_pb[:, b_i] = np.where(cand_a_bp[:, b_i] > row_max[:, b_i - 1], b_i, row_pb[:, b_i - 1])
+            valid = tri_mask & np.isfinite(row_max) & np.isfinite(ek)
+            dp[k] = np.where(valid, row_max + ek, -np.inf)
+            pb[k] = np.where(valid, row_pb, -1)
+            pa[k] = np.where(valid, pref_pa[idx[:, None], row_pb], -1)
+        else:
+            best_bp_a = np.argmax(cand_a_bp, axis=1)
+            best_v_a = cand_a_bp[idx, best_bp_a]
+            valid = tri_mask & np.isfinite(best_v_a[:, None]) & np.isfinite(ek)
+            dp[k] = np.where(valid, best_v_a[:, None] + ek, -np.inf)
+            pb[k] = np.where(valid, best_bp_a[:, None], -1)
+            pa[k] = np.where(valid, pref_pa[idx, best_bp_a][:, None], -1)
+
+    flat = int(np.argmax(dp[k_events - 1]))
+    ca, cb = divmod(flat, m_v)
+    best_total = float(dp[k_events - 1, ca, cb])
+    if not np.isfinite(best_total):
+        return None
+    spans_idx: list[tuple[int, int]] = [(int(ca), int(cb))]
+    for k in range(k_events - 1, 0, -1):
+        na, nb = int(pa[k, ca, cb]), int(pb[k, ca, cb])
+        if na < 0 or nb < 0:
+            return None
+        spans_idx.append((na, nb))
+        ca, cb = na, nb
+    spans_idx.reverse()
+    return best_total, spans_idx
+
+
+def localize_soft_overlap_segment_dp(
+    timestamps_sec: Sequence[float],
+    emit_scores: np.ndarray,
+    *,
+    clause_ids: Sequence[str] | None = None,
+    clause_texts: Sequence[str] | None = None,
+    relations_to_prev: Sequence[str] | None = None,
+    frame_ordinals: Sequence[int] | None = None,
+    v_dur_sec: float | None = None,
+    pair_transition_bonus: np.ndarray | None = None,
+    w_gap: float = 0.8,
+    w_ov: float = 0.6,
+    w_edge: float = 0.2,
+    max_ov_ratio: float = 0.5,
+    enforce_end_order: bool = True,
+    phi_curves: np.ndarray | None = None,
+    missing_evidence_threshold: float = -1e9,
+) -> EventChainLocalizationResult | None:
+    """Localize event chain using Pairwise Soft-Overlap Semi-Markov DP over arbitrary `(K, M, M)` emissions."""
+    ts = [float(t) for t in timestamps_sec]
+    emit = np.asarray(emit_scores, dtype=np.float64)
+    if emit.ndim != 3:
+        return None
+    k_events, m_v, m_v2 = emit.shape
+    if k_events == 0 or m_v == 0 or m_v != m_v2 or len(ts) != m_v:
+        return None
+
+    fwd = _solve_pairwise_soft_dp(
+        emit,
+        pair_transition_bonus=pair_transition_bonus,
+        w_gap=w_gap,
+        w_ov=w_ov,
+        w_edge=w_edge,
+        max_ov_ratio=max_ov_ratio,
+        enforce_end_order=enforce_end_order,
+    )
+    if fwd is None:
+        return None
+    fwd_total, spans_idx = fwd
+    fwd_avg = float(fwd_total) / float(k_events)
+
+    rev_avg = fwd_avg
+    if k_events >= 2:
+        rev_sol = _solve_pairwise_soft_dp(
+            emit[::-1],
+            pair_transition_bonus=None,
+            w_gap=w_gap,
+            w_ov=w_ov,
+            w_edge=w_edge,
+            max_ov_ratio=max_ov_ratio,
+            enforce_end_order=enforce_end_order,
+        )
+        if rev_sol is not None:
+            rev_avg = float(rev_sol[0]) / float(k_events)
+
+    eff_cids = [str(clause_ids[k]) if (clause_ids and k < len(clause_ids)) else f"e{k}" for k in range(k_events)]
+    eff_txts = [str(clause_texts[k]) if (clause_texts and k < len(clause_texts)) else "" for k in range(k_events)]
+    eff_rels = [
+        ("start" if k == 0 else str(relations_to_prev[k]))
+        if (relations_to_prev and k < len(relations_to_prev))
+        else ("start" if k == 0 else "before")
+        for k in range(k_events)
+    ]
+    eff_ords = (
+        [int(frame_ordinals[i]) for i in range(m_v)]
+        if (frame_ordinals is not None and len(frame_ordinals) == m_v)
+        else list(range(m_v))
+    )
+
+    left_edges, right_edges = _voronoi_frame_edges(ts, v_dur_sec=v_dur_sec)
+    spans: list[EventSpanPrediction] = []
+    all_supported = True
+    for k, (a, b) in enumerate(spans_idx):
+        if phi_curves is not None and phi_curves.shape == (k_events, m_v):
+            sub = phi_curves[k, a : b + 1]
+            anchor_idx = a + int(np.argmax(sub))
+            ev_score = float(emit[k, a, b])
+            peak_val = float(np.max(phi_curves[k]))
+            status = "supported" if peak_val >= float(missing_evidence_threshold) else "missing"
+        else:
+            anchor_idx = (a + b) // 2
+            ev_score = float(emit[k, a, b])
+            status = "supported"
+        if status != "supported":
+            all_supported = False
+        st_k = round(float(left_edges[a]), 3)
+        et_k = round(max(st_k + 0.05, float(right_edges[b])), 3)
+        spans.append(
+            EventSpanPrediction(
+                clause_id=eff_cids[k],
+                clause_text=eff_txts[k],
+                relation_to_prev=eff_rels[k],
+                start_sec=st_k,
+                end_sec=et_k,
+                anchor_index=int(anchor_idx),
+                anchor_sec=round(float(ts[anchor_idx]), 3),
+                start_frame_index=int(eff_ords[a]),
+                end_frame_index=int(eff_ords[b]),
+                score=ev_score,
+                status=status,
+            )
+        )
+
+    return EventChainLocalizationResult(
+        total_score=float(fwd_total),
+        avg_score=float(fwd_avg),
+        reverse_avg_score=float(rev_avg),
+        directional_order_margin=float(fwd_avg - rev_avg),
+        spans=tuple(spans),
+        overall_start_sec=min(sp.start_sec for sp in spans),
+        overall_end_sec=max(sp.end_sec for sp in spans),
+        all_supported=all_supported,
+    )

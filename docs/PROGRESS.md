@@ -1,5 +1,63 @@
 ﻿# Tiến độ triển khai VIDENTRA
 
+<a id="laptop-handoff-20261125"></a>
+
+## 25/11/2026 (c) — Điểm dừng chuyển máy (Laptop Handoff): Grounder v2 (Đã xong code, trích xuất Modal & train; sẵn sàng chạy `tune-and-lock` → `eval-tests`)
+
+- **Trạng thái hoàn tất trước khi chuyển máy:**
+  - **Mã nguồn & Thuật toán (`Grounder v2`):**
+    * Bổ sung Pairwise Soft-Overlap Semi-Markov DP (`build_zeroshot_soft_dp_emissions`, `_solve_pairwise_soft_dp`, `localize_soft_overlap_segment_dp`) vào [`src/videntra/retrieval/alignment.py`](../src/videntra/retrieval/alignment.py), cho phép sự kiện chồng lấn/lồng nhau có giới hạn và bỏ ép chia đều `D/M`.
+    * Tạo [`src/videntra/localization/span_grounder.py`](../src/videntra/localization/span_grounder.py) (export tại [`src/videntra/localization/__init__.py`](../src/videntra/localization/__init__.py)): trích `24` đặc trưng frame & `47` đặc trưng span bất biến phân giải; `CrossEventSpanNet` (`forward_batch` GPU + nội suy đối xứng tam giác trên cho `128f`); `SpanGrounderLGBM` hai đầu (`regression tIoU` + `binary P(tIoU>=0.5)`, stride-2 upsampling cho `>64` frames); `JointMultiEventGrounder`.
+    * Bổ sung trainer song song trên Modal GPU (`train_cross_event_span_net_on_gpu`) trong [`scripts/modal_app_functions.py`](../scripts/modal_app_functions.py), pipeline điều phối [`scripts/run_activitynet_grounder_upgrade.py`](../scripts/run_activitynet_grounder_upgrade.py) (tách 2 pha PyTorch → Batched LightGBM `num_threads=8` tránh xung đột OpenMP), và kiểm thử đơn vị [`tests/localization/test_span_grounder.py`](../tests/localization/test_span_grounder.py).
+  - **Phân vùng Zero-Leakage & Trích xuất Modal `NVIDIA L40S` (`0` lỗi giải mã):**
+    * `train_clean_manifest.json`: `2.400` video `ActivityNet train` sạch (`0` chồng lấn với mọi tập đánh giá). Trích `48` PTS frames × 3 backbones (`train_clean`): `16` shards, `115.200` frames (`validated`).
+    * `fresh_test_manifest.json`: `200` video `val_1` chưa từng chạm (tách rạch ròi với `tune`, `valid_confirm`, `test`, `train_clean`).
+    * Trích dày `128` PTS frames cho Top-3 ứng viên (mù Ground Truth theo Stage-1): `tune_dense128` (`7` shards, `397` video, `50.816` frames) và `valid_confirm_dense128` (`7` shards, `398` video, `50.944` frames).
+  - **Huấn luyện `Grounder v2` hoàn tất (`grounder_v2/`, tổng `314,91s`):**
+    * `CrossEventSpanNet` 3-seed song song trên Modal `NVIDIA L40S` (`60,39s` GPU, `2.400` train / `400` Tune val):
+      - `seed=42` (`best_epoch=11`): `val_chain_hit_at_1 = 29,00%`, `val_per_event_tiou_05 = 55,11%`, `val_mse = 0,02711`
+      - `seed=102` (`best_epoch=7`): `val_chain_hit_at_1 = 30,50%`, `val_per_event_tiou_05 = 55,90%`, `val_mse = 0,02684`
+      - `seed=202` (`best_epoch=5`): `val_chain_hit_at_1 = 29,75%`, `val_per_event_tiou_05 = 56,33%`, `val_mse = 0,02619`
+    * `SpanGrounderLGBM` trên CPU: `497` cây (`lgbm_iou_reg.txt`) + `499` cây (`lgbm_p05_cls.txt`).
+  - **Kiểm tra trước khi push:** `py_compile` exit `0`; `.\.venv\Scripts\python.exe -B -m pytest -q tests\localization\test_span_grounder.py tests\retrieval\test_multievent_chain.py tests\evaluation\test_multievent_evaluator.py` đạt **`16 passed in 5.69s`**; `.\.venv\Scripts\python.exe -B -m videntra doctor --strict` đạt **`ready_for_serving = true` (`missing_required = []`)**.
+- **Sao lưu ngoại tuyến lên Modal Volume `videntra-eval-artifacts`:**
+  - Vì `work/` và `*.pt` nằm trong `.gitignore`, toàn bộ trạng thái cục bộ không có trên GitHub (`77` files, `36,32 MB` gồm `grounder_v2/`, `splits/*.json`, `champion_lock_receipt.json`, `media_catalog.json`, `tune/`, `test/`, `pilot/`, `features/*/extract_summary.json` & receipts) đã được đồng bộ lên Modal Volume tại **`handoff_laptop_20261125/`**.
+  - Các shards đặc trưng `.npz` nặng và `raw_media/` vẫn được giữ nguyên vẹn trên cùng Modal Volume (`extract_tune`, `extract_tune_dense128`, `extract_valid_confirm`, `extract_valid_confirm_dense128`, `extract_test`, `extract_train_clean`).
+  - *Việc đang dở cần làm tiếp trên máy mới:* `tune-and-lock` (`task-6820`) được dừng an toàn khi tắt máy (chưa ghi `champion_v2_lock_receipt.json`) → trên máy mới chạy lại `tune-and-lock`, kiểm tra cổng Go/No-Go `Valid-Confirm`, chạy `eval-tests` 1 lần trên `Test-200` + `Fresh-Test-200`, cập nhật `README.md` + `ACTIVITYNET_VIDEOCOMP_EVALUATION_PLAN.md`, chạy full `pytest -q` rồi push.
+- **Hướng dẫn khôi phục và chạy tiếp trên laptop mới:**
+  1. Clone/pull repo (`git pull origin main`), tạo `.venv` Python 3.12 (`pip install -r requirements.txt` & `pip install -e .`), cài Modal token (`modal token new` hoặc `modal token set ...`). Nếu chưa có `models/` / `data/`, đồng bộ các trọng số MSR-VTT nếu cần phục vụ local search.
+  2. Khôi phục `work/activitynet_videocomp_20261124/` từ Modal Volume `videntra-eval-artifacts` (không cần trích xuất lại feature hay train lại model):
+     ```python
+     from pathlib import Path
+     import modal
+     from modal.volume import FileEntryType
+
+     vol = modal.Volume.from_name("videntra-eval-artifacts")
+     wr = Path("work/activitynet_videocomp_20261124")
+
+     def download_dir(remote_dir: str, local_dir: Path, *, flatten_shards: bool = False):
+         for ent in vol.listdir(remote_dir):
+             name = Path(ent.path).name
+             if ent.type == FileEntryType.DIRECTORY:
+                 download_dir(ent.path, local_dir if flatten_shards else (local_dir / name), flatten_shards=flatten_shards)
+             elif ent.type == FileEntryType.FILE:
+                 out_p = (local_dir / f"{Path(ent.path).parent.name}.npz") if (flatten_shards and name == "shard_features.npz") else (local_dir / name)
+                 out_p.parent.mkdir(parents=True, exist_ok=True)
+                 with open(out_p, "wb") as f:
+                     for chunk in vol.read_file(ent.path):
+                         f.write(chunk)
+
+     download_dir("/handoff_laptop_20261125", wr)
+     for sp, rdir in [("tune", "extract_tune/features_L40S"), ("tune_dense128", "extract_tune_dense128/features_L40S"),
+                      ("valid_confirm", "extract_valid_confirm/features_L40S"), ("valid_confirm_dense128", "extract_valid_confirm_dense128/features_L40S"),
+                      ("test", "extract_test/features_L40S")]:
+         download_dir(f"/{rdir}", wr / "features" / sp, flatten_shards=True)
+     ```
+  3. Chạy sweep & khóa `Valid-Confirm` (`tune-and-lock`):
+     `.\.venv\Scripts\python.exe -B -u scripts\run_activitynet_grounder_upgrade.py tune-and-lock`
+  4. Sau khi `work/activitynet_videocomp_20261124/champion_v2_lock_receipt.json` xác nhận `go_no_go_gate_passed = true`, chạy đánh giá cuối 1 lần trên `Test-200` + `Fresh-Test-200`:
+     `$env:VIDENTRA_MODAL_MAX_CONTAINERS="8"; .\.venv\Scripts\python.exe -B -u scripts\run_activitynet_grounder_upgrade.py eval-tests`
+
 <a id="chan-doan-hit1-activitynet"></a>
 
 ## 25/11/2026 — Chẩn đoán Full-Chain Hit@1 của ActivityNet Captions

@@ -582,3 +582,226 @@ def run_l4_vlm_rerank_shard(
     )
     vol.commit()
     return res
+
+
+@app.function(
+    image=gpu_image,
+    gpu=["L40S", "A10G"],
+    volumes={VOLUME_MOUNT_PATH: vol},
+    min_containers=0,
+    max_containers=3,
+    timeout=2400,
+)
+def train_cross_event_span_net_on_gpu(
+    run_id: str,
+    train_npz_rel: str,
+    val_npz_rel: str,
+    epochs: int = 35,
+    seeds_json: str = "[42, 102, 202]",
+    d_hid: int = 96,
+    d_sp: int = 64,
+) -> dict[str, Any]:
+    """Train a multi-seed ensemble of `CrossEventSpanNet` on Modal GPU using clean Train & Tune `.npz`."""
+    import numpy as np
+    import torch  # type: ignore
+    import torch.nn.functional as F  # type: ignore
+    from videntra.localization.span_grounder import (
+        CrossEventSpanNet,
+        save_span_net_checkpoint,
+    )
+    from videntra.retrieval.alignment import _solve_pairwise_soft_dp, _voronoi_frame_edges
+
+    vol.reload()
+    t0 = time.perf_counter()
+    vroot = Path(VOLUME_MOUNT_PATH)
+    tr_d = np.load(vroot / train_npz_rel.lstrip("/"), allow_pickle=False)
+    va_d = np.load(vroot / val_npz_rel.lstrip("/"), allow_pickle=False)
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _unpack_split(d: Any) -> list[dict[str, Any]]:
+        seq_x = d["seq_x"].astype(np.float32)
+        y_iou = d["y_iou"].astype(np.float32)
+        y_fr = d["y_frame"].astype(np.float32)
+        offs = d["query_offsets"].astype(np.int64)
+        pts = d["pts_sec"].astype(np.float64)
+        durs = d["durations"].astype(np.float64)
+        gt_s = d["gt_starts"].astype(np.float64)
+        gt_e = d["gt_ends"].astype(np.float64)
+        gt_a = d["gt_a_idx"].astype(np.int64)
+        gt_b = d["gt_b_idx"].astype(np.int64)
+        items = []
+        for qi in range(len(offs) - 1):
+            st, en = int(offs[qi]), int(offs[qi + 1])
+            k_ev = en - st
+            m_v = seq_x.shape[1]
+            # Precompute soft Gaussian transition target (K-1, M, M) for [prev_b, curr_a]
+            idx_1d = np.arange(m_v, dtype=np.float32)
+            tr_tgt = None
+            if k_ev > 1:
+                tr_tgt_arr = np.zeros((k_ev - 1, m_v, m_v), dtype=np.float32)
+                for k_i in range(k_ev - 1):
+                    d_bp = (idx_1d[:, None] - float(gt_b[st + k_i])) ** 2
+                    d_ac = (idx_1d[None, :] - float(gt_a[st + k_i + 1])) ** 2
+                    tr_tgt_arr[k_i] = np.exp(-0.5 * (d_bp + d_ac) / 4.0)
+                tr_tgt = torch.from_numpy(tr_tgt_arr).to(dev)
+            le, re = _voronoi_frame_edges(pts[qi].tolist(), float(durs[qi]))
+            items.append({
+                "x": torch.from_numpy(seq_x[st:en]).to(dev),
+                "y_iou": torch.from_numpy(y_iou[st:en]).to(dev),
+                "y_p05": torch.from_numpy((y_iou[st:en] >= 0.5).astype(np.float32)).to(dev),
+                "y_fr": torch.from_numpy(y_fr[st:en]).to(dev),
+                "tr_tgt": tr_tgt,
+                "le": np.asarray(le, dtype=np.float64),
+                "re": np.asarray(re, dtype=np.float64),
+                "gt_s": gt_s[st:en],
+                "gt_e": gt_e[st:en],
+                "k_ev": k_ev,
+            })
+        return items
+
+    tr_items = _unpack_split(tr_d)
+    va_items = _unpack_split(va_d)
+    tr_d.close()
+    va_d.close()
+
+    ta48, tb48 = np.triu_indices(48)
+    pos_w = torch.tensor(4.0, device=dev)
+
+    # Bucket train items by event count K for fast GPU batching (single forward_batch per K-bucket)
+    tr_buckets: dict[int, list[dict[str, Any]]] = {}
+    for it in tr_items:
+        tr_buckets.setdefault(int(it["k_ev"]), []).append(it)
+
+    def _eval_val_metrics(mdl: CrossEventSpanNet) -> tuple[float, float, float]:
+        mdl.eval()
+        chain_hits = 0
+        ev_hits = 0
+        ev_tot = 0
+        val_losses = []
+        with torch.no_grad():
+            for it in va_items:
+                iou_l, p05_l, fr_l, pb = mdl(it["x"])
+                l_v = F.mse_loss(torch.sigmoid(iou_l), it["y_iou"])
+                val_losses.append(float(l_v.item()))
+                p_iou = torch.sigmoid(iou_l).cpu().numpy()
+                p_05 = np.clip(torch.sigmoid(p05_l).cpu().numpy(), 1e-5, 1.0 - 1e-5)
+                k_ev = it["k_ev"]
+                emit = np.full((k_ev, 48, 48), -np.inf, dtype=np.float64)
+                emit[:, ta48, tb48] = 0.75 * p_iou + 0.15 * np.log(p_05)
+                pb_np = pb.cpu().numpy().astype(np.float64) * 0.08 if pb is not None else None
+                sol_res = _solve_pairwise_soft_dp(
+                    emit, pair_transition_bonus=pb_np, w_gap=0.8, w_ov=0.6, w_edge=0.2, max_ov_ratio=0.5, enforce_end_order=True
+                )
+                if sol_res is None:
+                    ev_tot += k_ev
+                    continue
+                _, spans_idx = sol_res
+                all_ok = True
+                for i, (a, b) in enumerate(spans_idx):
+                    ps, pe = float(it["le"][a]), float(it["re"][b])
+                    gs, ge = float(it["gt_s"][i]), float(it["gt_e"][i])
+                    inter = max(0.0, min(pe, ge) - max(ps, gs))
+                    union = max(pe, ge) - min(ps, gs)
+                    tiou = inter / union if union > 0.0 else 0.0
+                    ev_tot += 1
+                    if tiou >= 0.5:
+                        ev_hits += 1
+                    else:
+                        all_ok = False
+                if all_ok:
+                    chain_hits += 1
+        return (
+            chain_hits / max(1, len(va_items)),
+            ev_hits / max(1, ev_tot),
+            float(np.mean(val_losses)),
+        )
+
+    out_dir = vroot / run_id / "grounder_v2"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seeds = [int(s) for s in json.loads(seeds_json)]
+    seed_reports: list[dict[str, Any]] = []
+    ckpt_rel_paths: list[str] = []
+
+    for seed in seeds:
+        t_s0 = time.perf_counter()
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        rng = np.random.default_rng(seed)
+        model = CrossEventSpanNet(d_in=24, d_hid=int(d_hid), d_sp=int(d_sp), base_m=48, dropout=0.12).to(dev)
+        opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=2e-2)
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=int(epochs), eta_min=1e-4)
+
+        best_score = -1e9
+        best_metrics: dict[str, Any] = {}
+        ckpt_p = out_dir / f"cross_event_span_net_s{seed}.pt"
+
+        for ep in range(int(epochs)):
+            model.train()
+            batches: list[list[dict[str, Any]]] = []
+            for bk_items in tr_buckets.values():
+                perm = rng.permutation(len(bk_items))
+                for st in range(0, len(perm), 32):
+                    batches.append([bk_items[int(idx)] for idx in perm[st : st + 32]])
+            b_order = rng.permutation(len(batches))
+
+            ep_losses = []
+            for bi in b_order:
+                chunk = batches[int(bi)]
+                opt.zero_grad(set_to_none=True)
+                bx = torch.stack([c["x"] for c in chunk], dim=0)
+                by_iou = torch.stack([c["y_iou"] for c in chunk], dim=0)
+                by_p05 = torch.stack([c["y_p05"] for c in chunk], dim=0)
+                by_fr = torch.stack([c["y_fr"] for c in chunk], dim=0)
+                iou_l, p05_l, fr_l, pb = model.forward_batch(bx)
+                l_iou = F.binary_cross_entropy_with_logits(iou_l, by_iou) + 2.5 * F.mse_loss(
+                    torch.sigmoid(iou_l), by_iou
+                )
+                l_p05 = F.binary_cross_entropy_with_logits(p05_l, by_p05, pos_weight=pos_w)
+                l_fr = F.binary_cross_entropy_with_logits(fr_l, by_fr)
+                loss_mean = l_iou + 0.35 * l_p05 + 0.50 * l_fr
+                if pb is not None and chunk[0]["tr_tgt"] is not None:
+                    b_tr_tgt = torch.stack([c["tr_tgt"] for c in chunk], dim=0)
+                    loss_mean = loss_mean + 0.15 * F.binary_cross_entropy_with_logits(pb * 3.0, b_tr_tgt)
+                loss_mean.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+                ep_losses.append(float(loss_mean.item()))
+            sched.step()
+
+            if ep >= 4 and (ep % 2 == 0 or ep == int(epochs) - 1):
+                c_hit, e_hit, v_loss = _eval_val_metrics(model)
+                sel_sc = c_hit + 0.35 * e_hit - 0.10 * v_loss
+                print(
+                    f"[modal-train] seed={seed} ep={ep+1}/{epochs} chain_hit1={c_hit:.4f} ev_tiou05={e_hit:.4f} mse={v_loss:.5f} ({time.perf_counter()-t_s0:.1f}s)",
+                    flush=True,
+                )
+                if sel_sc > best_score:
+                    best_score = sel_sc
+                    best_metrics = {
+                        "seed": seed,
+                        "best_epoch": ep + 1,
+                        "val_chain_hit_at_1": round(c_hit, 6),
+                        "val_per_event_tiou_05": round(e_hit, 6),
+                        "val_mse": round(v_loss, 6),
+                    }
+                    save_span_net_checkpoint(model, ckpt_p)
+
+        seed_reports.append(best_metrics)
+        ckpt_rel_paths.append(f"{run_id}/grounder_v2/{ckpt_p.name}")
+        print(f"[modal-train-best] {best_metrics} elapsed={time.perf_counter()-t_s0:.1f}s", flush=True)
+
+    receipt = {
+        "status": "validated",
+        "device": dev,
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+        "train_queries": len(tr_items),
+        "val_queries": len(va_items),
+        "epochs": int(epochs),
+        "elapsed_sec": round(time.perf_counter() - t0, 2),
+        "seed_reports": seed_reports,
+        "ckpt_rel_paths": ckpt_rel_paths,
+    }
+    rc_name = f"train_receipt_s{seeds[0]}.json" if len(seeds) == 1 else "train_receipt.json"
+    (out_dir / rc_name).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    vol.commit()
+    return receipt
